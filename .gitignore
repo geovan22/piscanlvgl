@@ -53,3 +53,13 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Visual Studio / LVGL sim específico
+.vs/
+lvgl_sim/Output/
+*.user
+*.filters
+*.suo
+
+# LVGL: carpeta de tests interna, no se necesita para compilar el proyecto
+lvgl_sim/LvglPlatform/lvgl/tests/
