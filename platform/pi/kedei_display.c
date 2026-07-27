@@ -226,10 +226,8 @@ int kedei_platform_init(void) {
     return 0;
 }
 
-void kedei_flush_cb(void *disp_v, const void *area_v, uint8_t *px_map) {
-    lv_display_t *disp = (lv_display_t *)disp_v;
-    const lv_area_t *area = (const lv_area_t *)area_v;
 
+void kedei_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     uint16_t w = (uint16_t)(area->x2 - area->x1 + 1);
     uint16_t h = (uint16_t)(area->y2 - area->y1 + 1);
     uint16_t *px16 = (uint16_t *)px_map;
@@ -242,9 +240,8 @@ void kedei_flush_cb(void *disp_v, const void *area_v, uint8_t *px_map) {
     lv_display_flush_ready(disp);
 }
 
-void kedei_touch_read_cb(void *indev_v, void *data_v) {
-    (void)indev_v;
-    lv_indev_data_t *data = (lv_indev_data_t *)data_v;
+void kedei_touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
+    (void)indev;
     int px, py;
     if (touch_read_raw(&px, &py, NULL, NULL)) {
         data->point.x = px;
