@@ -14,6 +14,7 @@
 #include "kedei_display.h"
 #include "db_client.h"
 #include "pin_lock.h"
+#include "ui_shell.h"
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
 static volatile sig_atomic_t g_pattern_ok = 0;
@@ -139,16 +140,9 @@ int main(void) {
         printf("[PiScan] Resultado PIN: %s\n", g_pattern_ok ? "OK" : "cancelado/fallo");
     }
 
-    /* ── Placeholder: aqui va el menu principal, aun no construido ── */
+    /* ── Header + Body (carrusel) + Footer, ya construidos de verdad ── */
     if (!g_shutdown_requested) {
-        lv_obj_t *scr = lv_screen_active();
-        lv_obj_clean(scr);
-        lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-        lv_obj_t *placeholder = lv_label_create(scr);
-        lv_label_set_text(placeholder, "PiScan listo. (Menu principal: pendiente)");
-        lv_obj_set_style_text_color(placeholder, lv_color_hex(0x33FF33), 0);
-        lv_obj_center(placeholder);
+        ui_shell_build();
         lv_timer_handler();
     }
 
