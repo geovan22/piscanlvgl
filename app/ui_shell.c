@@ -47,6 +47,7 @@ static lv_obj_t *g_battery_icon_label;
 static lv_obj_t *g_battery_pct_label;
 
 static int g_menu_index = 0;
+static lv_timer_t *g_stats_timer = NULL;
 
 /* Accion pendiente que el loop principal (main.c) debe ejecutar —
  * el callback del boton NUNCA bloquea ni llama lv_timer_handler() el
@@ -384,6 +385,16 @@ static lv_obj_t *make_stat_label(lv_obj_t *parent, int x) {
     return l;
 }
 
+/* Detiene el timer de stats del header ANTES de destruir el header
+ * (ej. al mostrar el splash de apagado) — evita usar labels ya
+ * liberados por lv_obj_clean(). Segura de llamar aunque no exista. */
+void ui_shell_stop_stats_timer(void) {
+    if (g_stats_timer) {
+        lv_timer_del(g_stats_timer);
+        g_stats_timer = NULL;
+    }
+}
+
 lv_obj_t *ui_shell_build(void) {
     g_lock_screen = lv_screen_active();
     g_main_screen = lv_obj_create(NULL);
@@ -489,7 +500,7 @@ lv_obj_t *ui_shell_build(void) {
 
     show_carousel();
     stats_timer_cb(NULL);
-    lv_timer_create(stats_timer_cb, 3000, NULL);
+    g_stats_timer = lv_timer_create(stats_timer_cb, 3000, NULL);
 
     lv_screen_load(g_main_screen);
     return g_main_screen;

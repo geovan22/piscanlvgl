@@ -69,6 +69,7 @@ static void run_real_shutdown_sequence(int action) {
            action == 1 ? "apagar" : "reiniciar");
     cleanup_before_shutdown();
 
+    ui_shell_stop_stats_timer();
     splash_show(action == 1 ? "Apagando sistema..." : "Reiniciando sistema...");
     uint32_t t1 = tick_get_cb();
     while ((tick_get_cb() - t1) < 1500) {
@@ -171,6 +172,7 @@ int main(void) {
     /* ── Ctrl+C / SIGTERM: solo salida visual, NO apaga el Pi de verdad
      * (atajo de desarrollo, distinto del boton real del header). ── */
     printf("[PiScan] Cerrando (Ctrl+C)...\n");
+    ui_shell_stop_stats_timer();
     splash_show("Cerrando (modo prueba)...");
     uint32_t t1 = tick_get_cb();
     while ((tick_get_cb() - t1) < 1000) {

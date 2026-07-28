@@ -13,4 +13,9 @@ lv_obj_t *ui_shell_build(void);
  * callback de LVGL, nunca dentro de uno). */
 extern volatile int g_ui_pending_action;
 
+/* Detiene el timer periodico de stats del header. Llamar ANTES de
+ * destruir/limpiar la pantalla principal (ej. antes de mostrar el
+ * splash de apagado) para evitar usar labels ya liberados. */
+void ui_shell_stop_stats_timer(void);
+
 #endif
