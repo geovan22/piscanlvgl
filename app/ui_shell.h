@@ -22,4 +22,7 @@ void ui_shell_stop_stats_timer(void);
  * scan de WiFi en curso si ya termino (no bloquea si no hay nada). */
 void ui_shell_poll_wifi_scan(void);
 
+/* Igual, pero para la operacion de modo monitor. */
+void ui_shell_poll_monitor_op(void);
+
 #endif

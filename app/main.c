@@ -159,6 +159,7 @@ int main(void) {
         lv_timer_handler();
         usleep(2000);
         ui_shell_poll_wifi_scan();
+        ui_shell_poll_monitor_op();
 
         if (g_ui_pending_action != 0) {
             int action = g_ui_pending_action;

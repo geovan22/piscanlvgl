@@ -14,6 +14,9 @@
 #ifndef PISCAN_WIFI_SCAN_PATH
 #define PISCAN_WIFI_SCAN_PATH "/home/geo22/piscanlvgl/app/wifi/wifi_scan.py"
 #endif
+#ifndef PISCAN_WIFI_OPS_PATH
+#define PISCAN_WIFI_OPS_PATH "/home/geo22/piscanlvgl/app/wifi/wifi_ops.py"
+#endif
 
 static char *run_and_capture(char *const argv[]) {
     int pipefd[2];
@@ -105,4 +108,35 @@ int wifi_client_scan(wifi_network_t *out, int max_count, char *out_error, int er
 
     cJSON_Delete(root);
     return count;
+}
+
+static int run_wifi_ops(const char *cmd, char *out_mode, int mode_size) {
+    char *argv_path = PISCAN_WIFI_OPS_PATH;
+    char *argv[] = { "python3", argv_path, (char *)cmd, "wlan1", NULL };
+
+    char *raw = run_and_capture(argv);
+    if (!raw) return 0;
+
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) return 0;
+
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
+    int success = cJSON_IsTrue(ok) ? 1 : 0;
+
+    if (out_mode && cJSON_IsString(mode)) {
+        snprintf(out_mode, mode_size, "%s", mode->valuestring);
+    }
+
+    cJSON_Delete(root);
+    return success;
+}
+
+int wifi_client_monitor_set(int enable, char *out_mode, int mode_size) {
+    return run_wifi_ops(enable ? "enable" : "disable", out_mode, mode_size);
+}
+
+int wifi_client_monitor_status(char *out_mode, int mode_size) {
+    return run_wifi_ops("status", out_mode, mode_size);
 }

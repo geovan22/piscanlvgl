@@ -15,4 +15,9 @@ typedef struct {
  * cuantas encontro, o -1 si hubo error (revisar out_error si no es NULL). */
 int wifi_client_scan(wifi_network_t *out, int max_count, char *out_error, int error_size);
 
+/* Retorna 1 si el modo monitor quedo activo, 0 si no (o error).
+ * out_mode (si no es NULL) recibe "monitor"/"managed"/"unknown". */
+int wifi_client_monitor_set(int enable, char *out_mode, int mode_size);
+int wifi_client_monitor_status(char *out_mode, int mode_size);
+
 #endif
