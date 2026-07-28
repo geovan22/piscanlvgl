@@ -10,6 +10,7 @@
 #include <sys/statvfs.h>
 #include "ui_shell.h"
 #include "pin_lock.h"
+#include "confirm_dialog.h"
 
 #define HEADER_H 28
 #define FOOTER_H 28
@@ -46,6 +47,11 @@ static lv_obj_t *g_battery_icon_label;
 static lv_obj_t *g_battery_pct_label;
 
 static int g_menu_index = 0;
+
+/* Accion pendiente que el loop principal (main.c) debe ejecutar —
+ * el callback del boton NUNCA bloquea ni llama lv_timer_handler() el
+ * mismo, solo marca la intencion y retorna de inmediato. */
+volatile int g_ui_pending_action = 0; /* 0=nada 1=poweroff 2=reboot */
 
 #define COLOR_OK    lv_color_hex(0x33FF33)
 #define COLOR_WARN  lv_color_hex(0xFFCC00)
@@ -243,14 +249,30 @@ static void lock_icon_event_cb(lv_event_t *e) {
     pin_lock_show_verify(g_lock_screen, on_relock_verified, NULL);
 }
 
+static void on_power_confirm(bool confirmed, void *user_data) {
+    (void)user_data;
+    if (confirmed) {
+        set_footer("Apagando...");
+        g_ui_pending_action = 1;
+    }
+}
+
+static void on_reset_confirm(bool confirmed, void *user_data) {
+    (void)user_data;
+    if (confirmed) {
+        set_footer("Reiniciando...");
+        g_ui_pending_action = 2;
+    }
+}
+
 static void power_icon_event_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
-    set_footer("Apagar: confirmacion pendiente de conectar");
+    confirm_dialog_show(g_main_screen, "Apagar el sistema?", on_power_confirm, NULL);
 }
 
 static void reset_icon_event_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
-    set_footer("Reiniciar: confirmacion pendiente de conectar");
+    confirm_dialog_show(g_main_screen, "Reiniciar el sistema?", on_reset_confirm, NULL);
 }
 
 static void back_to_carousel_cb(lv_event_t *e) {
@@ -417,7 +439,7 @@ lv_obj_t *ui_shell_build(void) {
 
     lv_obj_t *reset_btn = lv_obj_create(header);
     lv_obj_set_size(reset_btn, 30, 20);
-    lv_obj_align(reset_btn, LV_ALIGN_RIGHT_MID, -34, 0);
+    lv_obj_align(reset_btn, LV_ALIGN_RIGHT_MID, -60, 0);
     lv_obj_set_style_bg_opa(reset_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(reset_btn, 1, 0);
     lv_obj_set_style_border_color(reset_btn, COLOR_OK, 0);

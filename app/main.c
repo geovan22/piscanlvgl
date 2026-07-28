@@ -1,8 +1,11 @@
 /* ═══════════════════════════════════════════════════════
    main.c — Punto de entrada de PiScan (Pi 3, LVGL v9)
-   Flujo: splash -> patron (setup si no existe, verify si existe) ->
-   pantalla negra (placeholder del menu, aun no construido) -> loop
-   principal -> en Ctrl+C/SIGTERM, splash "Apagando..." y salida limpia.
+   Flujo: splash -> PIN (setup/verify) -> header+body+footer (ui_shell)
+   -> loop principal. Ctrl+C/SIGTERM: salida limpia SIN apagar el Pi
+   (atajo de desarrollo). Boton de power/reset del header: secuencia
+   real de apagado/reinicio (limpieza de procesos + splash + poweroff
+   o reboot de verdad), ejecutada aca en el loop principal, nunca
+   dentro de un callback de LVGL.
    ═══════════════════════════════════════════════════════ */
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +18,7 @@
 #include "db_client.h"
 #include "pin_lock.h"
 #include "ui_shell.h"
+#include "splash.h"
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
 static volatile sig_atomic_t g_pattern_ok = 0;
@@ -42,46 +46,48 @@ static void on_pattern_result(bool success, void *user_data) {
     g_pattern_done = 1;
 }
 
-static lv_obj_t *show_splash(const char *extra_text) {
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_clean(scr);
-    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-
-    char splash_path[256] = {0};
-    if (!db_config_get("splash_path", splash_path, sizeof(splash_path))) {
-        snprintf(splash_path, sizeof(splash_path), "/home/geo22/piscanlvgl/assets/splash/current.bin");
-    }
-    char lv_path[300];
-    snprintf(lv_path, sizeof(lv_path), "A:%s", splash_path);
-
-    lv_obj_t *img = lv_image_create(scr);
-    lv_obj_set_style_image_opa(img, LV_OPA_COVER, 0);
-    lv_obj_set_style_image_recolor_opa(img, 0, 0);
-    lv_image_set_src(img, lv_path);
-
-    for (int i = 0; i < 3; i++) { lv_timer_handler(); usleep(2000); }
-    lv_obj_center(img);
-
-    if (extra_text) {
-        lv_obj_t *label = lv_label_create(scr);
-        lv_label_set_text(label, extra_text);
-        lv_obj_set_style_text_color(label, lv_color_white(), 0);
-        lv_obj_set_style_bg_color(label, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(label, LV_OPA_70, 0);
-        lv_obj_set_style_pad_all(label, 6, 0);
-        lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -10);
-    }
-
-    lv_timer_handler();
-    return scr;
-}
-
 static int get_config_int(const char *key, int default_val) {
     char value[64] = {0};
     if (!db_config_get(key, value, sizeof(value))) return default_val;
     int parsed = atoi(value);
     return parsed > 0 ? parsed : default_val;
+}
+
+/* Antes de apagar/reiniciar de verdad: matar cualquier proceso hijo que
+ * pudiera seguir corriendo (herramientas de red futuras) y devolver
+ * wlan1 a modo managed si quedo en monitor mode. */
+static void cleanup_before_shutdown(void) {
+    system("pkill -9 -f 'python3.*wifi_ops.py' 2>/dev/null");
+    system("pkill -9 -f 'python3.*wifi_scan.py' 2>/dev/null");
+    system("ip link set wlan1 down 2>/dev/null");
+    system("iw dev wlan1 set type managed 2>/dev/null");
+    system("ip link set wlan1 up 2>/dev/null");
+}
+
+static void run_real_shutdown_sequence(int action) {
+    printf("[PiScan] Ejecutando limpieza antes de %s...\n",
+           action == 1 ? "apagar" : "reiniciar");
+    cleanup_before_shutdown();
+
+    splash_show(action == 1 ? "Apagando sistema..." : "Reiniciando sistema...");
+    uint32_t t1 = tick_get_cb();
+    while ((tick_get_cb() - t1) < 1500) {
+        lv_timer_handler();
+        usleep(2000);
+    }
+
+    lv_obj_t *scr2 = lv_screen_active();
+    lv_obj_clean(scr2);
+    lv_obj_set_style_bg_color(scr2, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(scr2, LV_OPA_COVER, 0);
+    lv_timer_handler();
+
+    printf("[PiScan] Ejecutando %s real...\n", action == 1 ? "poweroff" : "reboot");
+    if (action == 1) {
+        system("sudo poweroff");
+    } else {
+        system("sudo reboot");
+    }
 }
 
 int main(void) {
@@ -112,22 +118,22 @@ int main(void) {
     /* ── Splash de arranque ── */
     int splash_ms = get_config_int("splash_duration_ms", 2500);
     printf("[PiScan] Mostrando splash %d ms\n", splash_ms);
-    show_splash(NULL);
+    splash_show(NULL);
     uint32_t t0 = tick_get_cb();
     while ((tick_get_cb() - t0) < (uint32_t)splash_ms && !g_shutdown_requested) {
         lv_timer_handler();
         usleep(2000);
     }
 
-    /* ── Patron: setup si no existe, verify si existe ── */
+    /* ── PIN: setup si no existe, verify si existe ── */
     if (!g_shutdown_requested) {
         lv_obj_t *scr = lv_screen_active();
-        int has_pattern = db_credential_exists("lock_pin");
-        printf("[PiScan] PIN existente: %s\n", has_pattern ? "si" : "no");
+        int has_pin = db_credential_exists("lock_pin");
+        printf("[PiScan] PIN existente: %s\n", has_pin ? "si" : "no");
 
         g_pattern_done = 0;
         g_pattern_ok = 0;
-        if (has_pattern) {
+        if (has_pin) {
             pin_lock_show_verify(scr, on_pattern_result, NULL);
         } else {
             pin_lock_show_setup(scr, on_pattern_result, NULL);
@@ -140,24 +146,34 @@ int main(void) {
         printf("[PiScan] Resultado PIN: %s\n", g_pattern_ok ? "OK" : "cancelado/fallo");
     }
 
-    /* ── Header + Body (carrusel) + Footer, ya construidos de verdad ── */
+    /* ── Header + Body (carrusel) + Footer ── */
     if (!g_shutdown_requested) {
         ui_shell_build();
         lv_timer_handler();
     }
 
-    printf("[PiScan] Listo. Ctrl+C para simular apagado.\n");
+    printf("[PiScan] Listo. Ctrl+C simula apagado (sin apagar el Pi de verdad).\n");
 
     while (!g_shutdown_requested) {
         lv_timer_handler();
         usleep(2000);
+
+        if (g_ui_pending_action != 0) {
+            int action = g_ui_pending_action;
+            g_ui_pending_action = 0;
+            run_real_shutdown_sequence(action);
+            /* system("sudo poweroff"/"reboot") deberia cortar el sistema.
+             * Si por algun motivo no corta de inmediato, salimos limpio. */
+            return 0;
+        }
     }
 
-    /* ── Secuencia de "apagado" (visual solamente por ahora) ── */
-    printf("[PiScan] Apagando...\n");
-    show_splash("Apagando sistema...");
+    /* ── Ctrl+C / SIGTERM: solo salida visual, NO apaga el Pi de verdad
+     * (atajo de desarrollo, distinto del boton real del header). ── */
+    printf("[PiScan] Cerrando (Ctrl+C)...\n");
+    splash_show("Cerrando (modo prueba)...");
     uint32_t t1 = tick_get_cb();
-    while ((tick_get_cb() - t1) < 1500) {
+    while ((tick_get_cb() - t1) < 1000) {
         lv_timer_handler();
         usleep(2000);
     }
@@ -168,7 +184,6 @@ int main(void) {
     lv_obj_set_style_bg_opa(scr2, LV_OPA_COVER, 0);
     lv_timer_handler();
 
-    printf("[PiScan] (poweroff real deshabilitado por ahora) Cerrado limpio.\n");
-
+    printf("[PiScan] Cerrado limpio (Pi sigue encendida).\n");
     return 0;
 }

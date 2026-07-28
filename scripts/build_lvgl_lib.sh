@@ -1,10 +1,11 @@
 #!/bin/bash
-# Compila LVGL como biblioteca estatica una sola vez.
+# Compila LVGL como biblioteca estatica una sola vez, en una ubicacion
+# PERSISTENTE (no /tmp, que se limpia en cada reinicio).
 # Correr de nuevo solo si cambia lv_conf.h o se actualiza LVGL.
 set -e
 cd ~/piscanlvgl
 LVGL_SRC=lvgl_sim/LvglPlatform/lvgl/src
-BUILD_DIR=/tmp/lvgl_build
+BUILD_DIR=~/piscanlvgl/build/lvgl_objs
 mkdir -p "$BUILD_DIR"
 
 echo "Buscando archivos fuente de LVGL..."
@@ -21,5 +22,5 @@ for f in $FILES; do
 done
 
 echo "Empaquetando liblvgl.a..."
-ar rcs /tmp/liblvgl.a "$BUILD_DIR"/*.o
-echo "Listo: /tmp/liblvgl.a"
+ar rcs ~/piscanlvgl/build/liblvgl.a "$BUILD_DIR"/*.o
+echo "Listo: ~/piscanlvgl/build/liblvgl.a"

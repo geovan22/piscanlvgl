@@ -64,3 +64,4 @@ lvgl_sim/Output/
 # LVGL: carpeta de tests interna, no se necesita para compilar el proyecto
 lvgl_sim/LvglPlatform/lvgl/tests/
 data/*.db
+build/
