@@ -18,4 +18,8 @@ extern volatile int g_ui_pending_action;
  * splash de apagado) para evitar usar labels ya liberados. */
 void ui_shell_stop_stats_timer(void);
 
+/* Llamar cada iteracion del loop principal — aplica resultados de un
+ * scan de WiFi en curso si ya termino (no bloquea si no hay nada). */
+void ui_shell_poll_wifi_scan(void);
+
 #endif

@@ -158,6 +158,7 @@ int main(void) {
     while (!g_shutdown_requested) {
         lv_timer_handler();
         usleep(2000);
+        ui_shell_poll_wifi_scan();
 
         if (g_ui_pending_action != 0) {
             int action = g_ui_pending_action;
