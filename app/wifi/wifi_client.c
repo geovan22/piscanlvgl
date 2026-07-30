@@ -140,3 +140,46 @@ int wifi_client_monitor_set(int enable, char *out_mode, int mode_size) {
 int wifi_client_monitor_status(char *out_mode, int mode_size) {
     return run_wifi_ops("status", out_mode, mode_size);
 }
+
+int wifi_client_deauth(const char *bssid, int channel, int count,
+                       char *out_output, int output_size,
+                       char *out_error, int error_size) {
+    char *argv_path = PISCAN_WIFI_OPS_PATH;
+    char channel_str[8], count_str[8];
+    snprintf(channel_str, sizeof(channel_str), "%d", channel);
+    snprintf(count_str, sizeof(count_str), "%d", count);
+
+    char *argv[] = { "python3", argv_path, "deauth", (char *)bssid, channel_str, count_str, "wlan1", NULL };
+
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_error) snprintf(out_error, error_size, "no se pudo ejecutar wifi_ops.py");
+        return 0;
+    }
+
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_error) snprintf(out_error, error_size, "JSON invalido de wifi_ops.py");
+        return 0;
+    }
+
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    int success = cJSON_IsTrue(ok) ? 1 : 0;
+
+    if (success) {
+        cJSON *output = cJSON_GetObjectItemCaseSensitive(root, "output");
+        if (out_output && cJSON_IsString(output)) {
+            snprintf(out_output, output_size, "%s", output->valuestring);
+        }
+    } else {
+        cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+        if (out_error) {
+            snprintf(out_error, error_size, "%s",
+                     cJSON_IsString(err) ? err->valuestring : "error desconocido");
+        }
+    }
+
+    cJSON_Delete(root);
+    return success;
+}

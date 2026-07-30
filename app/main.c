@@ -160,6 +160,7 @@ int main(void) {
         usleep(2000);
         ui_shell_poll_wifi_scan();
         ui_shell_poll_monitor_op();
+        ui_shell_poll_deauth();
 
         if (g_ui_pending_action != 0) {
             int action = g_ui_pending_action;

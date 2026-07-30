@@ -8,14 +8,14 @@ import sys, json, subprocess
 def ensure_interface_up(iface):
     """wlan1 esta 'unmanaged' en NetworkManager a proposito (para
     modo monitor/ataque), asi que nada la levanta sola tras un reinicio."""
-    subprocess.run(['sudo', 'ip', 'link', 'set', iface, 'up'],
+    subprocess.run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'up'],
                     capture_output=True, timeout=5)
 
 def scan_networks(iface='wlan1'):
     ensure_interface_up(iface)
     try:
         proc = subprocess.run(
-            ['sudo', 'iw', 'dev', iface, 'scan'],
+            ['sudo', '/usr/sbin/iw', 'dev', iface, 'scan'],
             capture_output=True, text=True, timeout=15
         )
         out = proc.stdout

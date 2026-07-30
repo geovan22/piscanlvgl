@@ -20,4 +20,10 @@ int wifi_client_scan(wifi_network_t *out, int max_count, char *out_error, int er
 int wifi_client_monitor_set(int enable, char *out_mode, int mode_size);
 int wifi_client_monitor_status(char *out_mode, int mode_size);
 
+/* Ataque de deauth. out_output recibe el texto real de aireplay-ng
+ * (para mostrar en pantalla si se quiere), out_error si ok=0. */
+int wifi_client_deauth(const char *bssid, int channel, int count,
+                       char *out_output, int output_size,
+                       char *out_error, int error_size);
+
 #endif

@@ -14,6 +14,7 @@
 #include "wifi_client.h"
 #include <pthread.h>
 #define COLOR_OK    lv_color_hex(0x33FF33)
+static void row_select_event_cb(lv_event_t *e);
 #define COLOR_WARN  lv_color_hex(0xFFCC00)
 #define COLOR_ERR   lv_color_hex(0xFF4444)
 #define COLOR_DIM   lv_color_hex(0x2a6b2a)
@@ -68,6 +69,81 @@ static char g_wifi_scan_error[128];
 static lv_obj_t *g_monitor_btn_label = NULL;
 static lv_obj_t *g_scan_btn = NULL;
 static lv_obj_t *g_monitor_btn = NULL;
+
+/* ── Objetivo seleccionado para Deauth ── */
+typedef struct {
+    char ssid[64];
+    char bssid[24];
+    int channel;
+    int has_target;
+} wifi_target_t;
+
+static wifi_target_t g_wifi_target = {0};
+static lv_obj_t *g_target_label = NULL;
+static lv_obj_t *g_deauth_btn = NULL;
+static lv_obj_t *g_selected_row = NULL;
+
+static volatile int g_deauth_running = 0;
+static volatile int g_deauth_done = 0;
+static int g_deauth_ok = 0;
+static char g_deauth_error[128];
+
+static void *deauth_thread_fn(void *arg) {
+    (void)arg;
+    char output[512];
+    output[0] = '\0';
+    g_deauth_ok = wifi_client_deauth(g_wifi_target.bssid, g_wifi_target.channel, 10,
+                                      output, sizeof(output), g_deauth_error, sizeof(g_deauth_error));
+    g_deauth_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_deauth(void) {
+    if (!g_deauth_done) return;
+    g_deauth_done = 0;
+    g_deauth_running = 0;
+
+    if (!g_wifi_status_label) return; /* salimos de la seccion mientras corria */
+
+    if (g_deauth_ok) {
+        lv_label_set_text(g_wifi_status_label, "Deauth enviado");
+    } else {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "Error deauth: %s", g_deauth_error);
+        lv_label_set_text(g_wifi_status_label, buf);
+    }
+    if (g_scan_btn) lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
+    if (g_monitor_btn) lv_obj_clear_state(g_monitor_btn, LV_STATE_DISABLED);
+}
+
+static void on_deauth_confirm(bool confirmed, void *user_data) {
+    (void)user_data;
+    if (!confirmed) return;
+    if (g_deauth_running) return;
+
+    g_deauth_running = 1;
+    g_deauth_done = 0;
+    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Enviando deauth...");
+    if (g_scan_btn) lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
+    if (g_monitor_btn) lv_obj_add_state(g_monitor_btn, LV_STATE_DISABLED);
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, deauth_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static void deauth_btn_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (!g_wifi_target.has_target) {
+        if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
+        return;
+    }
+    if (g_deauth_running) return;
+
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Deauth a %s?", g_wifi_target.ssid);
+    confirm_dialog_show(g_main_screen, msg, on_deauth_confirm, NULL);
+}
 static volatile int g_monitor_op_running = 0;
 static volatile int g_monitor_op_done = 0;
 static volatile int g_monitor_want_enable = 0;
@@ -169,12 +245,17 @@ void ui_shell_poll_wifi_scan(void) {
     int shown = g_wifi_scan_count < WIFI_MAX_NETWORKS ? g_wifi_scan_count : WIFI_MAX_NETWORKS;
     for (int i = 0; i < shown; i++) {
         lv_obj_t *row = lv_obj_create(g_wifi_results_box);
-        lv_obj_set_size(row, 380, 18);
+        lv_obj_set_size(row, 380, 24);
         lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(row, 0, 0);
         lv_obj_set_style_pad_all(row, 0, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        /* Clickeable SI, pero sin lv_button_create (evita la animacion de
+         * transicion de estado "presionado" que ya nos colgo una vez). */
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(row, 12);
+        lv_obj_set_user_data(row, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(row, row_select_event_cb, LV_EVENT_PRESSED, NULL);
 
         char ssid_buf[20];
         snprintf(ssid_buf, sizeof(ssid_buf), "%.18s", g_wifi_scan_results[i].ssid);
@@ -207,6 +288,35 @@ void ui_shell_poll_wifi_scan(void) {
 static void scan_btn_event_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
     start_wifi_scan();
+}
+
+static void row_select_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    lv_obj_t *row = lv_event_get_target_obj(e);
+    int idx = (int)(intptr_t)lv_obj_get_user_data(row);
+    if (idx < 0 || idx >= g_wifi_scan_count) return;
+
+    /* Deseleccionar visualmente la fila anterior */
+    if (g_selected_row) {
+        lv_obj_set_style_bg_opa(g_selected_row, LV_OPA_TRANSP, 0);
+    }
+
+    /* Guardar el objetivo */
+    snprintf(g_wifi_target.ssid, sizeof(g_wifi_target.ssid), "%s", g_wifi_scan_results[idx].ssid);
+    snprintf(g_wifi_target.bssid, sizeof(g_wifi_target.bssid), "%s", g_wifi_scan_results[idx].bssid);
+    g_wifi_target.channel = g_wifi_scan_results[idx].channel;
+    g_wifi_target.has_target = 1;
+
+    /* Resaltar la fila seleccionada (color solido, sin transicion animada) */
+    lv_obj_set_style_bg_color(row, lv_color_hex(0x1a5c1a), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    g_selected_row = row;
+
+    if (g_target_label) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "Objetivo: %s (ch%d)", g_wifi_target.ssid, g_wifi_target.channel);
+        lv_label_set_text(g_target_label, buf);
+    }
 }
 
 static void scroll_up_cb(lv_event_t *e) {
@@ -402,6 +512,7 @@ static lv_obj_t *make_lock_icon(lv_obj_t *parent) {
 }
 
 static void draw_menu_current(void);
+static void row_select_event_cb(lv_event_t *e);
 static void enter_section(const char *id, const char *label);
 static void show_carousel(void);
 
@@ -454,6 +565,9 @@ static void enter_section(const char *id, const char *label) {
     g_monitor_btn_label = NULL;
     g_scan_btn = NULL;
     g_monitor_btn = NULL;
+    g_target_label = NULL;
+    g_deauth_btn = NULL;
+    g_selected_row = NULL;
 
     if (strcmp(id, "wifi") == 0) {
         lv_obj_t *title = lv_label_create(g_body);
@@ -503,7 +617,7 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_border_width(g_wifi_results_box, 0, 0);
         lv_obj_set_style_pad_all(g_wifi_results_box, 0, 0);
         lv_obj_set_flex_flow(g_wifi_results_box, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_row(g_wifi_results_box, 2, 0);
+        lv_obj_set_style_pad_row(g_wifi_results_box, 4, 0);
 
         lv_obj_t *up_btn = lv_button_create(g_body);
         lv_obj_set_size(up_btn, 40, 55);
@@ -530,6 +644,25 @@ static void enter_section(const char *id, const char *label) {
         lv_label_set_text(down_lbl, LV_SYMBOL_DOWN);
         lv_obj_set_style_text_color(down_lbl, COLOR_OK, 0);
         lv_obj_center(down_lbl);
+
+        g_target_label = lv_label_create(g_body);
+        lv_label_set_text(g_target_label, "Objetivo: ninguno (toca una red)");
+        lv_obj_set_style_text_color(g_target_label, COLOR_DIM, 0);
+        lv_obj_set_style_text_font(g_target_label, &lv_font_montserrat_10, 0);
+        lv_obj_align(g_target_label, LV_ALIGN_BOTTOM_LEFT, 10, -48);
+
+        g_deauth_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_deauth_btn, 100, 32);
+        lv_obj_align(g_deauth_btn, LV_ALIGN_BOTTOM_LEFT, 130, -18);
+        lv_obj_set_style_bg_color(g_deauth_btn, lv_color_hex(0x330000), 0);
+        lv_obj_set_style_border_color(g_deauth_btn, COLOR_ERR, 0);
+        lv_obj_set_style_border_width(g_deauth_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_deauth_btn, 15);
+        lv_obj_add_event_cb(g_deauth_btn, deauth_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_t *deauth_lbl = lv_label_create(g_deauth_btn);
+        lv_label_set_text(deauth_lbl, "Deauth");
+        lv_obj_set_style_text_color(deauth_lbl, COLOR_ERR, 0);
+        lv_obj_center(deauth_lbl);
     } else {
         lv_obj_t *title = lv_label_create(g_body);
         char buf[64];
@@ -586,6 +719,9 @@ static void show_carousel(void) {
     g_monitor_btn_label = NULL;
     g_scan_btn = NULL;
     g_monitor_btn = NULL;
+    g_target_label = NULL;
+    g_deauth_btn = NULL;
+    g_selected_row = NULL;
 
     lv_obj_t *left = lv_button_create(g_body);
     lv_obj_set_size(left, 50, 60);

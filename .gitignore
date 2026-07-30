@@ -65,3 +65,4 @@ lvgl_sim/Output/
 lvgl_sim/LvglPlatform/lvgl/tests/
 data/*.db
 build/
+__pycache__/
