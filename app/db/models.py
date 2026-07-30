@@ -4,7 +4,7 @@ Cambiar de SQLite a otro motor: solo cambiar PISCAN_DB_URL, nada mas.
 """
 import os
 from datetime import datetime
-from sqlalchemy import create_engine, String, Integer, Text, DateTime
+from sqlalchemy import create_engine, String, Integer, Text, DateTime, Float
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 DB_PATH = os.environ.get("PISCAN_DB_PATH", os.path.expanduser("~/piscanlvgl/data/piscan.db"))
@@ -51,6 +51,27 @@ class Action(Base):
     action_type: Mapped[str] = mapped_column(String(64), nullable=True)
     payload: Mapped[str] = mapped_column(Text, nullable=True)
     enabled: Mapped[int] = mapped_column(Integer, default=1)
+
+class WifiScanLog(Base):
+    __tablename__ = "wifi_scan_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    ssid: Mapped[str] = mapped_column(String(64), nullable=True)
+    bssid: Mapped[str] = mapped_column(String(24), nullable=True)
+    channel: Mapped[int] = mapped_column(Integer, nullable=True)
+    security: Mapped[str] = mapped_column(String(16), nullable=True)
+    signal: Mapped[float] = mapped_column(Float, nullable=True)
+
+class WifiAttackLog(Base):
+    __tablename__ = "wifi_attack_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    attack_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_ssid: Mapped[str] = mapped_column(String(64), nullable=True)
+    target_bssid: Mapped[str] = mapped_column(String(24), nullable=True)
+    target_client_mac: Mapped[str] = mapped_column(String(24), nullable=True)
+    result: Mapped[str] = mapped_column(String(16), nullable=False)
+    details: Mapped[str] = mapped_column(Text, nullable=True)
 
 _engine = None
 _SessionLocal = None

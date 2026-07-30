@@ -3,7 +3,7 @@
 wifi_scan.py — Escaneo de redes via `iw scan`. Salida JSON, mismo
 patron que db_tool.py: {"ok": true, "networks": [...]} o {"ok": false, "error": ...}
 """
-import sys, json, subprocess
+import sys, os, json, subprocess
 
 def ensure_interface_up(iface):
     """wlan1 esta 'unmanaged' en NetworkManager a proposito (para
@@ -69,6 +69,22 @@ def scan_networks(iface='wlan1'):
     result.sort(key=lambda n: n['signal'], reverse=True)
     return result, None
 
+def log_scan_results(networks):
+    """Guarda cada red vista en wifi_scan_log. No debe bloquear el scan
+    si falla (ej. DB no disponible), por eso el try/except silencioso."""
+    try:
+        sys.path.insert(0, os.path.expanduser("~/piscanlvgl/app"))
+        from db.models import get_session, WifiScanLog
+        s = get_session()
+        for n in networks:
+            s.add(WifiScanLog(ssid=n.get('ssid'), bssid=n.get('bssid'),
+                               channel=n.get('channel'), security=n.get('security'),
+                               signal=n.get('signal')))
+        s.commit()
+    except Exception:
+        pass
+
+
 def main():
     iface = sys.argv[2] if len(sys.argv) > 2 else 'wlan1'
     if len(sys.argv) < 2 or sys.argv[1] != 'scan':
@@ -80,6 +96,7 @@ def main():
         print(json.dumps({"ok": False, "error": err}))
         sys.exit(1)
 
+    log_scan_results(networks)
     print(json.dumps({"ok": True, "networks": networks}))
     sys.exit(0)
 

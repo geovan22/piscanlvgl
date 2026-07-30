@@ -75,6 +75,22 @@ def deauth(bssid, channel, count, iface):
 
     return output, None
 
+
+def log_attack(attack_type, target_bssid, result, target_ssid=None, target_client_mac=None, details=None):
+    """Guarda un ataque/prueba en wifi_attack_log. No debe bloquear el
+    flujo si falla (ej. DB no disponible), por eso el try/except silencioso."""
+    try:
+        import os
+        sys.path.insert(0, os.path.expanduser("~/piscanlvgl/app"))
+        from db.models import get_session, WifiAttackLog
+        s = get_session()
+        s.add(WifiAttackLog(attack_type=attack_type, target_ssid=target_ssid,
+                             target_bssid=target_bssid, target_client_mac=target_client_mac,
+                             result=result, details=(details[:500] if details else None)))
+        s.commit()
+    except Exception:
+        pass
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"ok": False, "error": "uso: wifi_ops.py <status|enable|disable> [iface]"}))
@@ -102,8 +118,10 @@ def main():
         iface_deauth = sys.argv[5] if len(sys.argv) > 5 else 'wlan1'
         output, err = deauth(bssid, channel, count, iface_deauth)
         if err:
+            log_attack("deauth", bssid, "fail", details=err)
             print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_deauth)}))
         else:
+            log_attack("deauth", bssid, "success", details=output)
             print(json.dumps({"ok": True, "output": output, "mode": get_status(iface_deauth)}))
     else:
         print(json.dumps({"ok": False, "error": f"comando desconocido: {cmd}"}))
