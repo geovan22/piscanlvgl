@@ -12,6 +12,7 @@
 #include "pin_lock.h"
 #include "confirm_dialog.h"
 #include "wifi_client.h"
+#include "ui_style.h"
 #include <pthread.h>
 #define COLOR_OK    lv_color_hex(0x33FF33)
 static void row_select_event_cb(lv_event_t *e);
@@ -70,7 +71,7 @@ static lv_obj_t *g_monitor_btn_label = NULL;
 static lv_obj_t *g_scan_btn = NULL;
 static lv_obj_t *g_monitor_btn = NULL;
 
-/* ── Objetivo seleccionado para Deauth ── */
+/* ── Objetivo seleccionado para Deauth/Handshake ── */
 typedef struct {
     char ssid[64];
     char bssid[24];
@@ -81,12 +82,28 @@ typedef struct {
 static wifi_target_t g_wifi_target = {0};
 static lv_obj_t *g_target_label = NULL;
 static lv_obj_t *g_deauth_btn = NULL;
+static lv_obj_t *g_handshake_btn = NULL;
 static lv_obj_t *g_selected_row = NULL;
 
 static volatile int g_deauth_running = 0;
 static volatile int g_deauth_done = 0;
 static int g_deauth_ok = 0;
 static char g_deauth_error[128];
+
+static void set_wifi_buttons_disabled(int disabled) {
+    if (!g_scan_btn || !g_monitor_btn || !g_deauth_btn || !g_handshake_btn) return;
+    if (disabled) {
+        lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
+        lv_obj_add_state(g_monitor_btn, LV_STATE_DISABLED);
+        lv_obj_add_state(g_deauth_btn, LV_STATE_DISABLED);
+        lv_obj_add_state(g_handshake_btn, LV_STATE_DISABLED);
+    } else {
+        lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
+        lv_obj_clear_state(g_monitor_btn, LV_STATE_DISABLED);
+        lv_obj_clear_state(g_deauth_btn, LV_STATE_DISABLED);
+        lv_obj_clear_state(g_handshake_btn, LV_STATE_DISABLED);
+    }
+}
 
 static void *deauth_thread_fn(void *arg) {
     (void)arg;
@@ -112,8 +129,7 @@ void ui_shell_poll_deauth(void) {
         snprintf(buf, sizeof(buf), "Error deauth: %s", g_deauth_error);
         lv_label_set_text(g_wifi_status_label, buf);
     }
-    if (g_scan_btn) lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
-    if (g_monitor_btn) lv_obj_clear_state(g_monitor_btn, LV_STATE_DISABLED);
+    set_wifi_buttons_disabled(0);
 }
 
 static void on_deauth_confirm(bool confirmed, void *user_data) {
@@ -124,8 +140,7 @@ static void on_deauth_confirm(bool confirmed, void *user_data) {
     g_deauth_running = 1;
     g_deauth_done = 0;
     if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Enviando deauth...");
-    if (g_scan_btn) lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
-    if (g_monitor_btn) lv_obj_add_state(g_monitor_btn, LV_STATE_DISABLED);
+    set_wifi_buttons_disabled(1);
 
     pthread_t tid;
     pthread_create(&tid, NULL, deauth_thread_fn, NULL);
@@ -144,6 +159,66 @@ static void deauth_btn_event_cb(lv_event_t *e) {
     snprintf(msg, sizeof(msg), "Deauth a %s?", g_wifi_target.ssid);
     confirm_dialog_show(g_main_screen, msg, on_deauth_confirm, NULL);
 }
+
+/* ── Captura de Handshake: mismo patron de hilo separado ── */
+static volatile int g_handshake_running = 0;
+static volatile int g_handshake_done = 0;
+static int g_handshake_ok = 0;
+static char g_handshake_cap_file[256];
+static char g_handshake_detail[256];
+
+static void *handshake_thread_fn(void *arg) {
+    (void)arg;
+    g_handshake_ok = wifi_client_handshake(g_wifi_target.bssid, g_wifi_target.channel, 25, 5,
+                                            g_handshake_cap_file, sizeof(g_handshake_cap_file),
+                                            g_handshake_detail, sizeof(g_handshake_detail));
+    g_handshake_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_handshake(void) {
+    if (!g_handshake_done) return;
+    g_handshake_done = 0;
+    g_handshake_running = 0;
+
+    if (!g_wifi_status_label) return; /* salimos de la seccion mientras corria */
+
+    if (g_handshake_ok) {
+        lv_label_set_text(g_wifi_status_label, "Handshake capturado!");
+    } else {
+        lv_label_set_text(g_wifi_status_label, "Sin handshake (reintenta)");
+    }
+    set_wifi_buttons_disabled(0);
+}
+
+static void on_handshake_confirm(bool confirmed, void *user_data) {
+    (void)user_data;
+    if (!confirmed) return;
+    if (g_handshake_running) return;
+
+    g_handshake_running = 1;
+    g_handshake_done = 0;
+    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Capturando handshake (~30s)...");
+    set_wifi_buttons_disabled(1);
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, handshake_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static void handshake_btn_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (!g_wifi_target.has_target) {
+        if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
+        return;
+    }
+    if (g_handshake_running) return;
+
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Capturar handshake de %s?", g_wifi_target.ssid);
+    confirm_dialog_show(g_main_screen, msg, on_handshake_confirm, NULL);
+}
+
 static volatile int g_monitor_op_running = 0;
 static volatile int g_monitor_op_done = 0;
 static volatile int g_monitor_want_enable = 0;
@@ -256,6 +331,7 @@ void ui_shell_poll_wifi_scan(void) {
         lv_obj_set_ext_click_area(row, 12);
         lv_obj_set_user_data(row, (void *)(intptr_t)i);
         lv_obj_add_event_cb(row, row_select_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(row);
 
         char ssid_buf[20];
         snprintf(ssid_buf, sizeof(ssid_buf), "%.18s", g_wifi_scan_results[i].ssid);
@@ -567,6 +643,7 @@ static void enter_section(const char *id, const char *label) {
     g_monitor_btn = NULL;
     g_target_label = NULL;
     g_deauth_btn = NULL;
+    g_handshake_btn = NULL;
     g_selected_row = NULL;
 
     if (strcmp(id, "wifi") == 0) {
@@ -583,6 +660,7 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_border_width(scan_btn, 2, 0);
         lv_obj_set_ext_click_area(scan_btn, 15);
         lv_obj_add_event_cb(scan_btn, scan_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(scan_btn);
         g_scan_btn = scan_btn;
         lv_obj_t *scan_lbl = lv_label_create(scan_btn);
         lv_label_set_text(scan_lbl, "Escanear");
@@ -597,6 +675,7 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_border_width(monitor_btn, 2, 0);
         lv_obj_set_ext_click_area(monitor_btn, 15);
         lv_obj_add_event_cb(monitor_btn, monitor_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(monitor_btn);
         g_monitor_btn = monitor_btn;
         g_monitor_btn_label = lv_label_create(monitor_btn);
         lv_label_set_text(g_monitor_btn_label, "Monitor: OFF");
@@ -611,7 +690,7 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_align(g_wifi_status_label, LV_ALIGN_TOP_MID, 0, 68);
 
         g_wifi_results_box = lv_obj_create(g_body);
-        lv_obj_set_size(g_wifi_results_box, 390, 120);
+        lv_obj_set_size(g_wifi_results_box, 390, 100);
         lv_obj_align(g_wifi_results_box, LV_ALIGN_TOP_LEFT, 10, 88);
         lv_obj_set_style_bg_opa(g_wifi_results_box, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(g_wifi_results_box, 0, 0);
@@ -620,26 +699,28 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_pad_row(g_wifi_results_box, 4, 0);
 
         lv_obj_t *up_btn = lv_button_create(g_body);
-        lv_obj_set_size(up_btn, 40, 55);
+        lv_obj_set_size(up_btn, 40, 45);
         lv_obj_align(up_btn, LV_ALIGN_TOP_RIGHT, -10, 88);
         lv_obj_set_style_bg_color(up_btn, lv_color_hex(0x0a2a0a), 0);
         lv_obj_set_style_border_color(up_btn, COLOR_OK, 0);
         lv_obj_set_style_border_width(up_btn, 2, 0);
         lv_obj_set_ext_click_area(up_btn, 10);
         lv_obj_add_event_cb(up_btn, scroll_up_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(up_btn);
         lv_obj_t *up_lbl = lv_label_create(up_btn);
         lv_label_set_text(up_lbl, LV_SYMBOL_UP);
         lv_obj_set_style_text_color(up_lbl, COLOR_OK, 0);
         lv_obj_center(up_lbl);
 
         lv_obj_t *down_btn = lv_button_create(g_body);
-        lv_obj_set_size(down_btn, 40, 55);
-        lv_obj_align(down_btn, LV_ALIGN_TOP_RIGHT, -10, 148);
+        lv_obj_set_size(down_btn, 40, 45);
+        lv_obj_align(down_btn, LV_ALIGN_TOP_RIGHT, -10, 138);
         lv_obj_set_style_bg_color(down_btn, lv_color_hex(0x0a2a0a), 0);
         lv_obj_set_style_border_color(down_btn, COLOR_OK, 0);
         lv_obj_set_style_border_width(down_btn, 2, 0);
         lv_obj_set_ext_click_area(down_btn, 10);
         lv_obj_add_event_cb(down_btn, scroll_down_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(down_btn);
         lv_obj_t *down_lbl = lv_label_create(down_btn);
         lv_label_set_text(down_lbl, LV_SYMBOL_DOWN);
         lv_obj_set_style_text_color(down_lbl, COLOR_OK, 0);
@@ -652,17 +733,33 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_align(g_target_label, LV_ALIGN_BOTTOM_LEFT, 10, -48);
 
         g_deauth_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_deauth_btn, 100, 32);
-        lv_obj_align(g_deauth_btn, LV_ALIGN_BOTTOM_LEFT, 130, -18);
+        lv_obj_set_size(g_deauth_btn, 95, 32);
+        lv_obj_align(g_deauth_btn, LV_ALIGN_BOTTOM_LEFT, 10, -14);
         lv_obj_set_style_bg_color(g_deauth_btn, lv_color_hex(0x330000), 0);
         lv_obj_set_style_border_color(g_deauth_btn, COLOR_ERR, 0);
         lv_obj_set_style_border_width(g_deauth_btn, 2, 0);
-        lv_obj_set_ext_click_area(g_deauth_btn, 15);
+        lv_obj_set_ext_click_area(g_deauth_btn, 12);
         lv_obj_add_event_cb(g_deauth_btn, deauth_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect_danger(g_deauth_btn);
         lv_obj_t *deauth_lbl = lv_label_create(g_deauth_btn);
         lv_label_set_text(deauth_lbl, "Deauth");
         lv_obj_set_style_text_color(deauth_lbl, COLOR_ERR, 0);
         lv_obj_center(deauth_lbl);
+
+        g_handshake_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_handshake_btn, 130, 32);
+        lv_obj_align(g_handshake_btn, LV_ALIGN_BOTTOM_LEFT, 115, -14);
+        lv_obj_set_style_bg_color(g_handshake_btn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(g_handshake_btn, COLOR_WARN, 0);
+        lv_obj_set_style_border_width(g_handshake_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_handshake_btn, 12);
+        lv_obj_add_event_cb(g_handshake_btn, handshake_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(g_handshake_btn);
+        lv_obj_t *handshake_lbl = lv_label_create(g_handshake_btn);
+        lv_label_set_text(handshake_lbl, "Handshake");
+        lv_obj_set_style_text_color(handshake_lbl, COLOR_WARN, 0);
+        lv_obj_set_style_text_font(handshake_lbl, &lv_font_montserrat_10, 0);
+        lv_obj_center(handshake_lbl);
     } else {
         lv_obj_t *title = lv_label_create(g_body);
         char buf[64];
@@ -675,7 +772,7 @@ static void enter_section(const char *id, const char *label) {
 
     lv_obj_t *back = lv_button_create(g_body);
     lv_obj_set_size(back, 90, 36);
-    lv_obj_align(back, LV_ALIGN_BOTTOM_LEFT, 20, -20);
+    lv_obj_align(back, LV_ALIGN_BOTTOM_RIGHT, -10, -14);
     lv_obj_set_style_bg_color(back, lv_color_hex(0x0a2a0a), 0);
     lv_obj_set_style_border_color(back, COLOR_OK, 0);
     lv_obj_set_style_border_width(back, 2, 0);
@@ -685,6 +782,7 @@ static void enter_section(const char *id, const char *label) {
     lv_obj_set_style_text_color(back_lbl, COLOR_OK, 0);
     lv_obj_center(back_lbl);
     lv_obj_add_event_cb(back, back_to_carousel_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(back);
 
     set_footer(label);
 }
@@ -721,6 +819,7 @@ static void show_carousel(void) {
     g_monitor_btn = NULL;
     g_target_label = NULL;
     g_deauth_btn = NULL;
+    g_handshake_btn = NULL;
     g_selected_row = NULL;
 
     lv_obj_t *left = lv_button_create(g_body);
@@ -735,6 +834,7 @@ static void show_carousel(void) {
     lv_obj_set_style_text_color(left_lbl, COLOR_OK, 0);
     lv_obj_center(left_lbl);
     lv_obj_add_event_cb(left, arrow_left_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(left);
 
     lv_obj_t *right = lv_button_create(g_body);
     lv_obj_set_size(right, 50, 60);
@@ -748,6 +848,7 @@ static void show_carousel(void) {
     lv_obj_set_style_text_color(right_lbl, COLOR_OK, 0);
     lv_obj_center(right_lbl);
     lv_obj_add_event_cb(right, arrow_right_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(right);
 
     lv_obj_t *center = lv_button_create(g_body);
     lv_obj_set_size(center, 160, 100);
@@ -757,6 +858,7 @@ static void show_carousel(void) {
     lv_obj_set_style_border_width(center, 2, 0);
     lv_obj_set_ext_click_area(center, 15);
     lv_obj_add_event_cb(center, select_event_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(center);
 
     g_carousel_label = lv_label_create(center);
     lv_obj_set_style_text_color(g_carousel_label, COLOR_OK, 0);
@@ -806,6 +908,7 @@ lv_obj_t *ui_shell_build(void) {
     lv_obj_add_flag(lock_icon, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(lock_icon, 12);
     lv_obj_add_event_cb(lock_icon, lock_icon_event_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(lock_icon);
 
     g_clock_label = lv_label_create(header);
     lv_obj_set_style_text_color(g_clock_label, COLOR_OK, 0);
@@ -844,6 +947,7 @@ lv_obj_t *ui_shell_build(void) {
     lv_obj_set_style_border_color(reset_btn, COLOR_OK, 0);
     lv_obj_set_ext_click_area(reset_btn, 10);
     lv_obj_add_event_cb(reset_btn, reset_icon_event_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(reset_btn);
     lv_obj_t *reset_lbl = lv_label_create(reset_btn);
     lv_label_set_text(reset_lbl, LV_SYMBOL_REFRESH);
     lv_obj_set_style_text_color(reset_lbl, COLOR_OK, 0);
@@ -857,6 +961,7 @@ lv_obj_t *ui_shell_build(void) {
     lv_obj_set_style_border_color(power_btn, COLOR_OK, 0);
     lv_obj_set_ext_click_area(power_btn, 10);
     lv_obj_add_event_cb(power_btn, power_icon_event_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(power_btn);
     lv_obj_t *power_lbl = lv_label_create(power_btn);
     lv_label_set_text(power_lbl, LV_SYMBOL_POWER);
     lv_obj_set_style_text_color(power_lbl, COLOR_OK, 0);

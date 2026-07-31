@@ -183,3 +183,49 @@ int wifi_client_deauth(const char *bssid, int channel, int count,
     cJSON_Delete(root);
     return success;
 }
+
+int wifi_client_handshake(const char *bssid, int channel, int capture_seconds, int deauth_count,
+                          char *out_cap_file, int cap_file_size,
+                          char *out_detail, int detail_size) {
+    char *argv_path = PISCAN_WIFI_OPS_PATH;
+    char channel_str[8], seconds_str[8], count_str[8];
+    snprintf(channel_str, sizeof(channel_str), "%d", channel);
+    snprintf(seconds_str, sizeof(seconds_str), "%d", capture_seconds);
+    snprintf(count_str, sizeof(count_str), "%d", deauth_count);
+
+    char *argv[] = { "python3", argv_path, "handshake", (char *)bssid, channel_str,
+                     "wlan1", seconds_str, count_str, NULL };
+
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_detail) snprintf(out_detail, detail_size, "no se pudo ejecutar wifi_ops.py");
+        return 0;
+    }
+
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_detail) snprintf(out_detail, detail_size, "JSON invalido de wifi_ops.py");
+        return 0;
+    }
+
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    cJSON *handshake = cJSON_GetObjectItemCaseSensitive(root, "handshake");
+    cJSON *cap_file = cJSON_GetObjectItemCaseSensitive(root, "cap_file");
+    int got_handshake = (cJSON_IsTrue(ok) && cJSON_IsTrue(handshake)) ? 1 : 0;
+
+    if (out_cap_file && cJSON_IsString(cap_file)) {
+        snprintf(out_cap_file, cap_file_size, "%s", cap_file->valuestring);
+    }
+
+    if (!got_handshake) {
+        cJSON *detail = cJSON_GetObjectItemCaseSensitive(root, "detail");
+        cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+        const char *msg = cJSON_IsString(detail) ? detail->valuestring :
+                           cJSON_IsString(err) ? err->valuestring : "sin handshake";
+        if (out_detail) snprintf(out_detail, detail_size, "%s", msg);
+    }
+
+    cJSON_Delete(root);
+    return got_handshake;
+}

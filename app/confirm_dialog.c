@@ -2,6 +2,7 @@
    confirm_dialog.c — Popup Si/No reutilizable.
    ═══════════════════════════════════════════════════════ */
 #include "confirm_dialog.h"
+#include "ui_style.h"
 
 static lv_obj_t *g_overlay = NULL;
 static confirm_result_cb_t g_cb;
@@ -68,6 +69,7 @@ void confirm_dialog_show(lv_obj_t *parent, const char *message, confirm_result_c
     lv_obj_set_style_border_width(yes_btn, 2, 0);
     lv_obj_set_ext_click_area(yes_btn, 12);
     lv_obj_add_event_cb(yes_btn, yes_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect_danger(yes_btn);
     lv_obj_t *yes_lbl = lv_label_create(yes_btn);
     lv_label_set_text(yes_lbl, "Si");
     lv_obj_set_style_text_color(yes_lbl, lv_color_hex(0xFF4444), 0);
@@ -81,6 +83,7 @@ void confirm_dialog_show(lv_obj_t *parent, const char *message, confirm_result_c
     lv_obj_set_style_border_width(no_btn, 2, 0);
     lv_obj_set_ext_click_area(no_btn, 12);
     lv_obj_add_event_cb(no_btn, no_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(no_btn);
     lv_obj_t *no_lbl = lv_label_create(no_btn);
     lv_label_set_text(no_lbl, "No");
     lv_obj_set_style_text_color(no_lbl, lv_color_hex(0x33FF33), 0);

@@ -8,6 +8,7 @@
 #include <string.h>
 #include "pin_lock.h"
 #include "db_client.h"
+#include "ui_style.h"
 
 #define MIN_PIN_LEN 4
 #define MAX_PIN_LEN 8
@@ -127,6 +128,7 @@ static lv_obj_t *make_key(lv_obj_t *parent, const char *label_text, int x, int y
      * resistivo tiene imprecision conocida, ya lo vimos en todo el
      * proyecto anterior. */
     lv_obj_set_ext_click_area(btn, 15);
+    ui_apply_press_effect(btn);
 
     return btn;
 }

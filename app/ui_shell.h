@@ -27,5 +27,6 @@ void ui_shell_poll_monitor_op(void);
 
 /* Igual, para la operacion de deauth. */
 void ui_shell_poll_deauth(void);
+void ui_shell_poll_handshake(void);
 
 #endif

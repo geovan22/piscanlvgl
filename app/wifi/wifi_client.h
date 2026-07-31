@@ -26,4 +26,12 @@ int wifi_client_deauth(const char *bssid, int channel, int count,
                        char *out_output, int output_size,
                        char *out_error, int error_size);
 
+/* Captura de handshake WPA. Retorna 1 si se confirmo el handshake, 0 si
+ * no (revisar out_detail para el motivo/log de diagnostico).
+ * out_cap_file recibe la ruta del archivo .cap generado (siempre, aun
+ * si no hubo handshake, por si se quiere revisar despues). */
+int wifi_client_handshake(const char *bssid, int channel, int capture_seconds, int deauth_count,
+                          char *out_cap_file, int cap_file_size,
+                          char *out_detail, int detail_size);
+
 #endif
