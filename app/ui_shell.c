@@ -310,6 +310,9 @@ void ui_shell_poll_wifi_scan(void) {
     if (!g_wifi_status_label || !g_wifi_results_box) return;
 
     lv_obj_clean(g_wifi_results_box);
+    /* Las filas viejas fueron destruidas por lv_obj_clean; g_selected_row
+     * apuntaria a memoria liberada. Reseteamos para evitar puntero colgante. */
+    g_selected_row = NULL;
 
     if (g_wifi_scan_count < 0) {
         char buf[160];
@@ -340,7 +343,7 @@ void ui_shell_poll_wifi_scan(void) {
         lv_obj_set_ext_click_area(row, 12);
         lv_obj_set_user_data(row, (void *)(intptr_t)i);
         lv_obj_add_event_cb(row, row_select_event_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(row);
+        /* ui_apply_press_effect(row);  -- test: descartar loop del dialogo */
 
         char ssid_buf[20];
         snprintf(ssid_buf, sizeof(ssid_buf), "%.18s", g_wifi_scan_results[i].ssid);
@@ -732,10 +735,11 @@ static void enter_section(const char *id, const char *label) {
 
         g_wifi_results_box = lv_obj_create(g_body);
         lv_obj_set_size(g_wifi_results_box, 390, 100);
-        lv_obj_align(g_wifi_results_box, LV_ALIGN_TOP_LEFT, 10, 88);
+        lv_obj_align(g_wifi_results_box, LV_ALIGN_TOP_LEFT, 10, 92);
         lv_obj_set_style_bg_opa(g_wifi_results_box, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(g_wifi_results_box, 0, 0);
         lv_obj_set_style_pad_all(g_wifi_results_box, 0, 0);
+        lv_obj_set_style_pad_top(g_wifi_results_box, 6, 0);
         lv_obj_set_flex_flow(g_wifi_results_box, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_row(g_wifi_results_box, 4, 0);
 
