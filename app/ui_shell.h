@@ -28,6 +28,7 @@ void ui_shell_poll_wifi_scan(void);
 void ui_shell_poll_deauth(void);
 void ui_shell_poll_handshake(void);
 void ui_shell_poll_audit(void);
+void ui_shell_poll_caplist(void);
 
 
 /* Barra de estado global en el footer. El color permite un vistazo

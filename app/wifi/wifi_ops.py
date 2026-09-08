@@ -4,7 +4,7 @@ wifi_ops.py — Modo monitor sobre wlan1 (adaptador dedicado a ataque,
 ya unmanaged en NetworkManager). Salida JSON, mismo patron que
 wifi_scan.py / db_tool.py.
 """
-import sys, os, json, subprocess, time
+import sys, os, re, json, subprocess, time
 
 def _run(cmd, timeout=10):
     try:
@@ -264,7 +264,7 @@ def list_captures():
             continue
         bssid, ts = _bssid_from_filename(fname)
         ssid = _ssid_for_bssid(bssid) if bssid else None
-        has_hs, _ = check_handshake(full)
+        has_hs = size > 100000   # heuristico rapido (>100KB); la auditoria revela el handshake real
         result.append({
             "file": full,
             "name": fname,

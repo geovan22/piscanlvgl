@@ -16,6 +16,9 @@
 #include <pthread.h>
 #define COLOR_OK    lv_color_hex(0x33FF33)
 static void row_select_event_cb(lv_event_t *e);
+static void show_capture_list(void);
+static void show_wordlist_list(void);
+static void audit_list_row_cb(lv_event_t *e);
 #define COLOR_WARN  lv_color_hex(0xFFCC00)
 #define COLOR_ERR   lv_color_hex(0xFF4444)
 #define COLOR_DIM   lv_color_hex(0x2a6b2a)
@@ -83,6 +86,11 @@ static lv_obj_t *g_deauth_btn = NULL;
 static lv_obj_t *g_handshake_btn = NULL;
 static lv_obj_t *g_audit_btn = NULL;
 static lv_obj_t *g_selected_row = NULL;
+static int g_list_mode = 0;   /* box de resultados: 0=scan 1=capturas 2=wordlists */
+static wifi_capture_t g_captures[WIFI_MAX_CAPTURES];
+static int g_captures_count = 0;
+static wifi_wordlist_t g_wordlists[WIFI_MAX_WORDLISTS];
+static int g_wordlists_count = 0;
 
 static volatile int g_deauth_running = 0;
 static volatile int g_deauth_done = 0;
@@ -260,10 +268,176 @@ static void on_handshake_confirm(bool confirmed, void *user_data) {
     pthread_detach(tid);
 }
 
+/* ── Auditoria: lista de capturas y de wordlists en el box de resultados.
+ *    g_list_mode indica que se esta mostrando (1=capturas, 2=wordlists) y
+ *    el callback unificado audit_list_row_cb actua segun ese modo. Las
+ *    filas se crean SIN ui_apply_press_effect (sobre lv_obj_create cuelga
+ *    el recalculo de layout); el resaltado de seleccion da el feedback. ── */
+static void audit_start_selected(void) {
+    if (g_audit_running) return;
+    g_audit_running = 1;
+    g_audit_done = 0;
+    char sb[96];
+    snprintf(sb, sizeof(sb), "Auditando %.20s (%s)...", g_audit_ssid, g_audit_wordlist);
+    ui_shell_set_status(sb, UI_STATUS_WORKING);
+    set_wifi_buttons_disabled(1);
+    g_list_mode = 0;
+    pthread_t tid;
+    pthread_create(&tid, NULL, audit_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static lv_obj_t *make_list_row(int idx) {
+    lv_obj_t *row = lv_obj_create(g_wifi_results_box);
+    lv_obj_set_size(row, 380, 24);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(row, 12);
+    lv_obj_set_user_data(row, (void *)(intptr_t)idx);
+    lv_obj_add_event_cb(row, audit_list_row_cb, LV_EVENT_PRESSED, NULL);
+    return row;
+}
+
+static lv_obj_t *make_row_label(lv_obj_t *row, const char *text, lv_color_t color, int x) {
+    lv_obj_t *l = lv_label_create(row);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_color(l, color, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
+    lv_obj_set_pos(l, x, 0);
+    return l;
+}
+
+static volatile int g_caplist_running = 0;
+static volatile int g_caplist_done = 0;
+
+/* Renderiza las filas de la lista de capturas (ya cargadas en g_captures).
+ * Se llama desde el poll, en el hilo principal (seguro para LVGL). */
+static void render_capture_list(void) {
+    if (!g_wifi_results_box || !g_wifi_status_label) return;
+    lv_obj_clean(g_wifi_results_box);
+    g_selected_row = NULL;
+    g_list_mode = 1;
+    if (g_captures_count < 0) {
+        g_captures_count = 0;
+        ui_shell_set_status("Error listando capturas", UI_STATUS_ERROR);
+        return;
+    }
+    if (g_captures_count == 0) {
+        lv_label_set_text(g_wifi_status_label, "No hay capturas (captura un handshake primero)");
+        ui_shell_set_status("Sin capturas para auditar", UI_STATUS_INFO);
+        return;
+    }
+    lv_label_set_text(g_wifi_status_label, "Toca una captura para auditar");
+    ui_shell_set_status("Elegi una captura", UI_STATUS_INFO);
+    for (int i = 0; i < g_captures_count; i++) {
+        lv_obj_t *row = make_list_row(i);
+        char sbuf[24];
+        snprintf(sbuf, sizeof(sbuf), "%.20s", g_captures[i].ssid);
+        make_row_label(row, sbuf, COLOR_OK, 0);
+        char dbuf[24];
+        time_t t = (time_t)g_captures[i].ts;
+        struct tm *tmv = localtime(&t);
+        if (tmv) strftime(dbuf, sizeof(dbuf), "%d/%m %H:%M", tmv);
+        else snprintf(dbuf, sizeof(dbuf), "?");
+        make_row_label(row, dbuf, COLOR_DIM, 210);
+        make_row_label(row, g_captures[i].has_handshake ? "[HS]" : "[--]",
+                       g_captures[i].has_handshake ? COLOR_OK : COLOR_ERR, 330);
+    }
+}
+
+/* El listado hace fork de Python + consultas a la DB (~segundos en el Pi
+ * under-volted); corre en un hilo para no congelar la UI. */
+static void *caplist_thread_fn(void *arg) {
+    (void)arg;
+    char err[128];
+    g_captures_count = wifi_client_list_captures(g_captures, WIFI_MAX_CAPTURES, err, sizeof(err));
+    g_caplist_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_caplist(void) {
+    if (!g_caplist_done) return;
+    g_caplist_done = 0;
+    g_caplist_running = 0;
+    render_capture_list();
+}
+
+static void show_capture_list(void) {
+    if (!g_wifi_results_box || !g_wifi_status_label) return;
+    if (g_caplist_running) return;
+    g_caplist_running = 1;
+    g_caplist_done = 0;
+    g_list_mode = 1;
+    lv_obj_clean(g_wifi_results_box);
+    g_selected_row = NULL;
+    lv_label_set_text(g_wifi_status_label, "Listando capturas...");
+    ui_shell_set_status("Listando capturas...", UI_STATUS_WORKING);
+    pthread_t tid;
+    pthread_create(&tid, NULL, caplist_thread_fn, NULL);
+    pthread_detach(tid);
+}
+static void show_wordlist_list(void) {
+    if (!g_wifi_results_box || !g_wifi_status_label) return;
+    char err[128];
+    g_wordlists_count = wifi_client_list_wordlists(g_wordlists, WIFI_MAX_WORDLISTS, err, sizeof(err));
+    lv_obj_clean(g_wifi_results_box);
+    g_selected_row = NULL;
+    g_list_mode = 2;
+    if (g_wordlists_count <= 0) {
+        g_wordlists_count = 0;
+        ui_shell_set_status("No hay wordlists en data/wordlists", UI_STATUS_ERROR);
+        return;
+    }
+    char sb[64];
+    snprintf(sb, sizeof(sb), "Wordlist para %.16s:", g_audit_ssid);
+    lv_label_set_text(g_wifi_status_label, sb);
+    ui_shell_set_status("Elegi una wordlist", UI_STATUS_INFO);
+    for (int i = 0; i < g_wordlists_count; i++) {
+        lv_obj_t *row = make_list_row(i);
+        char nbuf[28];
+        snprintf(nbuf, sizeof(nbuf), "%.24s", g_wordlists[i].name);
+        make_row_label(row, nbuf, COLOR_OK, 0);
+        char szbuf[24];
+        if (g_wordlists[i].size_mb < 1.0f)
+            snprintf(szbuf, sizeof(szbuf), "%.0f KB", g_wordlists[i].size_mb * 1024.0f);
+        else
+            snprintf(szbuf, sizeof(szbuf), "%.1f MB", g_wordlists[i].size_mb);
+        make_row_label(row, szbuf, COLOR_DIM, 210);
+        make_row_label(row, g_wordlists[i].fast ? "rapida" : "LENTA",
+                       g_wordlists[i].fast ? COLOR_OK : COLOR_WARN, 310);
+    }
+}
+
+static void audit_list_row_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    lv_obj_t *row = lv_event_get_target_obj(e);
+    int idx = (int)(intptr_t)lv_obj_get_user_data(row);
+
+    if (g_selected_row) lv_obj_set_style_bg_opa(g_selected_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(0x1a5c1a), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    g_selected_row = row;
+
+    if (g_list_mode == 1) {
+        if (idx < 0 || idx >= g_captures_count) return;
+        snprintf(g_audit_cap_file, sizeof(g_audit_cap_file), "%s", g_captures[idx].file);
+        snprintf(g_audit_bssid, sizeof(g_audit_bssid), "%s", g_captures[idx].bssid);
+        snprintf(g_audit_ssid, sizeof(g_audit_ssid), "%s", g_captures[idx].ssid);
+        show_wordlist_list();   /* pasa a elegir wordlist */
+    } else if (g_list_mode == 2) {
+        if (idx < 0 || idx >= g_wordlists_count) return;
+        snprintf(g_audit_wordlist, sizeof(g_audit_wordlist), "%s", g_wordlists[idx].key);
+        audit_start_selected();  /* lanza la auditoria en el hilo */
+    }
+}
+
 static void audit_btn_event_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
     /* Paso 3 conectara esto con la lista de capturas. Por ahora, aviso. */
-    ui_shell_set_status("Auditar: seleccion de captura (proximamente)", UI_STATUS_INFO);
+    show_capture_list();
 }
 
 static void handshake_btn_event_cb(lv_event_t *e) {
