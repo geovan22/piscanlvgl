@@ -67,9 +67,7 @@ static int g_wifi_scan_count = 0;
 static char g_wifi_scan_error[128];
 
 /* ── Monitor mode: mismo patron de hilo separado ── */
-static lv_obj_t *g_monitor_btn_label = NULL;
 static lv_obj_t *g_scan_btn = NULL;
-static lv_obj_t *g_monitor_btn = NULL;
 
 /* ── Objetivo seleccionado para Deauth/Handshake ── */
 typedef struct {
@@ -91,15 +89,13 @@ static int g_deauth_ok = 0;
 static char g_deauth_error[128];
 
 static void set_wifi_buttons_disabled(int disabled) {
-    if (!g_scan_btn || !g_monitor_btn || !g_deauth_btn || !g_handshake_btn) return;
+    if (!g_scan_btn || !g_deauth_btn || !g_handshake_btn) return;
     if (disabled) {
         lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
-        lv_obj_add_state(g_monitor_btn, LV_STATE_DISABLED);
         lv_obj_add_state(g_deauth_btn, LV_STATE_DISABLED);
         lv_obj_add_state(g_handshake_btn, LV_STATE_DISABLED);
     } else {
         lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
-        lv_obj_clear_state(g_monitor_btn, LV_STATE_DISABLED);
         lv_obj_clear_state(g_deauth_btn, LV_STATE_DISABLED);
         lv_obj_clear_state(g_handshake_btn, LV_STATE_DISABLED);
     }
@@ -225,59 +221,6 @@ static void handshake_btn_event_cb(lv_event_t *e) {
     confirm_dialog_show(g_main_screen, msg, on_handshake_confirm, NULL);
 }
 
-static volatile int g_monitor_op_running = 0;
-static volatile int g_monitor_op_done = 0;
-static volatile int g_monitor_want_enable = 0;
-static int g_monitor_last_ok = 0;
-static char g_monitor_last_mode[32] = "managed";
-
-static void *monitor_thread_fn(void *arg) {
-    (void)arg;
-    g_monitor_last_ok = wifi_client_monitor_set(g_monitor_want_enable, g_monitor_last_mode, sizeof(g_monitor_last_mode));
-    g_monitor_op_done = 1;
-    return NULL;
-}
-
-static void start_monitor_toggle(int enable) {
-    if (g_monitor_op_running) return;
-    g_monitor_op_running = 1;
-    g_monitor_op_done = 0;
-    g_monitor_want_enable = enable;
-    if (g_monitor_btn_label) {
-        lv_label_set_text(g_monitor_btn_label, enable ? "Activando..." : "Desactivando...");
-    }
-    if (g_scan_btn) lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
-
-    pthread_t tid;
-    pthread_create(&tid, NULL, monitor_thread_fn, NULL);
-    pthread_detach(tid);
-}
-
-/* Llamado desde el loop principal, igual que el poll del scan. */
-void ui_shell_poll_monitor_op(void) {
-    if (!g_monitor_op_done) return;
-    g_monitor_op_done = 0;
-    g_monitor_op_running = 0;
-
-    if (!g_monitor_btn_label) return; /* salimos de la seccion mientras corria */
-
-    int is_monitor = (strcmp(g_monitor_last_mode, "monitor") == 0);
-    lv_label_set_text(g_monitor_btn_label, is_monitor ? "Monitor: ON" : "Monitor: OFF");
-    lv_obj_t *btn = lv_obj_get_parent(g_monitor_btn_label);
-    lv_obj_set_style_border_color(btn, is_monitor ? COLOR_ERR : COLOR_OK, 0);
-
-    if (g_scan_btn) {
-        if (is_monitor) lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
-        else lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
-    }
-}
-
-static void monitor_btn_event_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
-    int currently_on = (strcmp(g_monitor_last_mode, "monitor") == 0);
-    start_monitor_toggle(!currently_on);
-}
-
 static void *wifi_scan_thread_fn(void *arg) {
     (void)arg;
     g_wifi_scan_count = wifi_client_scan(g_wifi_scan_results, WIFI_MAX_NETWORKS,
@@ -292,7 +235,6 @@ static void start_wifi_scan(void) {
     g_wifi_scan_done = 0;
     if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Escaneando...");
     ui_shell_set_status("Escaneando redes...", UI_STATUS_WORKING);
-    if (g_monitor_btn) lv_obj_add_state(g_monitor_btn, LV_STATE_DISABLED);
 
     pthread_t tid;
     pthread_create(&tid, NULL, wifi_scan_thread_fn, NULL);
@@ -319,7 +261,6 @@ void ui_shell_poll_wifi_scan(void) {
         snprintf(buf, sizeof(buf), "Error: %s", g_wifi_scan_error);
         lv_label_set_text(g_wifi_status_label, buf);
         ui_shell_set_status(buf, UI_STATUS_ERROR);
-        if (g_monitor_btn) lv_obj_clear_state(g_monitor_btn, LV_STATE_DISABLED);
         return;
     }
 
@@ -327,7 +268,6 @@ void ui_shell_poll_wifi_scan(void) {
     snprintf(status, sizeof(status), "%d redes encontradas", g_wifi_scan_count);
     lv_label_set_text(g_wifi_status_label, status);
     ui_shell_set_status(status, UI_STATUS_OK);
-    if (g_monitor_btn) lv_obj_clear_state(g_monitor_btn, LV_STATE_DISABLED);
 
     int shown = g_wifi_scan_count < WIFI_MAX_NETWORKS ? g_wifi_scan_count : WIFI_MAX_NETWORKS;
     for (int i = 0; i < shown; i++) {
@@ -682,9 +622,7 @@ static void enter_section(const char *id, const char *label) {
     lv_obj_clean(g_body);
     g_wifi_status_label = NULL;
     g_wifi_results_box = NULL;
-    g_monitor_btn_label = NULL;
     g_scan_btn = NULL;
-    g_monitor_btn = NULL;
     g_target_label = NULL;
     g_deauth_btn = NULL;
     g_handshake_btn = NULL;
@@ -711,21 +649,6 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(scan_lbl, COLOR_OK, 0);
         lv_obj_center(scan_lbl);
 
-        lv_obj_t *monitor_btn = lv_button_create(g_body);
-        lv_obj_set_size(monitor_btn, 130, 34);
-        lv_obj_align(monitor_btn, LV_ALIGN_TOP_RIGHT, -60, 28);
-        lv_obj_set_style_bg_color(monitor_btn, lv_color_hex(0x0a2a0a), 0);
-        lv_obj_set_style_border_color(monitor_btn, COLOR_OK, 0);
-        lv_obj_set_style_border_width(monitor_btn, 2, 0);
-        lv_obj_set_ext_click_area(monitor_btn, 15);
-        lv_obj_add_event_cb(monitor_btn, monitor_btn_event_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(monitor_btn);
-        g_monitor_btn = monitor_btn;
-        g_monitor_btn_label = lv_label_create(monitor_btn);
-        lv_label_set_text(g_monitor_btn_label, "Monitor: OFF");
-        lv_obj_set_style_text_color(g_monitor_btn_label, COLOR_OK, 0);
-        lv_obj_set_style_text_font(g_monitor_btn_label, &lv_font_montserrat_10, 0);
-        lv_obj_center(g_monitor_btn_label);
 
         g_wifi_status_label = lv_label_create(g_body);
         lv_label_set_text(g_wifi_status_label, "Toca Escanear para buscar redes");
@@ -859,9 +782,7 @@ static void show_carousel(void) {
     lv_obj_clean(g_body);
     g_wifi_status_label = NULL;
     g_wifi_results_box = NULL;
-    g_monitor_btn_label = NULL;
     g_scan_btn = NULL;
-    g_monitor_btn = NULL;
     g_target_label = NULL;
     g_deauth_btn = NULL;
     g_handshake_btn = NULL;

@@ -23,7 +23,6 @@ void ui_shell_stop_stats_timer(void);
 void ui_shell_poll_wifi_scan(void);
 
 /* Igual, pero para la operacion de modo monitor. */
-void ui_shell_poll_monitor_op(void);
 
 /* Igual, para la operacion de deauth. */
 void ui_shell_poll_deauth(void);

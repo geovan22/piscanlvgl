@@ -159,7 +159,6 @@ int main(void) {
         lv_timer_handler();
         usleep(2000);
         ui_shell_poll_wifi_scan();
-        ui_shell_poll_monitor_op();
         ui_shell_poll_deauth();
 
         ui_shell_poll_handshake();
