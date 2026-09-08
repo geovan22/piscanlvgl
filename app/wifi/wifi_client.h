@@ -34,4 +34,28 @@ int wifi_client_handshake(const char *bssid, int channel, int capture_seconds, i
                           char *out_cap_file, int cap_file_size,
                           char *out_detail, int detail_size);
 
+
+#define WIFI_MAX_CAPTURES 20
+
+/* Una captura .cap listada desde data/captures. */
+typedef struct {
+    char file[256];    /* ruta completa */
+    char ssid[64];     /* nombre de red (cruzado con la DB) o "(desconocida)" */
+    char bssid[24];
+    long ts;           /* timestamp unix del nombre de archivo */
+    int has_handshake; /* 1 si aircrack confirma handshake */
+} wifi_capture_t;
+
+/* Lista las capturas .cap disponibles. Llena out[] (hasta max_count),
+ * retorna cuantas hay, o -1 si error. */
+int wifi_client_list_captures(wifi_capture_t *out, int max_count,
+                              char *out_error, int error_size);
+
+/* Audita un .cap contra una wordlist ("common" rapida / "full" completa).
+ * Retorna 1 si encontro la contrasena (red debil), 0 si no la encontro,
+ * -1 si error. Si la encuentra, out_password recibe la contrasena. */
+int wifi_client_audit(const char *cap_file, const char *bssid,
+                      const char *wordlist_key, int timeout_seconds,
+                      char *out_password, int password_size,
+                      char *out_error, int error_size);
 #endif

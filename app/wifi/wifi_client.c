@@ -229,3 +229,88 @@ int wifi_client_handshake(const char *bssid, int channel, int capture_seconds, i
     cJSON_Delete(root);
     return got_handshake;
 }
+
+int wifi_client_list_captures(wifi_capture_t *out, int max_count,
+                              char *out_error, int error_size) {
+    char *argv[] = { "python3", PISCAN_WIFI_OPS_PATH, "list_captures", NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_error) snprintf(out_error, error_size, "no se pudo ejecutar wifi_ops.py");
+        return -1;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_error) snprintf(out_error, error_size, "JSON invalido de list_captures");
+        return -1;
+    }
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    if (!cJSON_IsTrue(ok)) {
+        if (out_error) snprintf(out_error, error_size, "list_captures fallo");
+        cJSON_Delete(root);
+        return -1;
+    }
+    cJSON *caps = cJSON_GetObjectItemCaseSensitive(root, "captures");
+    int count = 0;
+    if (cJSON_IsArray(caps)) {
+        cJSON *item;
+        cJSON_ArrayForEach(item, caps) {
+            if (count >= max_count) break;
+            cJSON *file = cJSON_GetObjectItemCaseSensitive(item, "file");
+            cJSON *ssid = cJSON_GetObjectItemCaseSensitive(item, "ssid");
+            cJSON *bssid = cJSON_GetObjectItemCaseSensitive(item, "bssid");
+            cJSON *ts = cJSON_GetObjectItemCaseSensitive(item, "ts");
+            cJSON *hs = cJSON_GetObjectItemCaseSensitive(item, "handshake");
+            snprintf(out[count].file, sizeof(out[count].file), "%s",
+                     cJSON_IsString(file) ? file->valuestring : "");
+            snprintf(out[count].ssid, sizeof(out[count].ssid), "%s",
+                     cJSON_IsString(ssid) ? ssid->valuestring : "(desconocida)");
+            snprintf(out[count].bssid, sizeof(out[count].bssid), "%s",
+                     cJSON_IsString(bssid) ? bssid->valuestring : "??");
+            out[count].ts = cJSON_IsNumber(ts) ? (long)ts->valuedouble : 0;
+            out[count].has_handshake = cJSON_IsTrue(hs) ? 1 : 0;
+            count++;
+        }
+    }
+    cJSON_Delete(root);
+    return count;
+}
+
+int wifi_client_audit(const char *cap_file, const char *bssid,
+                      const char *wordlist_key, int timeout_seconds,
+                      char *out_password, int password_size,
+                      char *out_error, int error_size) {
+    char timeout_buf[16];
+    snprintf(timeout_buf, sizeof(timeout_buf), "%d", timeout_seconds);
+    char *argv[] = { "python3", PISCAN_WIFI_OPS_PATH, "audit",
+                     (char *)cap_file, (char *)bssid,
+                     (char *)wordlist_key, timeout_buf, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_error) snprintf(out_error, error_size, "no se pudo ejecutar audit");
+        return -1;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_error) snprintf(out_error, error_size, "JSON invalido de audit");
+        return -1;
+    }
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    if (!cJSON_IsTrue(ok)) {
+        cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+        if (out_error) snprintf(out_error, error_size, "%s",
+                                cJSON_IsString(err) ? err->valuestring : "error en audit");
+        cJSON_Delete(root);
+        return -1;
+    }
+    cJSON *found = cJSON_GetObjectItemCaseSensitive(root, "found");
+    int is_found = cJSON_IsTrue(found) ? 1 : 0;
+    if (is_found && out_password) {
+        cJSON *pw = cJSON_GetObjectItemCaseSensitive(root, "password");
+        snprintf(out_password, password_size, "%s",
+                 cJSON_IsString(pw) ? pw->valuestring : "");
+    }
+    cJSON_Delete(root);
+    return is_found;
+}

@@ -152,6 +152,43 @@ WORDLISTS = {
     "full":   os.path.join(WORDLIST_DIR, "rockyou.txt"),  # 14M, auditoria a fondo (lento en Pi 3)
 }
 
+def _resolve_wordlist(key):
+    """Resuelve una wordlist por: (1) alias en WORDLISTS, (2) nombre de
+    archivo dentro de WORDLIST_DIR, (3) ruta absoluta. Default: common."""
+    if key in WORDLISTS:
+        return WORDLISTS[key]
+    if key:
+        cand = os.path.join(WORDLIST_DIR, key)
+        if os.path.exists(cand):
+            return cand
+        if os.path.isabs(key) and os.path.exists(key):
+            return key
+    return WORDLISTS.get("common")
+
+def list_wordlists():
+    """Lista los .txt en WORDLIST_DIR con nombre y tamano. La UI las usa
+    para dejar elegir cual usar. Ordena de la mas chica a la mas grande
+    (las chicas son mas rapidas en el Pi)."""
+    result = []
+    if not os.path.isdir(WORDLIST_DIR):
+        return result
+    for fname in os.listdir(WORDLIST_DIR):
+        if not fname.endswith(".txt"):
+            continue
+        full = os.path.join(WORDLIST_DIR, fname)
+        try:
+            size = os.path.getsize(full)
+        except OSError:
+            continue
+        result.append({
+            "name": fname,
+            "key": fname,
+            "size_mb": round(size / (1024 * 1024), 2),
+            "fast": size < 1024 * 1024,   # <1MB = rapida en el Pi
+        })
+    result.sort(key=lambda x: x["size_mb"])
+    return result
+
 def audit_handshake(cap_file, bssid, wordlist_key="common", timeout_seconds=120):
     """Corre aircrack-ng con una wordlist contra el .cap para ver si la
     contrasena de la red es debil (esta en la lista). Devuelve
@@ -159,7 +196,7 @@ def audit_handshake(cap_file, bssid, wordlist_key="common", timeout_seconds=120)
     segundos; con 'full' (rockyou 14M) puede tardar ~45min en el Pi 3,
     por eso el timeout configurable."""
     bssid = bssid.upper()
-    wordlist = WORDLISTS.get(wordlist_key, WORDLISTS["common"])
+    wordlist = _resolve_wordlist(wordlist_key)
 
     if not os.path.exists(cap_file):
         return False, None, f"No existe el archivo de captura: {cap_file}"
@@ -305,6 +342,9 @@ def main():
     elif cmd == 'list_captures':
         caps = list_captures()
         print(json.dumps({"ok": True, "captures": caps, "count": len(caps)}))
+    elif cmd == 'list_wordlists':
+        wls = list_wordlists()
+        print(json.dumps({"ok": True, "wordlists": wls, "count": len(wls)}))
     else:
         print(json.dumps({"ok": False, "error": f"comando desconocido: {cmd}"}))
         sys.exit(1)
