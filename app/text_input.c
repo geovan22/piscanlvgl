@@ -66,6 +66,7 @@ void text_input_show(lv_obj_t *parent, const char *title, int is_password,
     g_ti_textarea = lv_textarea_create(g_ti_overlay);
     lv_textarea_set_one_line(g_ti_textarea, true);
     lv_textarea_set_password_mode(g_ti_textarea, is_password ? true : false);
+    lv_obj_set_style_anim_duration(g_ti_textarea, 0, LV_PART_CURSOR);
     lv_obj_set_size(g_ti_textarea, 460, 34);
     lv_obj_align(g_ti_textarea, LV_ALIGN_TOP_MID, 0, 20);
     lv_obj_set_style_bg_color(g_ti_textarea, lv_color_hex(0x0a2a0a), 0);

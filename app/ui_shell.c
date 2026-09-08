@@ -12,6 +12,8 @@
 #include "pin_lock.h"
 #include "confirm_dialog.h"
 #include "wifi_client.h"
+#include "net_client.h"
+#include "text_input.h"
 #include "ui_style.h"
 #include <pthread.h>
 #define COLOR_OK    lv_color_hex(0x33FF33)
@@ -850,6 +852,250 @@ static void back_to_carousel_cb(lv_event_t *e) {
     show_carousel();
 }
 
+
+/* ═══ Conectar Red: gestion de wlan0 (red de gestion/SSH) ═══
+ * Reutiliza el box de resultados con un modo propio. Las operaciones de
+ * red (scan, connect) hacen fork de Python; corren en hilos para no
+ * congelar la UI, con poll desde el loop principal. */
+static int g_net_view = 0;            /* 0=disponibles 1=guardadas */
+static net_network_t g_net_nets[NET_MAX_NETWORKS];
+static int g_net_nets_count = 0;
+static net_saved_t g_net_saved[NET_MAX_SAVED];
+static int g_net_saved_count = 0;
+static lv_obj_t *g_net_status_label = NULL;   /* label de estado arriba */
+static lv_obj_t *g_net_box = NULL;            /* contenedor de la lista */
+static lv_obj_t *g_net_selected_row = NULL;
+
+/* Objetivo elegido para conectar (si necesita password) */
+static char g_net_target_ssid[64] = {0};
+static int g_net_target_secured = 0;
+
+/* ── scan de red de gestion en hilo ── */
+static volatile int g_netscan_running = 0;
+static volatile int g_netscan_done = 0;
+static void *netscan_thread_fn(void *arg) {
+    (void)arg;
+    char err[128];
+    g_net_nets_count = net_client_scan(g_net_nets, NET_MAX_NETWORKS, err, sizeof(err));
+    g_netscan_done = 1;
+    return NULL;
+}
+
+/* ── connect en hilo ── */
+static volatile int g_netconn_running = 0;
+static volatile int g_netconn_done = 0;
+static int g_netconn_ok = 0;
+static char g_netconn_ssid[64] = {0};
+static char g_netconn_password[128] = {0};
+static char g_netconn_detail[256] = {0};
+static void *netconn_thread_fn(void *arg) {
+    (void)arg;
+    g_netconn_detail[0] = '\0';
+    g_netconn_ok = net_client_connect(g_netconn_ssid, g_netconn_password,
+                                      g_netconn_detail, sizeof(g_netconn_detail));
+    g_netconn_done = 1;
+    return NULL;
+}
+
+/* Forward decls de las funciones de render (definidas en el Paso 2). */
+static void net_render_available(void);
+static void net_render_saved(void);
+static void net_update_status_label(void);
+
+void ui_shell_poll_netscan(void) {
+    if (!g_netscan_done) return;
+    g_netscan_done = 0;
+    g_netscan_running = 0;
+    if (!g_net_box) return;   /* salimos de la seccion */
+    net_render_available();
+}
+
+void ui_shell_poll_netconn(void) {
+    if (!g_netconn_done) return;
+    g_netconn_done = 0;
+    g_netconn_running = 0;
+    if (!g_net_status_label) return;
+    if (g_netconn_ok) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "Conectado a %s", g_netconn_ssid);
+        ui_shell_set_status(buf, UI_STATUS_OK);
+    } else {
+        ui_shell_set_status("No se pudo conectar (revisa la clave)", UI_STATUS_ERROR);
+    }
+    net_update_status_label();
+}
+
+/* Forward decls de callbacks (definidos mas abajo / Paso 3). */
+static void net_row_cb(lv_event_t *e);
+static void net_start_scan(void);
+static void net_connect_selected(const char *password);
+
+static lv_obj_t *net_make_row(int idx) {
+    lv_obj_t *row = lv_obj_create(g_net_box);
+    lv_obj_set_size(row, 380, 24);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(row, 12);
+    lv_obj_set_user_data(row, (void *)(intptr_t)idx);
+    lv_obj_add_event_cb(row, net_row_cb, LV_EVENT_PRESSED, NULL);
+    return row;
+}
+
+static lv_obj_t *net_row_label(lv_obj_t *row, const char *text, lv_color_t color, int x) {
+    lv_obj_t *l = lv_label_create(row);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_color(l, color, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
+    lv_obj_set_pos(l, x, 0);
+    return l;
+}
+
+static void net_update_status_label(void) {
+    if (!g_net_status_label) return;
+    net_status_t st;
+    char buf[128];
+    if (net_client_status(&st) && st.connected) {
+        snprintf(buf, sizeof(buf), "Conectado: %s  %s", st.ssid, st.ip);
+    } else {
+        snprintf(buf, sizeof(buf), "wlan0: sin conexion");
+    }
+    lv_label_set_text(g_net_status_label, buf);
+}
+
+static void net_render_available(void) {
+    if (!g_net_box || !g_net_status_label) return;
+    lv_obj_clean(g_net_box);
+    g_net_selected_row = NULL;
+    g_net_view = 0;
+    if (g_net_nets_count <= 0) {
+        ui_shell_set_status("No se detectaron redes", UI_STATUS_INFO);
+        return;
+    }
+    char st[32];
+    snprintf(st, sizeof(st), "%d redes disponibles", g_net_nets_count);
+    ui_shell_set_status(st, UI_STATUS_OK);
+    for (int i = 0; i < g_net_nets_count; i++) {
+        lv_obj_t *row = net_make_row(i);
+        char sbuf[24];
+        snprintf(sbuf, sizeof(sbuf), "%.18s", g_net_nets[i].ssid);
+        net_row_label(row, sbuf, g_net_nets[i].in_use ? COLOR_OK : lv_color_hex(0xCCCCCC), 0);
+        char sig[12];
+        snprintf(sig, sizeof(sig), "%d%%", g_net_nets[i].signal);
+        net_row_label(row, sig, COLOR_DIM, 250);
+        int secured = (strcmp(g_net_nets[i].security, "OPEN") != 0 &&
+                       g_net_nets[i].security[0] != '\0');
+        net_row_label(row, secured ? LV_SYMBOL_WARNING : "abierta",
+                      secured ? COLOR_WARN : COLOR_OK, 310);
+    }
+}
+
+static void net_render_saved(void) {
+    if (!g_net_box || !g_net_status_label) return;
+    char err[128];
+    g_net_saved_count = net_client_list_saved(g_net_saved, NET_MAX_SAVED, err, sizeof(err));
+    lv_obj_clean(g_net_box);
+    g_net_selected_row = NULL;
+    g_net_view = 1;
+    if (g_net_saved_count <= 0) {
+        ui_shell_set_status("No hay redes guardadas", UI_STATUS_INFO);
+        return;
+    }
+    ui_shell_set_status("Guardadas (toca para conectar)", UI_STATUS_INFO);
+    for (int i = 0; i < g_net_saved_count; i++) {
+        lv_obj_t *row = net_make_row(i);
+        char sbuf[24];
+        snprintf(sbuf, sizeof(sbuf), "%.20s", g_net_saved[i].name);
+        net_row_label(row, sbuf, g_net_saved[i].active ? COLOR_OK : lv_color_hex(0xCCCCCC), 0);
+        net_row_label(row, g_net_saved[i].active ? "activa" :
+                      (g_net_saved[i].autoconnect ? "auto" : "-"),
+                      g_net_saved[i].active ? COLOR_OK : COLOR_DIM, 300);
+    }
+}
+
+/* Callback cuando el teclado devuelve la contrasena (o NULL si cancelo). */
+static void net_password_cb(const char *text, void *user_data) {
+    (void)user_data;
+    if (!text) {   /* cancelado */
+        ui_shell_set_status("Conexion cancelada", UI_STATUS_INFO);
+        return;
+    }
+    net_connect_selected(text);
+}
+
+static void net_connect_selected(const char *password) {
+    if (g_netconn_running) return;
+    g_netconn_running = 1;
+    g_netconn_done = 0;
+    snprintf(g_netconn_ssid, sizeof(g_netconn_ssid), "%s", g_net_target_ssid);
+    snprintf(g_netconn_password, sizeof(g_netconn_password), "%s", password ? password : "");
+    char buf[96];
+    snprintf(buf, sizeof(buf), "Conectando a %.20s...", g_net_target_ssid);
+    ui_shell_set_status(buf, UI_STATUS_WORKING);
+    pthread_t tid;
+    pthread_create(&tid, NULL, netconn_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static void net_row_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    lv_obj_t *row = lv_event_get_target_obj(e);
+    int idx = (int)(intptr_t)lv_obj_get_user_data(row);
+
+    if (g_net_selected_row) lv_obj_set_style_bg_opa(g_net_selected_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(0x1a5c1a), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    g_net_selected_row = row;
+
+    if (g_net_view == 0) {   /* redes disponibles */
+        if (idx < 0 || idx >= g_net_nets_count) return;
+        snprintf(g_net_target_ssid, sizeof(g_net_target_ssid), "%s", g_net_nets[idx].ssid);
+        g_net_target_secured = (strcmp(g_net_nets[idx].security, "OPEN") != 0 &&
+                                g_net_nets[idx].security[0] != '\0');
+        /* Si ya esta guardada, conectar sin pedir clave. */
+        int is_saved = 0;
+        char err[64];
+        int n = net_client_list_saved(g_net_saved, NET_MAX_SAVED, err, sizeof(err));
+        for (int i = 0; i < n; i++) {
+            if (strcmp(g_net_saved[i].name, g_net_target_ssid) == 0) { is_saved = 1; break; }
+        }
+        if (is_saved || !g_net_target_secured) {
+            net_connect_selected(NULL);
+        } else {
+            char t[80];
+            snprintf(t, sizeof(t), "Clave de %.20s", g_net_target_ssid);
+            text_input_show(g_main_screen, t, 1, net_password_cb, NULL);
+        }
+    } else {                 /* guardadas: conectar directo */
+        if (idx < 0 || idx >= g_net_saved_count) return;
+        snprintf(g_net_target_ssid, sizeof(g_net_target_ssid), "%s", g_net_saved[idx].name);
+        net_connect_selected(NULL);
+    }
+}
+
+static void net_start_scan(void) {
+    if (g_netscan_running) return;
+    g_netscan_running = 1;
+    g_netscan_done = 0;
+    if (g_net_box) lv_obj_clean(g_net_box);
+    g_net_selected_row = NULL;
+    ui_shell_set_status("Escaneando redes...", UI_STATUS_WORKING);
+    pthread_t tid;
+    pthread_create(&tid, NULL, netscan_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static void net_scan_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    net_start_scan();
+}
+
+static void net_saved_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    net_render_saved();
+}
 static void enter_section(const char *id, const char *label) {
     lv_obj_clean(g_body);
     g_wifi_status_label = NULL;
@@ -858,6 +1104,9 @@ static void enter_section(const char *id, const char *label) {
     g_target_label = NULL;
     g_deauth_btn = NULL;
     g_handshake_btn = NULL;
+    g_net_box = NULL;
+    g_net_status_label = NULL;
+    g_net_selected_row = NULL;
     g_selected_row = NULL;
 
     if (strcmp(id, "wifi") == 0) {
@@ -975,6 +1224,58 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(audit_lbl, lv_color_hex(0x33CCFF), 0);
         lv_obj_set_style_text_font(audit_lbl, &lv_font_montserrat_10, 0);
         lv_obj_center(audit_lbl);
+    } else if (strcmp(id, "net_connect") == 0) {
+        lv_obj_t *title = lv_label_create(g_body);
+        lv_label_set_text(title, "Conectar Red (gestion / SSH)");
+        lv_obj_set_style_text_color(title, COLOR_OK, 0);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_10, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+
+        g_net_status_label = lv_label_create(g_body);
+        lv_obj_set_style_text_color(g_net_status_label, COLOR_DIM, 0);
+        lv_obj_set_style_text_font(g_net_status_label, &lv_font_montserrat_10, 0);
+        lv_obj_align(g_net_status_label, LV_ALIGN_TOP_LEFT, 10, 22);
+        net_update_status_label();
+
+        lv_obj_t *scan_btn = lv_button_create(g_body);
+        lv_obj_set_size(scan_btn, 110, 30);
+        lv_obj_align(scan_btn, LV_ALIGN_TOP_LEFT, 10, 40);
+        lv_obj_set_style_bg_color(scan_btn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(scan_btn, COLOR_OK, 0);
+        lv_obj_set_style_border_width(scan_btn, 2, 0);
+        lv_obj_set_ext_click_area(scan_btn, 12);
+        lv_obj_add_event_cb(scan_btn, net_scan_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(scan_btn);
+        lv_obj_t *sl = lv_label_create(scan_btn);
+        lv_label_set_text(sl, "Escanear");
+        lv_obj_set_style_text_color(sl, COLOR_OK, 0);
+        lv_obj_center(sl);
+
+        lv_obj_t *saved_btn = lv_button_create(g_body);
+        lv_obj_set_size(saved_btn, 110, 30);
+        lv_obj_align(saved_btn, LV_ALIGN_TOP_LEFT, 130, 40);
+        lv_obj_set_style_bg_color(saved_btn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(saved_btn, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_border_width(saved_btn, 2, 0);
+        lv_obj_set_ext_click_area(saved_btn, 12);
+        lv_obj_add_event_cb(saved_btn, net_saved_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(saved_btn);
+        lv_obj_t *vl = lv_label_create(saved_btn);
+        lv_label_set_text(vl, "Guardadas");
+        lv_obj_set_style_text_color(vl, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_text_font(vl, &lv_font_montserrat_10, 0);
+        lv_obj_center(vl);
+
+        g_net_box = lv_obj_create(g_body);
+        lv_obj_set_size(g_net_box, 400, 130);
+        lv_obj_align(g_net_box, LV_ALIGN_TOP_LEFT, 10, 78);
+        lv_obj_set_style_bg_opa(g_net_box, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(g_net_box, 0, 0);
+        lv_obj_set_style_pad_all(g_net_box, 0, 0);
+        lv_obj_set_style_pad_top(g_net_box, 4, 0);
+        lv_obj_set_flex_flow(g_net_box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(g_net_box, 4, 0);
+
     } else {
         lv_obj_t *title = lv_label_create(g_body);
         char buf[64];
@@ -1027,12 +1328,21 @@ static void draw_menu_current(void) {
 
 static void show_carousel(void) {
     lv_obj_clean(g_body);
+    g_net_box = NULL;
+    g_net_status_label = NULL;
+    g_net_selected_row = NULL;
     g_wifi_status_label = NULL;
     g_wifi_results_box = NULL;
     g_scan_btn = NULL;
+    g_net_box = NULL;
+    g_net_status_label = NULL;
+    g_net_selected_row = NULL;
     g_target_label = NULL;
     g_deauth_btn = NULL;
     g_handshake_btn = NULL;
+    g_net_box = NULL;
+    g_net_status_label = NULL;
+    g_net_selected_row = NULL;
     g_selected_row = NULL;
 
     lv_obj_t *left = lv_button_create(g_body);
