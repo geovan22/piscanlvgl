@@ -162,6 +162,7 @@ int main(void) {
         ui_shell_poll_deauth();
 
         ui_shell_poll_handshake();
+        ui_shell_poll_audit();
         if (g_ui_pending_action != 0) {
             int action = g_ui_pending_action;
             g_ui_pending_action = 0;

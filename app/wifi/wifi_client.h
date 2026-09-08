@@ -58,4 +58,19 @@ int wifi_client_audit(const char *cap_file, const char *bssid,
                       const char *wordlist_key, int timeout_seconds,
                       char *out_password, int password_size,
                       char *out_error, int error_size);
+
+#define WIFI_MAX_WORDLISTS 10
+
+/* Una wordlist disponible en data/wordlists. */
+typedef struct {
+    char name[64];   /* nombre de archivo, ej "common.txt" */
+    char key[64];    /* clave para pasar a audit (== name) */
+    float size_mb;   /* tamano en MB */
+    int fast;        /* 1 si es chica (<1MB), rapida en el Pi */
+} wifi_wordlist_t;
+
+/* Lista las wordlists .txt disponibles. Llena out[] (hasta max_count),
+ * retorna cuantas hay, o -1 si error. */
+int wifi_client_list_wordlists(wifi_wordlist_t *out, int max_count,
+                               char *out_error, int error_size);
 #endif

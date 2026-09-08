@@ -81,6 +81,7 @@ static wifi_target_t g_wifi_target = {0};
 static lv_obj_t *g_target_label = NULL;
 static lv_obj_t *g_deauth_btn = NULL;
 static lv_obj_t *g_handshake_btn = NULL;
+static lv_obj_t *g_audit_btn = NULL;
 static lv_obj_t *g_selected_row = NULL;
 
 static volatile int g_deauth_running = 0;
@@ -94,10 +95,12 @@ static void set_wifi_buttons_disabled(int disabled) {
         lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
         lv_obj_add_state(g_deauth_btn, LV_STATE_DISABLED);
         lv_obj_add_state(g_handshake_btn, LV_STATE_DISABLED);
+        if (g_audit_btn) lv_obj_add_state(g_audit_btn, LV_STATE_DISABLED);
     } else {
         lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
         lv_obj_clear_state(g_deauth_btn, LV_STATE_DISABLED);
         lv_obj_clear_state(g_handshake_btn, LV_STATE_DISABLED);
+        if (g_audit_btn) lv_obj_clear_state(g_audit_btn, LV_STATE_DISABLED);
     }
 }
 
@@ -192,6 +195,55 @@ void ui_shell_poll_handshake(void) {
     set_wifi_buttons_disabled(0);
 }
 
+/* ── Auditoria de handshake: corre una wordlist contra un .cap elegido.
+ *    Mismo patron de hilo separado + poll desde el loop principal. ── */
+static volatile int g_audit_running = 0;
+static volatile int g_audit_done = 0;
+static int g_audit_result = 0;               /* 1=debil(found) 0=fuerte -1=error */
+static char g_audit_cap_file[256] = {0};     /* .cap elegido */
+static char g_audit_bssid[24] = {0};         /* bssid del .cap */
+static char g_audit_ssid[64] = {0};          /* nombre de red, para el mensaje */
+static char g_audit_wordlist[64] = "common"; /* wordlist elegida (nombre) */
+static char g_audit_password[128] = {0};     /* contrasena encontrada, si aplica */
+static char g_audit_error[128] = {0};
+
+static void *audit_thread_fn(void *arg) {
+    (void)arg;
+    g_audit_password[0] = '\0';
+    g_audit_error[0] = '\0';
+    /* timeout amplio: la lista chica termina rapido; la grande se corta sola.
+     * 600s = 10 min tope (en el Pi under-volted igual conviene lista chica). */
+    g_audit_result = wifi_client_audit(g_audit_cap_file, g_audit_bssid,
+                                       g_audit_wordlist, 600,
+                                       g_audit_password, sizeof(g_audit_password),
+                                       g_audit_error, sizeof(g_audit_error));
+    g_audit_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_audit(void) {
+    if (!g_audit_done) return;
+    g_audit_done = 0;
+    g_audit_running = 0;
+
+    if (!g_wifi_status_label) return; /* salimos de la seccion mientras corria */
+
+    if (g_audit_result == 1) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "Debil! %s: %s", g_audit_ssid, g_audit_password);
+        ui_shell_set_status(buf, UI_STATUS_ERROR);   /* rojo: red vulnerable */
+    } else if (g_audit_result == 0) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "Fuerte: %s no esta en la lista", g_audit_ssid);
+        ui_shell_set_status(buf, UI_STATUS_OK);       /* verde: no vulnerable a esa lista */
+    } else {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "Error auditando: %s", g_audit_error);
+        ui_shell_set_status(buf, UI_STATUS_ERROR);
+    }
+    set_wifi_buttons_disabled(0);
+}
+
 static void on_handshake_confirm(bool confirmed, void *user_data) {
     (void)user_data;
     if (!confirmed) return;
@@ -206,6 +258,12 @@ static void on_handshake_confirm(bool confirmed, void *user_data) {
     pthread_t tid;
     pthread_create(&tid, NULL, handshake_thread_fn, NULL);
     pthread_detach(tid);
+}
+
+static void audit_btn_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    /* Paso 3 conectara esto con la lista de capturas. Por ahora, aviso. */
+    ui_shell_set_status("Auditar: seleccion de captura (proximamente)", UI_STATUS_INFO);
 }
 
 static void handshake_btn_event_cb(lv_event_t *e) {
@@ -728,6 +786,21 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(handshake_lbl, COLOR_WARN, 0);
         lv_obj_set_style_text_font(handshake_lbl, &lv_font_montserrat_10, 0);
         lv_obj_center(handshake_lbl);
+
+        g_audit_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_audit_btn, 95, 32);
+        lv_obj_align(g_audit_btn, LV_ALIGN_BOTTOM_LEFT, 250, -14);
+        lv_obj_set_style_bg_color(g_audit_btn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(g_audit_btn, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_border_width(g_audit_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_audit_btn, 12);
+        lv_obj_add_event_cb(g_audit_btn, audit_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(g_audit_btn);
+        lv_obj_t *audit_lbl = lv_label_create(g_audit_btn);
+        lv_label_set_text(audit_lbl, "Auditar");
+        lv_obj_set_style_text_color(audit_lbl, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_text_font(audit_lbl, &lv_font_montserrat_10, 0);
+        lv_obj_center(audit_lbl);
     } else {
         lv_obj_t *title = lv_label_create(g_body);
         char buf[64];

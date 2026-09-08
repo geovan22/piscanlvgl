@@ -314,3 +314,46 @@ int wifi_client_audit(const char *cap_file, const char *bssid,
     cJSON_Delete(root);
     return is_found;
 }
+
+int wifi_client_list_wordlists(wifi_wordlist_t *out, int max_count,
+                               char *out_error, int error_size) {
+    char *argv[] = { "python3", PISCAN_WIFI_OPS_PATH, "list_wordlists", NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_error) snprintf(out_error, error_size, "no se pudo ejecutar list_wordlists");
+        return -1;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_error) snprintf(out_error, error_size, "JSON invalido de list_wordlists");
+        return -1;
+    }
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    if (!cJSON_IsTrue(ok)) {
+        if (out_error) snprintf(out_error, error_size, "list_wordlists fallo");
+        cJSON_Delete(root);
+        return -1;
+    }
+    cJSON *wls = cJSON_GetObjectItemCaseSensitive(root, "wordlists");
+    int count = 0;
+    if (cJSON_IsArray(wls)) {
+        cJSON *item;
+        cJSON_ArrayForEach(item, wls) {
+            if (count >= max_count) break;
+            cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "name");
+            cJSON *key = cJSON_GetObjectItemCaseSensitive(item, "key");
+            cJSON *size = cJSON_GetObjectItemCaseSensitive(item, "size_mb");
+            cJSON *fast = cJSON_GetObjectItemCaseSensitive(item, "fast");
+            snprintf(out[count].name, sizeof(out[count].name), "%s",
+                     cJSON_IsString(name) ? name->valuestring : "?");
+            snprintf(out[count].key, sizeof(out[count].key), "%s",
+                     cJSON_IsString(key) ? key->valuestring : "");
+            out[count].size_mb = cJSON_IsNumber(size) ? (float)size->valuedouble : 0.0f;
+            out[count].fast = cJSON_IsTrue(fast) ? 1 : 0;
+            count++;
+        }
+    }
+    cJSON_Delete(root);
+    return count;
+}
