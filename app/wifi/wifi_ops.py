@@ -176,6 +176,69 @@ def audit_handshake(cap_file, bssid, wordlist_key="common", timeout_seconds=120)
     if m:
         return True, m.group(1), output
     return False, None, output
+
+def _bssid_from_filename(fname):
+    """Extrae el BSSID del nombre 'hs_2491BB2A53CC_<ts>-01.cap' -> '24:91:BB:2A:53:CC'.
+    Devuelve (bssid_formateado, timestamp_int) o (None, None) si no matchea."""
+    import re
+    m = re.match(r'hs_([0-9A-Fa-f]{12})_(\d+)', fname)
+    if not m:
+        return None, None
+    hexb = m.group(1).upper()
+    bssid = ':'.join(hexb[i:i+2] for i in range(0, 12, 2))
+    try:
+        ts = int(m.group(2))
+    except ValueError:
+        ts = None
+    return bssid, ts
+
+def _ssid_for_bssid(bssid):
+    """Cruza el BSSID con WifiScanLog para obtener el nombre de red mas
+    reciente que se haya visto con ese BSSID. Devuelve el SSID o None."""
+    try:
+        sys.path.insert(0, os.path.expanduser("~/piscanlvgl/app"))
+        from db.models import get_session, WifiScanLog
+        from sqlalchemy import func
+        s = get_session()
+        row = (s.query(WifiScanLog)
+                 .filter(func.lower(WifiScanLog.bssid) == bssid.lower())
+                 .order_by(WifiScanLog.timestamp.desc())
+                 .first())
+        return row.ssid if row and row.ssid else None
+    except Exception:
+        return None
+
+def list_captures():
+    """Lista los .cap de data/captures con: archivo, BSSID, SSID (cruzado
+    con la DB), timestamp y si tiene handshake valido. Ordenado del mas
+    reciente al mas viejo. Salta los archivos vacios/fallidos (<1KB)."""
+    cap_dir = os.path.expanduser("~/piscanlvgl/data/captures")
+    result = []
+    if not os.path.isdir(cap_dir):
+        return result
+    files = [f for f in os.listdir(cap_dir) if f.endswith('.cap')]
+    for fname in files:
+        full = os.path.join(cap_dir, fname)
+        try:
+            size = os.path.getsize(full)
+        except OSError:
+            continue
+        if size < 1024:   # descartamos capturas vacias/fallidas (24 bytes, etc.)
+            continue
+        bssid, ts = _bssid_from_filename(fname)
+        ssid = _ssid_for_bssid(bssid) if bssid else None
+        has_hs, _ = check_handshake(full)
+        result.append({
+            "file": full,
+            "name": fname,
+            "bssid": bssid or "??",
+            "ssid": ssid or "(desconocida)",
+            "ts": ts or 0,
+            "size": size,
+            "handshake": bool(has_hs),
+        })
+    result.sort(key=lambda x: x["ts"], reverse=True)
+    return result
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"ok": False, "error": "uso: wifi_ops.py <status|enable|disable> [iface]"}))
@@ -239,6 +302,9 @@ def main():
         else:
             log_attack("audit", bssid, "strong", details=f"wordlist={wordlist_key} no encontrada")
             print(json.dumps({"ok": True, "found": False, "wordlist": wordlist_key}))
+    elif cmd == 'list_captures':
+        caps = list_captures()
+        print(json.dumps({"ok": True, "captures": caps, "count": len(caps)}))
     else:
         print(json.dumps({"ok": False, "error": f"comando desconocido: {cmd}"}))
         sys.exit(1)
