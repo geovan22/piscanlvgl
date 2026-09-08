@@ -29,4 +29,16 @@ void ui_shell_poll_monitor_op(void);
 void ui_shell_poll_deauth(void);
 void ui_shell_poll_handshake(void);
 
+
+/* Barra de estado global en el footer. El color permite un vistazo
+ * rapido del estado; el prefijo ([...]/[OK]/[X]) permite leer el detalle. */
+typedef enum {
+    UI_STATUS_INFO = 0,   /* verde tenue, sin prefijo (navegacion) */
+    UI_STATUS_WORKING,    /* amarillo, [...] operacion en curso */
+    UI_STATUS_OK,         /* verde, [OK] exito */
+    UI_STATUS_ERROR       /* rojo, [X] fallo */
+} ui_status_t;
+
+void ui_shell_set_status(const char *msg, ui_status_t kind);
+
 #endif

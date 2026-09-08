@@ -67,3 +67,5 @@ data/*.db
 build/
 __pycache__/
 data/captures/
+data/wordlists/
+data/wordlists/

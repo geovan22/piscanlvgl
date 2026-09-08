@@ -1,0 +1,23 @@
+[Unit]
+Description=PiScan 22 - Handheld Security Tool
+# Esperar a que el sistema y la red esten listos antes de arrancar
+After=multi-user.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=geo22
+Group=geo22
+# Grupos suplementarios para acceso a SPI/GPIO/input (touch + display)
+SupplementaryGroups=spi gpio i2c input video render
+WorkingDirectory=/home/geo22/piscanlvgl
+ExecStart=/home/geo22/piscanlvgl/build/piscan_main
+# Reiniciar la app si se cae (util para uso standalone sin terminal)
+Restart=on-failure
+RestartSec=3
+# Enviar salida al journal para poder depurar con journalctl
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

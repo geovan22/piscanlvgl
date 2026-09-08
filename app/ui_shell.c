@@ -124,10 +124,12 @@ void ui_shell_poll_deauth(void) {
 
     if (g_deauth_ok) {
         lv_label_set_text(g_wifi_status_label, "Deauth enviado");
+        ui_shell_set_status("Deauth enviado", UI_STATUS_OK);
     } else {
         char buf[160];
         snprintf(buf, sizeof(buf), "Error deauth: %s", g_deauth_error);
         lv_label_set_text(g_wifi_status_label, buf);
+        ui_shell_set_status(buf, UI_STATUS_ERROR);
     }
     set_wifi_buttons_disabled(0);
 }
@@ -140,6 +142,7 @@ static void on_deauth_confirm(bool confirmed, void *user_data) {
     g_deauth_running = 1;
     g_deauth_done = 0;
     if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Enviando deauth...");
+    ui_shell_set_status("Enviando deauth...", UI_STATUS_WORKING);
     set_wifi_buttons_disabled(1);
 
     pthread_t tid;
@@ -185,8 +188,10 @@ void ui_shell_poll_handshake(void) {
 
     if (g_handshake_ok) {
         lv_label_set_text(g_wifi_status_label, "Handshake capturado!");
+        ui_shell_set_status("Handshake capturado", UI_STATUS_OK);
     } else {
         lv_label_set_text(g_wifi_status_label, "Sin handshake (reintenta)");
+        ui_shell_set_status("Sin handshake, reintenta", UI_STATUS_ERROR);
     }
     set_wifi_buttons_disabled(0);
 }
@@ -199,6 +204,7 @@ static void on_handshake_confirm(bool confirmed, void *user_data) {
     g_handshake_running = 1;
     g_handshake_done = 0;
     if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Capturando handshake (~30s)...");
+    ui_shell_set_status("Capturando handshake (~30s)...", UI_STATUS_WORKING);
     set_wifi_buttons_disabled(1);
 
     pthread_t tid;
@@ -285,6 +291,7 @@ static void start_wifi_scan(void) {
     g_wifi_scan_running = 1;
     g_wifi_scan_done = 0;
     if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Escaneando...");
+    ui_shell_set_status("Escaneando redes...", UI_STATUS_WORKING);
     if (g_monitor_btn) lv_obj_add_state(g_monitor_btn, LV_STATE_DISABLED);
 
     pthread_t tid;
@@ -308,6 +315,7 @@ void ui_shell_poll_wifi_scan(void) {
         char buf[160];
         snprintf(buf, sizeof(buf), "Error: %s", g_wifi_scan_error);
         lv_label_set_text(g_wifi_status_label, buf);
+        ui_shell_set_status(buf, UI_STATUS_ERROR);
         if (g_monitor_btn) lv_obj_clear_state(g_monitor_btn, LV_STATE_DISABLED);
         return;
     }
@@ -315,6 +323,7 @@ void ui_shell_poll_wifi_scan(void) {
     char status[32];
     snprintf(status, sizeof(status), "%d redes encontradas", g_wifi_scan_count);
     lv_label_set_text(g_wifi_status_label, status);
+    ui_shell_set_status(status, UI_STATUS_OK);
     if (g_monitor_btn) lv_obj_clear_state(g_monitor_btn, LV_STATE_DISABLED);
 
     int shown = g_wifi_scan_count < WIFI_MAX_NETWORKS ? g_wifi_scan_count : WIFI_MAX_NETWORKS;
@@ -413,6 +422,38 @@ volatile int g_ui_pending_action = 0; /* 0=nada 1=poweroff 2=reboot */
 
 static void set_footer(const char *msg) {
     lv_label_set_text(g_footer_label, msg);
+}
+
+/* Barra de estado global (footer). Cada nivel tiene su color para
+ * vistazo rapido y su prefijo para leer que esta pasando:
+ *   INFO     verde tenue   (sin prefijo, navegacion normal)
+ *   WORKING  amarillo      [...] operacion en curso
+ *   OK       verde         [OK] operacion exitosa
+ *   ERROR    rojo          [X]  fallo */
+void ui_shell_set_status(const char *msg, ui_status_t kind) {
+    if (!g_footer_label) return;
+    char buf[160];
+    lv_color_t color;
+    switch (kind) {
+        case UI_STATUS_WORKING:
+            snprintf(buf, sizeof(buf), "[...] %s", msg);
+            color = COLOR_WARN;
+            break;
+        case UI_STATUS_OK:
+            snprintf(buf, sizeof(buf), "[OK] %s", msg);
+            color = COLOR_OK;
+            break;
+        case UI_STATUS_ERROR:
+            snprintf(buf, sizeof(buf), "[X] %s", msg);
+            color = COLOR_ERR;
+            break;
+        default: /* UI_STATUS_INFO */
+            snprintf(buf, sizeof(buf), "%s", msg);
+            color = COLOR_OK;
+            break;
+    }
+    lv_label_set_text(g_footer_label, buf);
+    lv_obj_set_style_text_color(g_footer_label, color, 0);
 }
 
 /* ── Lecturas de sistema (todas via /proc, /sys — sin subprocess) ── */

