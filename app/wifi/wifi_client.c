@@ -93,6 +93,7 @@ int wifi_client_scan(wifi_network_t *out, int max_count, char *out_error, int er
             cJSON *signal = cJSON_GetObjectItemCaseSensitive(item, "signal");
             cJSON *channel = cJSON_GetObjectItemCaseSensitive(item, "channel");
             cJSON *security = cJSON_GetObjectItemCaseSensitive(item, "security");
+            cJSON *band = cJSON_GetObjectItemCaseSensitive(item, "band");
 
             snprintf(out[count].ssid, sizeof(out[count].ssid), "%s",
                      cJSON_IsString(ssid) ? ssid->valuestring : "?");
@@ -102,6 +103,8 @@ int wifi_client_scan(wifi_network_t *out, int max_count, char *out_error, int er
             out[count].channel = cJSON_IsNumber(channel) ? channel->valueint : 0;
             snprintf(out[count].security, sizeof(out[count].security), "%s",
                      cJSON_IsString(security) ? security->valuestring : "?");
+            snprintf(out[count].band, sizeof(out[count].band), "%s",
+                     cJSON_IsString(band) ? band->valuestring : "?");
             count++;
         }
     }

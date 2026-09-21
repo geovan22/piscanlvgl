@@ -9,6 +9,7 @@ typedef struct {
     float signal;
     int channel;
     char security[16];
+    char band[8];
 } wifi_network_t;
 
 /* Escanea con wifi_scan.py. Llena out[] (hasta max_count), retorna

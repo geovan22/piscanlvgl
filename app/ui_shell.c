@@ -544,6 +544,13 @@ void ui_shell_poll_wifi_scan(void) {
         lv_obj_set_style_text_color(sec_lbl, sec_color, 0);
         lv_obj_set_style_text_font(sec_lbl, &lv_font_montserrat_10, 0);
         lv_obj_set_pos(sec_lbl, 300, 0);
+
+        const char *bnd = g_wifi_scan_results[i].band;
+        lv_obj_t *band_lbl = lv_label_create(row);
+        lv_label_set_text(band_lbl, bnd);
+        lv_obj_set_style_text_color(band_lbl, strcmp(bnd, "5G") == 0 ? lv_color_hex(0x33CCFF) : COLOR_DIM, 0);
+        lv_obj_set_style_text_font(band_lbl, &lv_font_montserrat_10, 0);
+        lv_obj_set_pos(band_lbl, 340, 0);
     }
 }
 

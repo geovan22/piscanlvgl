@@ -33,6 +33,8 @@ def scan_networks(iface='wlan1'):
         key = c['ssid']
         if key not in networks or c['signal'] > networks[key]['signal']:
             networks[key] = {k: v for k, v in c.items() if not k.startswith('_')}
+            ch = networks[key].get('channel', 0)
+            networks[key]['band'] = '5G' if ch >= 32 else ('2.4G' if ch >= 1 else '?')
 
     for raw in out.splitlines():
         line = raw.strip()
