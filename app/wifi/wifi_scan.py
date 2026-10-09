@@ -11,6 +11,24 @@ def ensure_interface_up(iface):
     subprocess.run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'up'],
                     capture_output=True, timeout=5)
 
+def _freq_to_channel(freq):
+    """Deriva el canal del freq en MHz. Fuente mas confiable que
+    'DS Parameter set' (muchos APs 5GHz/HT no emiten esa linea -> canal 0,
+    y un canal 0 rompe el deauth y el scan de clientes)."""
+    try:
+        f = int(freq)
+    except (ValueError, TypeError):
+        return 0
+    if f == 2484:
+        return 14
+    if 2412 <= f <= 2472:
+        return (f - 2412) // 5 + 1
+    if 5000 < f < 5900:
+        return (f - 5000) // 5
+    if 5955 <= f <= 7115:
+        return (f - 5950) // 5   # 6 GHz (WiFi 6E), por si acaso
+    return 0
+
 def scan_networks(iface='wlan1'):
     ensure_interface_up(iface)
     try:
@@ -45,7 +63,13 @@ def scan_networks(iface='wlan1'):
             continue
         if cur is None:
             continue
-        if line.startswith('signal:'):
+        if line.startswith('freq:'):
+            # Canal desde el freq (siempre presente). DS Parameter set, si
+            # viene despues, lo confirma; si no viene, ya quedo bien.
+            ch = _freq_to_channel(line.split('freq:')[1].strip())
+            if ch:
+                cur['channel'] = ch
+        elif line.startswith('signal:'):
             try:
                 cur['signal'] = float(line.split('signal:')[1].split('dBm')[0].strip())
             except Exception:

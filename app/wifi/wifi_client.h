@@ -1,7 +1,7 @@
 #ifndef WIFI_CLIENT_H
 #define WIFI_CLIENT_H
 
-#define WIFI_MAX_NETWORKS 15
+#define WIFI_MAX_NETWORKS 20
 
 typedef struct {
     char ssid[64];

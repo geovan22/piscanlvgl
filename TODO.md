@@ -124,13 +124,19 @@
 - [x] **#2 Deauth selectivo (por cliente)**: FUNCIONA. ✅
 - [ ] **#3 Deauth por red (broadcast) no tumba**: esperado — los clientes
       modernos ignoran el deauth broadcast; el dirigido (`-c`) sí. Mejora
-      propuesta: "Deauth red" = iterar deauth dirigido a cada cliente asociado.
-      (Además, con el tiempo en 0 por el #4 quedaba en ráfaga, aún más débil.)
-- [~] **#4 Error al guardar deauth_duration en Config**: sin bug de código
-      evidente; sospecha = permisos del `data/piscan.db` (creado por root →
-      geo22 no puede escribir). Fix de código: el footer ahora muestra el error
-      REAL de la DB (`db_config_set` con out_error). En la Pi: revisar
-      `ls -l ~/piscanlvgl/data/piscan.db` y `chown geo22:geo22` si es de root.
+      propuesta (pendiente de OK): "Deauth red" = iterar deauth dirigido a cada
+      cliente asociado.
+- [~] **#4 Error "utf-8 codec can't encode" al guardar Config**: el servicio
+      systemd corre sin locale (C/POSIX) → Python falla al codificar salida.
+      Fix: `db_tool.py` fuerza `sys.stdout.reconfigure(utf-8)` + err ascii-safe;
+      `piscan.service` ahora setea LANG/LC_ALL=C.UTF-8 + PYTHONUTF8. **En la Pi:
+      copiar el unit nuevo + `daemon-reload` + restart** (ver instrucciones).
+- [x] **Escaneo listaba menos redes / canal 0**: `wifi_scan.py` sacaba el canal
+      solo de `DS Parameter set` (ausente en muchos APs 5GHz/HT → canal 0, que
+      además rompía deauth/clientes). Ahora deriva el canal del `freq:` (siempre
+      presente). Tope de redes subido 15→20.
+- [~] **#1 Lista pierde redes**: reset de scroll ya aplicado; lo que faltaba era
+      el escaneo incompleto (canal/cap, arriba). A revalidar.
 
 ## Por revisar (confirmar en pantalla; revertir si molesta)
 - [ ] **Scroll animado HORIZONTAL del textarea** (`lv_obj_scroll_to_x(..., LV_ANIM_ON)`

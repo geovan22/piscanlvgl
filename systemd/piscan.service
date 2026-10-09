@@ -11,6 +11,12 @@ Group=geo22
 # Grupos suplementarios para acceso a SPI/GPIO/input (touch + display)
 SupplementaryGroups=spi gpio i2c input video render
 WorkingDirectory=/home/geo22/piscanlvgl
+# El servicio corre sin locale (C/POSIX); forzamos UTF-8 para que el Python
+# que lanza la app (db_tool/wifi_ops) no tire UnicodeEncodeError al imprimir.
+Environment=LANG=C.UTF-8
+Environment=LC_ALL=C.UTF-8
+Environment=PYTHONUTF8=1
+Environment=PYTHONIOENCODING=utf-8
 ExecStart=/home/geo22/piscanlvgl/build/piscan_main
 # Reiniciar la app si se cae (util para uso standalone sin terminal)
 Restart=on-failure

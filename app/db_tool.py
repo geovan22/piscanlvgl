@@ -5,6 +5,14 @@ Convencion: SIEMPRE responde un unico JSON por stdout, exit 0 si ok=true.
 """
 import sys, os, json, hashlib, secrets
 
+# Bajo systemd el servicio corre con locale minimo (C/POSIX) sin LANG; forzar
+# UTF-8 en stdout evita que el print del JSON (o un mensaje de error con
+# caracteres raros) tire UnicodeEncodeError.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+except Exception:
+    pass
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from db.models import get_session, Config, SecurityCredential
 
@@ -16,6 +24,10 @@ def ok(data=None):
     sys.exit(0)
 
 def err(msg):
+    try:
+        msg = str(msg)
+    except Exception:
+        msg = "error"
     print(json.dumps({"ok": False, "error": msg}))
     sys.exit(1)
 
