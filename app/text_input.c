@@ -19,8 +19,11 @@
 static lv_obj_t *g_ti_overlay = NULL;
 static lv_obj_t *g_ti_textarea = NULL;
 static lv_obj_t *g_ti_kb = NULL;         /* contenedor del teclado */
+static lv_obj_t *g_ti_eye_lbl = NULL;    /* etiqueta del boton ver/ocultar */
 static text_input_cb_t g_ti_cb = NULL;
 static void *g_ti_ud = NULL;
+
+static int g_ti_pw_visible = 0;   /* 0 = oculto (password mode on), 1 = visible */
 
 static int g_shift = 0;   /* 0=minuscula 1=mayuscula */
 static int g_layer = 0;   /* 0=letras 1=simbolos */
@@ -31,6 +34,7 @@ static void ti_close(void) {
         g_ti_overlay = NULL;
         g_ti_textarea = NULL;
         g_ti_kb = NULL;
+        g_ti_eye_lbl = NULL;
     }
 }
 
@@ -63,6 +67,15 @@ static void key_layer_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
     g_layer = !g_layer;
     ti_rebuild_keyboard();
+}
+
+/* Alterna mostrar/ocultar la contrasena (solo visible en modo password). */
+static void key_eye_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (!g_ti_textarea) return;
+    g_ti_pw_visible = !g_ti_pw_visible;
+    lv_textarea_set_password_mode(g_ti_textarea, g_ti_pw_visible ? false : true);
+    if (g_ti_eye_lbl) lv_label_set_text(g_ti_eye_lbl, g_ti_pw_visible ? "ocu" : "ver");
 }
 
 static void key_ok_cb(lv_event_t *e) {
@@ -206,6 +219,8 @@ void text_input_show(lv_obj_t *parent, const char *title, int is_password,
     g_ti_ud = user_data;
     g_shift = 0;
     g_layer = 0;
+    g_ti_pw_visible = 0;      /* la contrasena arranca oculta */
+    g_ti_eye_lbl = NULL;
 
     g_ti_overlay = lv_obj_create(parent);
     lv_obj_set_size(g_ti_overlay, 480, 320);
@@ -225,9 +240,16 @@ void text_input_show(lv_obj_t *parent, const char *title, int is_password,
     g_ti_textarea = lv_textarea_create(g_ti_overlay);
     lv_textarea_set_one_line(g_ti_textarea, true);
     lv_textarea_set_password_mode(g_ti_textarea, is_password ? true : false);
+    /* Sin tiempo de "mostrar en claro": por defecto LVGL deja ver cada letra
+     * ~1.5s y luego un timer la reemplaza por el bullet; ese redibujado tardio
+     * del campo sobre el SPI por-pixel del KeDei es lo que se ve como que el
+     * texto "se mueve"/parpadea y pesa por letra. Con 0 el bullet aparece de
+     * una (un solo redibujo); para ver la clave esta el boton "ver". */
+    lv_textarea_set_password_show_time(g_ti_textarea, 0);
     lv_obj_set_style_anim_duration(g_ti_textarea, 0, LV_PART_CURSOR);
-    lv_obj_set_size(g_ti_textarea, 460, 30);
-    lv_obj_align(g_ti_textarea, LV_ALIGN_TOP_MID, 0, 16);
+    /* En modo password dejamos lugar a la derecha para el boton ver/ocultar. */
+    lv_obj_set_size(g_ti_textarea, is_password ? 402 : 464, 30);
+    lv_obj_align(g_ti_textarea, LV_ALIGN_TOP_LEFT, 8, 16);
     lv_obj_set_style_bg_color(g_ti_textarea, TI_BG, 0);
     lv_obj_set_style_text_color(g_ti_textarea, TI_OK, 0);
     lv_obj_set_style_border_color(g_ti_textarea, TI_OK, 0);
@@ -243,6 +265,15 @@ void text_input_show(lv_obj_t *parent, const char *title, int is_password,
      * cursor fijo, sin parpadeo y sin el redibujo periodico que pesaba en
      * el SPI por-pixel del KeDei. */
     lv_obj_send_event(g_ti_textarea, LV_EVENT_FOCUSED, NULL);
+
+    /* Boton ver/ocultar contrasena: solo en modo password. "ver" cuando esta
+     * oculta (tocar para mostrarla), "ocu" cuando esta visible. */
+    if (is_password) {
+        lv_obj_t *eye = make_key(g_ti_overlay, "ver", 0, 0, 52, 30, TI_SPEC,
+                                 key_eye_cb, NULL);
+        lv_obj_align(eye, LV_ALIGN_TOP_RIGHT, -6, 16);
+        g_ti_eye_lbl = lv_obj_get_child(eye, 0);
+    }
 
     /* Contenedor del teclado propio */
     g_ti_kb = lv_obj_create(g_ti_overlay);
