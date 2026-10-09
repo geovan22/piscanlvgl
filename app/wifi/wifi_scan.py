@@ -29,20 +29,9 @@ def _freq_to_channel(freq):
         return (f - 5950) // 5   # 6 GHz (WiFi 6E), por si acaso
     return 0
 
-def scan_networks(iface='wlan1'):
-    ensure_interface_up(iface)
-    try:
-        proc = subprocess.run(
-            ['sudo', '/usr/sbin/iw', 'dev', iface, 'scan'],
-            capture_output=True, text=True, timeout=15
-        )
-        out = proc.stdout
-        if proc.returncode != 0:
-            return None, f"iw scan fallo: {proc.stderr.strip() or out.strip()}"
-    except Exception as e:
-        return None, str(e)
-
-    networks = {}
+def _parse_scan_output(out, networks):
+    """Parsea la salida de `iw scan` y acumula en `networks` (dict por key).
+    Al acumular sobre varias pasadas, se queda con la senal mas fuerte vista."""
     cur = None
 
     def commit(c):
@@ -98,6 +87,32 @@ def scan_networks(iface='wlan1'):
                 cur['security'] = 'WPA'
 
     commit(cur)
+
+
+def scan_networks(iface='wlan1', passes=3):
+    """Escanea en VARIAS pasadas y fusiona (por BSSID/SSID). Una sola pasada
+    de `iw scan` suele quedarse corta en este adaptador: no todos los APs
+    emiten beacon durante el barrido y los 5GHz DFS son escaneo pasivo. Con
+    2-3 pasadas se captan bastantes mas."""
+    ensure_interface_up(iface)
+    networks = {}
+    last_err = None
+    for _ in range(max(1, passes)):
+        try:
+            proc = subprocess.run(
+                ['sudo', '/usr/sbin/iw', 'dev', iface, 'scan'],
+                capture_output=True, text=True, timeout=15
+            )
+            if proc.returncode != 0:
+                last_err = f"iw scan fallo: {proc.stderr.strip() or proc.stdout.strip()}"
+                continue
+            _parse_scan_output(proc.stdout, networks)
+        except Exception as e:
+            last_err = str(e)
+            continue
+
+    if not networks and last_err:
+        return None, last_err
     result = list(networks.values())
     result.sort(key=lambda n: n['signal'], reverse=True)
     return result, None
