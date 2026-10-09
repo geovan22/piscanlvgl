@@ -254,6 +254,13 @@ void text_input_show(lv_obj_t *parent, const char *title, int is_password,
     lv_obj_set_style_text_color(g_ti_textarea, TI_OK, 0);
     lv_obj_set_style_border_color(g_ti_textarea, TI_OK, 0);
     lv_obj_set_style_border_width(g_ti_textarea, 2, 0);
+    /* Fuente chica + poco padding vertical para que la linea de texto ENTRE
+     * sobrada en los 30px del campo. Con la montserrat_14 por defecto el texto
+     * no cabia y el campo podia scrollear en Y -> el texto "subia y bajaba" en
+     * cada tecla (scroll_to_cusor_pos empuja en Y). Al caber, scroll_max_y=0 y
+     * el desplazamiento vertical queda acotado a 0 (sin bobbing). */
+    lv_obj_set_style_text_font(g_ti_textarea, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_pad_ver(g_ti_textarea, 2, 0);
 
     /* El cursor seguia parpadeando (y perdiendo el "foco" visual medio
      * segundo si y medio no) pese al anim_duration=0 de arriba: LVGL

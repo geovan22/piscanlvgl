@@ -20,6 +20,11 @@
 - [x] `password_show_time = 0`: evita el redibujado tardío (~1.5 s) que
       reemplazaba la letra en claro por el bullet y se veía como que el texto
       "se movía"/parpadeaba y pesaba por letra sobre el SPI del KeDei.
+- [x] Texto que **subía y bajaba** dentro del campo: la fuente por defecto
+      (montserrat_14) no cabía en los 30px → el campo scrolleaba en Y. Fijado
+      a **montserrat_10 + pad_ver 2** → el texto entra holgado, `scroll_max_y=0`
+      y el bobbing vertical desaparece. (Confirmado por el usuario que el ojo y
+      las teclas andan; validar este fix en pantalla.)
 
 ### 2. Sección Config (editar config en DB)
 - [ ] UI de la sección `config` para leer/editar la tabla **Config** (clave/valor).
@@ -33,12 +38,12 @@
 ---
 
 ## Por revisar (confirmar en pantalla; revertir si molesta)
-- [ ] **Scroll animado del textarea** (`lv_obj_scroll_to_x(..., LV_ANIM_ON)` en
-      `lv_textarea_scroll_to_cusor_pos`, en cada tecla). Con `password_show_time=0`
-      debería notarse mucho menos; en claves **largas** que exceden el ancho del
-      campo (~402 px) todavía puede animar el desplazamiento. Si molesta: apagarlo
-      sin hackear internals de LVGL (evaluar opciones) o aceptar como limitación
-      del SPI por-pixel (documentada en CLAUDE.md §2/§6).
+- [ ] **Scroll animado HORIZONTAL del textarea** (`lv_obj_scroll_to_x(..., LV_ANIM_ON)`
+      en `lv_textarea_scroll_to_cusor_pos`, en cada tecla). Solo aplica a claves
+      **largas** que exceden el ancho del campo (~402 px; con montserrat_10 entran
+      más chars antes de scrollear). Si molesta: apagarlo sin hackear internals de
+      LVGL (evaluar opciones) o aceptar como limitación del SPI por-pixel
+      (documentada en CLAUDE.md §2/§6). El bobbing **vertical** ya quedó resuelto.
 - [ ] Verificar en la Pi que el botón **ver/ocultar** no pisa el campo ni el
       teclado (campo 402 px + ojo 52 px a la derecha, y=16).
 
