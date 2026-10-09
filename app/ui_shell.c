@@ -93,12 +93,20 @@ static lv_obj_t *g_target_label = NULL;
 static lv_obj_t *g_deauth_btn = NULL;
 static lv_obj_t *g_handshake_btn = NULL;
 static lv_obj_t *g_audit_btn = NULL;
+static lv_obj_t *g_clients_btn = NULL;
 static lv_obj_t *g_selected_row = NULL;
-static int g_list_mode = 0;   /* box de resultados: 0=scan 1=capturas 2=wordlists */
+static int g_list_mode = 0;   /* box de resultados: 0=scan 1=capturas 2=wordlists 3=clientes */
 static wifi_capture_t g_captures[WIFI_MAX_CAPTURES];
 static int g_captures_count = 0;
 static wifi_wordlist_t g_wordlists[WIFI_MAX_WORDLISTS];
 static int g_wordlists_count = 0;
+
+/* ── Fase 1: enumeracion de clientes de un AP (solo escucha) ── */
+static wifi_client_sta_t g_clients[WIFI_MAX_CLIENTS];
+static int g_clients_count = 0;
+static volatile int g_clients_running = 0;
+static volatile int g_clients_done = 0;
+static char g_clients_error[128];
 
 static volatile int g_deauth_running = 0;
 static volatile int g_deauth_done = 0;
@@ -113,11 +121,13 @@ static void set_wifi_buttons_disabled(int disabled) {
         lv_obj_add_state(g_deauth_btn, LV_STATE_DISABLED);
         lv_obj_add_state(g_handshake_btn, LV_STATE_DISABLED);
         if (g_audit_btn) lv_obj_add_state(g_audit_btn, LV_STATE_DISABLED);
+        if (g_clients_btn) lv_obj_add_state(g_clients_btn, LV_STATE_DISABLED);
     } else {
         lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
         lv_obj_clear_state(g_deauth_btn, LV_STATE_DISABLED);
         lv_obj_clear_state(g_handshake_btn, LV_STATE_DISABLED);
         if (g_audit_btn) lv_obj_clear_state(g_audit_btn, LV_STATE_DISABLED);
+        if (g_clients_btn) lv_obj_clear_state(g_clients_btn, LV_STATE_DISABLED);
     }
 }
 
@@ -409,6 +419,90 @@ static void show_capture_list(void) {
     pthread_create(&tid, NULL, caplist_thread_fn, NULL);
     pthread_detach(tid);
 }
+/* ── Fase 1: clientes de un AP (solo escucha) ─────────────────────────
+ * airodump filtrado por bssid unos segundos lista las estaciones
+ * asociadas. Hilo + poll como el resto (operacion de varios segundos).
+ * Filas informativas (sin accion); el deauth selectivo a un cliente es el
+ * siguiente item de la fase. Las filas son lv_obj_create SIN press-effect
+ * (regla §2). */
+static void render_client_list(void) {
+    if (!g_wifi_results_box || !g_wifi_status_label) return;
+    lv_obj_clean(g_wifi_results_box);
+    g_selected_row = NULL;
+    g_list_mode = 3;
+    if (g_clients_count < 0) {
+        g_clients_count = 0;
+        char buf[160];
+        snprintf(buf, sizeof(buf), "Error: %s", g_clients_error);
+        lv_label_set_text(g_wifi_status_label, buf);
+        ui_shell_set_status(buf, UI_STATUS_ERROR);
+        return;
+    }
+    if (g_clients_count == 0) {
+        lv_label_set_text(g_wifi_status_label, "Sin clientes asociados (o ninguno activo)");
+        ui_shell_set_status("Sin clientes", UI_STATUS_INFO);
+        return;
+    }
+    char hdr[80];
+    snprintf(hdr, sizeof(hdr), "%d cliente(s) en %.20s", g_clients_count, g_wifi_target.ssid);
+    lv_label_set_text(g_wifi_status_label, hdr);
+    ui_shell_set_status(hdr, UI_STATUS_OK);
+    for (int i = 0; i < g_clients_count; i++) {
+        lv_obj_t *row = lv_obj_create(g_wifi_results_box);
+        lv_obj_set_size(row, 380, 24);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        make_row_label(row, g_clients[i].mac, COLOR_OK, 0);
+        char pbuf[24];
+        snprintf(pbuf, sizeof(pbuf), "%s dBm", g_clients[i].power);
+        make_row_label(row, pbuf, COLOR_DIM, 190);
+        char kbuf[24];
+        snprintf(kbuf, sizeof(kbuf), "%s pkts", g_clients[i].packets);
+        make_row_label(row, kbuf, COLOR_DIM, 290);
+    }
+}
+
+static void *clients_thread_fn(void *arg) {
+    (void)arg;
+    g_clients_error[0] = '\0';
+    g_clients_count = wifi_client_scan_clients(g_wifi_target.bssid, g_wifi_target.channel,
+                                               g_clients, WIFI_MAX_CLIENTS,
+                                               g_clients_error, sizeof(g_clients_error));
+    g_clients_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_clients(void) {
+    if (!g_clients_done) return;
+    g_clients_done = 0;
+    g_clients_running = 0;
+    set_wifi_buttons_disabled(0);
+    render_client_list();
+}
+
+static void clients_btn_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (!g_wifi_target.has_target) {
+        if (g_wifi_status_label)
+            lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
+        return;
+    }
+    if (g_clients_running) return;
+    g_clients_running = 1;
+    g_clients_done = 0;
+    g_list_mode = 3;
+    if (g_wifi_results_box) lv_obj_clean(g_wifi_results_box);
+    g_selected_row = NULL;
+    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Buscando clientes...");
+    ui_shell_set_status("Buscando clientes (~15s)...", UI_STATUS_WORKING);
+    set_wifi_buttons_disabled(1);
+    pthread_t tid;
+    pthread_create(&tid, NULL, clients_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
 static void show_wordlist_list(void) {
     if (!g_wifi_results_box || !g_wifi_status_label) return;
     char err[128];
@@ -1215,6 +1309,8 @@ static void enter_section(const char *id, const char *label) {
     g_target_label = NULL;
     g_deauth_btn = NULL;
     g_handshake_btn = NULL;
+    g_audit_btn = NULL;
+    g_clients_btn = NULL;
     g_net_box = NULL;
     g_net_status_label = NULL;
     g_net_selected_row = NULL;
@@ -1241,6 +1337,23 @@ static void enter_section(const char *id, const char *label) {
         lv_label_set_text(scan_lbl, "Escanear");
         lv_obj_set_style_text_color(scan_lbl, COLOR_OK, 0);
         lv_obj_center(scan_lbl);
+
+        /* Clientes del AP seleccionado (Fase 1, solo escucha) */
+        lv_obj_t *clients_btn = lv_button_create(g_body);
+        lv_obj_set_size(clients_btn, 110, 34);
+        lv_obj_align(clients_btn, LV_ALIGN_TOP_LEFT, 170, 28);
+        lv_obj_set_style_bg_color(clients_btn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(clients_btn, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_border_width(clients_btn, 2, 0);
+        lv_obj_set_ext_click_area(clients_btn, 12);
+        lv_obj_add_event_cb(clients_btn, clients_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(clients_btn);
+        g_clients_btn = clients_btn;
+        lv_obj_t *clients_lbl = lv_label_create(clients_btn);
+        lv_label_set_text(clients_lbl, "Clientes");
+        lv_obj_set_style_text_color(clients_lbl, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_text_font(clients_lbl, &lv_font_montserrat_10, 0);
+        lv_obj_center(clients_lbl);
 
 
         g_wifi_status_label = lv_label_create(g_body);
@@ -1534,6 +1647,8 @@ static void show_carousel(void) {
     g_target_label = NULL;
     g_deauth_btn = NULL;
     g_handshake_btn = NULL;
+    g_audit_btn = NULL;
+    g_clients_btn = NULL;
     g_net_box = NULL;
     g_net_status_label = NULL;
     g_net_selected_row = NULL;

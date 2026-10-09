@@ -166,6 +166,7 @@ int main(void) {
         ui_shell_poll_caplist();
         ui_shell_poll_netscan();
         ui_shell_poll_netconn();
+        ui_shell_poll_clients();
         if (g_ui_pending_action != 0) {
             int action = g_ui_pending_action;
             g_ui_pending_action = 0;

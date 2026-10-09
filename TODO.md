@@ -58,6 +58,34 @@
 
 ---
 
+## Fase 1 — WiFi avanzado (CLAUDE.md §8)
+
+> Marco: siempre laboratorio controlado / redes propias o con permiso.
+
+### 1. Escaneo de clientes conectados por AP — [~] código listo, a validar
+- [x] Python `wifi_ops.py clients <bssid> <channel> [iface] [seg]`: `scan_clients`
+      corre airodump filtrado por bssid unos seg (SOLO escucha, sin inyección),
+      parsea la sección Station del CSV y devuelve los MAC asociados (+power,
+      +packets). Limpia los temporales.
+- [x] Wrapper C `wifi_client_scan_clients` (+ struct `wifi_client_sta_t`).
+- [x] UI: botón **Clientes** en la sección WiFi (celeste). Con un AP seleccionado,
+      escanea en hilo (poll `ui_shell_poll_clients`) y lista los clientes en el
+      box de resultados (`g_list_mode=3`). Filas informativas (sin acción aún).
+- [ ] **Validar en red real**: con un cliente conectado a la red de pruebas,
+      seleccionar el AP → Clientes → debe listar su MAC.
+
+### 2. Deauth selectivo a un cliente — [ ] siguiente
+- [ ] Hacer las filas de clientes seleccionables y pasar `-c <client>` al deauth
+      (requiere extender `deauth()` py y el wrapper con `client_mac` opcional).
+
+### Resto Fase 1 (pendiente, ver CLAUDE.md §8)
+- [ ] Evil Twin / AP falso (hostapd+dnsmasq) — solo lab.
+- [ ] Captura PMKID (hcxdumptool).
+- [ ] Beacon flood / probe spam (demo).
+- [ ] Export .cap / .hccapx para crackeo externo.
+
+---
+
 ## Por revisar (confirmar en pantalla; revertir si molesta)
 - [ ] **Scroll animado HORIZONTAL del textarea** (`lv_obj_scroll_to_x(..., LV_ANIM_ON)`
       en `lv_textarea_scroll_to_cusor_pos`, en cada tecla). Solo aplica a claves

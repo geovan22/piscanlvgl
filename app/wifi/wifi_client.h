@@ -37,6 +37,22 @@ int wifi_client_handshake(const char *bssid, int channel, int capture_seconds, i
                           char *out_cap_file, int cap_file_size,
                           char *out_detail, int detail_size);
 
+#define WIFI_MAX_CLIENTS 20
+
+/* Un cliente (estacion) asociado a un AP, visto por airodump. */
+typedef struct {
+    char mac[24];
+    char power[8];     /* dBm, como string (ej "-45", o "-1" desconocido) */
+    char packets[12];  /* # de paquetes vistos */
+} wifi_client_sta_t;
+
+/* Enumera los clientes asociados al AP `bssid` en `channel` (SOLO ESCUCHA,
+ * sin inyeccion; airodump filtrado por bssid unos segundos). Llena out[]
+ * (hasta max_count), retorna cuantos encontro, o -1 si error (ver out_error). */
+int wifi_client_scan_clients(const char *bssid, int channel,
+                             wifi_client_sta_t *out, int max_count,
+                             char *out_error, int error_size);
+
 
 #define WIFI_MAX_CAPTURES 20
 

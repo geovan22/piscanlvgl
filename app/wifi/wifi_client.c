@@ -113,6 +113,61 @@ int wifi_client_scan(wifi_network_t *out, int max_count, char *out_error, int er
     return count;
 }
 
+int wifi_client_scan_clients(const char *bssid, int channel,
+                             wifi_client_sta_t *out, int max_count,
+                             char *out_error, int error_size) {
+    char *argv_path = PISCAN_WIFI_OPS_PATH;
+    char channel_str[8];
+    snprintf(channel_str, sizeof(channel_str), "%d", channel);
+    /* wifi_ops.py clients <bssid> <channel> <iface> */
+    char *argv[] = { "python3", argv_path, "clients", (char *)bssid, channel_str, "wlan1", NULL };
+
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_error) snprintf(out_error, error_size, "no se pudo ejecutar wifi_ops.py");
+        return -1;
+    }
+
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_error) snprintf(out_error, error_size, "JSON invalido de wifi_ops.py");
+        return -1;
+    }
+
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    if (!cJSON_IsTrue(ok)) {
+        cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+        if (out_error)
+            snprintf(out_error, error_size, "%s",
+                     cJSON_IsString(err) ? err->valuestring : "error desconocido");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    cJSON *clients = cJSON_GetObjectItemCaseSensitive(root, "clients");
+    int count = 0;
+    if (cJSON_IsArray(clients)) {
+        cJSON *item;
+        cJSON_ArrayForEach(item, clients) {
+            if (count >= max_count) break;
+            cJSON *mac = cJSON_GetObjectItemCaseSensitive(item, "mac");
+            cJSON *power = cJSON_GetObjectItemCaseSensitive(item, "power");
+            cJSON *packets = cJSON_GetObjectItemCaseSensitive(item, "packets");
+            snprintf(out[count].mac, sizeof(out[count].mac), "%s",
+                     cJSON_IsString(mac) ? mac->valuestring : "");
+            snprintf(out[count].power, sizeof(out[count].power), "%s",
+                     cJSON_IsString(power) ? power->valuestring : "");
+            snprintf(out[count].packets, sizeof(out[count].packets), "%s",
+                     cJSON_IsString(packets) ? packets->valuestring : "");
+            count++;
+        }
+    }
+
+    cJSON_Delete(root);
+    return count;
+}
+
 static int run_wifi_ops(const char *cmd, char *out_mode, int mode_size) {
     char *argv_path = PISCAN_WIFI_OPS_PATH;
     char *argv[] = { "python3", argv_path, (char *)cmd, "wlan1", NULL };

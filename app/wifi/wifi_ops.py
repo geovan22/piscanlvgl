@@ -4,7 +4,7 @@ wifi_ops.py — Modo monitor sobre wlan1 (adaptador dedicado a ataque,
 ya unmanaged en NetworkManager). Salida JSON, mismo patron que
 wifi_scan.py / db_tool.py.
 """
-import sys, os, re, json, subprocess, time
+import sys, os, re, json, subprocess, time, tempfile, glob
 
 def _run(cmd, timeout=10):
     try:
@@ -154,6 +154,65 @@ def capture_handshake(bssid, channel, iface, capture_seconds=20, deauth_count=5,
     if not has_hs:
         aircrack_output += f"\n--- deauth: {deauth_err or 'ok'} ---\n--- log airodump (ultimas lineas) ---\n{dump_log_content[-500:]}"
     return has_hs, cap_file, aircrack_output
+
+
+def scan_clients(bssid, channel, iface, seconds=12):
+    """Enumera los clientes (estaciones) asociados a un AP. SOLO ESCUCHA:
+    corre airodump-ng filtrado por --bssid durante `seconds` (sin inyeccion)
+    y parsea la seccion 'Station' del CSV. Devuelve (clients, err) con
+    clients = [{mac, power, packets}] (solo los asociados a este bssid).
+    Mismo patron reset->monitor->...->managed que el resto."""
+    bssid = bssid.upper()
+    ok = enable_monitor(iface)
+    if not ok:
+        return None, f"No se pudo activar modo monitor (estado: {get_status(iface)})"
+
+    ch = _run(['sudo', '/usr/sbin/iw', 'dev', iface, 'set', 'channel', str(channel)])
+    if ch is None or ch.returncode != 0:
+        disable_monitor(iface)
+        return None, f"No se pudo fijar canal {channel}"
+    time.sleep(1)
+
+    tmpdir = tempfile.mkdtemp(prefix="piscan_cli_")
+    prefix = os.path.join(tmpdir, "scan")
+    _run(['sudo', '/usr/bin/timeout', str(seconds),
+          '/usr/sbin/airodump-ng', '--bssid', bssid, '-c', str(channel),
+          '-w', prefix, '--output-format', 'csv', iface],
+         timeout=seconds + 5)
+
+    disable_monitor(iface)
+
+    clients = []
+    csv_files = glob.glob(prefix + "*.csv")
+    if csv_files:
+        try:
+            with open(csv_files[0], "r", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            content = ""
+        # El CSV de airodump tiene 2 secciones; la de estaciones arranca en
+        # la linea de encabezado "Station MAC". Los 6 primeros campos
+        # (MAC, first, last, power, #packets, BSSID) no tienen comas, asi
+        # que un split simple alcanza (los Probed ESSIDs van al final).
+        idx = content.find("Station MAC")
+        if idx != -1:
+            lines = [l for l in content[idx:].splitlines() if l.strip()]
+            for line in lines[1:]:
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 6:
+                    continue
+                if parts[5].upper() != bssid:   # solo asociados a este AP
+                    continue
+                clients.append({"mac": parts[0], "power": parts[3], "packets": parts[4]})
+
+    try:
+        for fpath in glob.glob(prefix + "*"):
+            os.remove(fpath)
+        os.rmdir(tmpdir)
+    except Exception:
+        pass
+
+    return clients, None
 
 
 WORDLIST_DIR = os.path.expanduser("~/piscanlvgl/data/wordlists")
@@ -350,6 +409,19 @@ def main():
         else:
             log_attack("audit", bssid, "strong", details=f"wordlist={wordlist_key} no encontrada")
             print(json.dumps({"ok": True, "found": False, "wordlist": wordlist_key}))
+    elif cmd == 'clients':
+        if len(sys.argv) < 4:
+            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py clients <bssid> <channel> [iface] [segundos]"}))
+            sys.exit(1)
+        bssid = sys.argv[2]
+        channel = int(sys.argv[3])
+        iface_cli = sys.argv[4] if len(sys.argv) > 4 else 'wlan1'
+        seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 12
+        clients, err = scan_clients(bssid, channel, iface_cli, seconds)
+        if err:
+            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_cli)}))
+        else:
+            print(json.dumps({"ok": True, "clients": clients, "count": len(clients)}))
     elif cmd == 'list_captures':
         caps = list_captures()
         print(json.dumps({"ok": True, "captures": caps, "count": len(caps)}))
