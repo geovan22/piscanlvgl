@@ -123,6 +123,10 @@ def connect(ssid, password=None):
     r = _nmcli(args, timeout=45)
     ok = bool(r and r.returncode == 0)
     detail = (r.stderr or r.stdout or '')[:200] if r else 'sin salida'
+    # Si fallo con una password nueva, NM igual crea el perfil y lo deja
+    # reintentando con la clave equivocada. Lo borramos para no dejar basura.
+    if not ok and password:
+        _nmcli(['connection', 'delete', ssid], timeout=15)
     return {'ok': ok, 'ssid': ssid, 'detail': detail}
 
 def forget(ssid):
