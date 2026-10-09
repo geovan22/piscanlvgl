@@ -46,13 +46,20 @@ def scan_networks(iface='wlan1'):
     cur = None
 
     def commit(c):
-        if not c or not c.get('ssid'):
+        if not c:
             return
-        key = c['ssid']
+        ssid = c.get('ssid') or ''
+        # Redes ocultas (SSID vacio): antes se descartaban; ahora se muestran
+        # como (oculta), con key por BSSID para no colapsarlas entre si.
+        key = ssid if ssid else ('\x00' + c.get('bssid', ''))
+        if not key:
+            return
         if key not in networks or c['signal'] > networks[key]['signal']:
-            networks[key] = {k: v for k, v in c.items() if not k.startswith('_')}
-            ch = networks[key].get('channel', 0)
-            networks[key]['band'] = '5G' if ch >= 32 else ('2.4G' if ch >= 1 else '?')
+            entry = {k: v for k, v in c.items() if not k.startswith('_')}
+            entry['ssid'] = ssid if ssid else '(oculta)'
+            ch = entry.get('channel', 0)
+            entry['band'] = '5G' if ch >= 32 else ('2.4G' if ch >= 1 else '?')
+            networks[key] = entry
 
     for raw in out.splitlines():
         line = raw.strip()
