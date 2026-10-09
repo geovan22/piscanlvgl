@@ -937,9 +937,20 @@ static void net_row_cb(lv_event_t *e);
 static void net_start_scan(void);
 static void net_connect_selected(const char *password);
 
+/* Flechas de la lista de Conectar Red (desplazan sin tocar las filas). */
+static void net_scroll_up_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_net_box) lv_obj_scroll_by(g_net_box, 0, 40, LV_ANIM_OFF);
+}
+
+static void net_scroll_down_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_net_box) lv_obj_scroll_by(g_net_box, 0, -40, LV_ANIM_OFF);
+}
+
 static lv_obj_t *net_make_row(int idx) {
     lv_obj_t *row = lv_obj_create(g_net_box);
-    lv_obj_set_size(row, 380, 24);
+    lv_obj_set_size(row, 330, 24);
     lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_pad_all(row, 0, 0);
@@ -947,7 +958,9 @@ static lv_obj_t *net_make_row(int idx) {
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(row, 12);
     lv_obj_set_user_data(row, (void *)(intptr_t)idx);
-    lv_obj_add_event_cb(row, net_row_cb, LV_EVENT_PRESSED, NULL);
+    /* CLICKED (no PRESSED): se dispara al soltar sin desplazar, asi un
+     * gesto de scroll que arranca sobre una fila NO conecta por accidente. */
+    lv_obj_add_event_cb(row, net_row_cb, LV_EVENT_CLICKED, NULL);
     return row;
 }
 
@@ -991,11 +1004,11 @@ static void net_render_available(void) {
         net_row_label(row, sbuf, g_net_nets[i].in_use ? COLOR_OK : lv_color_hex(0xCCCCCC), 0);
         char sig[12];
         snprintf(sig, sizeof(sig), "%d%%", g_net_nets[i].signal);
-        net_row_label(row, sig, COLOR_DIM, 250);
+        net_row_label(row, sig, COLOR_DIM, 215);
         int secured = (strcmp(g_net_nets[i].security, "OPEN") != 0 &&
                        g_net_nets[i].security[0] != '\0');
         net_row_label(row, secured ? LV_SYMBOL_WARNING : "abierta",
-                      secured ? COLOR_WARN : COLOR_OK, 310);
+                      secured ? COLOR_WARN : COLOR_OK, 270);
     }
 }
 
@@ -1010,7 +1023,7 @@ static void net_render_saved(void) {
         ui_shell_set_status("No hay redes guardadas", UI_STATUS_INFO);
         return;
     }
-    ui_shell_set_status("Guardadas (toca para conectar)", UI_STATUS_INFO);
+    ui_shell_set_status("Guardadas (toca para elegir)", UI_STATUS_INFO);
     for (int i = 0; i < g_net_saved_count; i++) {
         lv_obj_t *row = net_make_row(i);
         char sbuf[24];
@@ -1018,7 +1031,7 @@ static void net_render_saved(void) {
         net_row_label(row, sbuf, g_net_saved[i].active ? COLOR_OK : lv_color_hex(0xCCCCCC), 0);
         net_row_label(row, g_net_saved[i].active ? "activa" :
                       (g_net_saved[i].autoconnect ? "auto" : "-"),
-                      g_net_saved[i].active ? COLOR_OK : COLOR_DIM, 300);
+                      g_net_saved[i].active ? COLOR_OK : COLOR_DIM, 270);
     }
 }
 
@@ -1047,14 +1060,22 @@ static void net_connect_selected(const char *password) {
 }
 
 static void net_row_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     lv_obj_t *row = lv_event_get_target_obj(e);
     int idx = (int)(intptr_t)lv_obj_get_user_data(row);
 
-    if (g_net_selected_row) lv_obj_set_style_bg_opa(g_net_selected_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_color(row, lv_color_hex(0x1a5c1a), 0);
-    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-    g_net_selected_row = row;
+    /* Primer toque: solo resalta la fila y la marca como objetivo. El
+     * segundo toque sobre la MISMA fila ya resaltada es el que conecta.
+     * Asi se puede recorrer la lista (con el dedo o con las flechas) y
+     * elegir una red sin conectarse por accidente. */
+    if (row != g_net_selected_row) {
+        if (g_net_selected_row) lv_obj_set_style_bg_opa(g_net_selected_row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0x1a5c1a), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        g_net_selected_row = row;
+        ui_shell_set_status("Toca otra vez para conectar", UI_STATUS_INFO);
+        return;
+    }
 
     if (g_net_view == 0) {   /* redes disponibles */
         if (idx < 0 || idx >= g_net_nets_count) return;
@@ -1274,7 +1295,7 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_center(vl);
 
         g_net_box = lv_obj_create(g_body);
-        lv_obj_set_size(g_net_box, 400, 130);
+        lv_obj_set_size(g_net_box, 348, 130);
         lv_obj_align(g_net_box, LV_ALIGN_TOP_LEFT, 10, 78);
         lv_obj_set_style_bg_opa(g_net_box, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(g_net_box, 0, 0);
@@ -1282,6 +1303,35 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_pad_top(g_net_box, 4, 0);
         lv_obj_set_flex_flow(g_net_box, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_row(g_net_box, 4, 0);
+
+        /* Flechas para recorrer la lista sin tocar (ni conectar) una red. */
+        lv_obj_t *nup = lv_button_create(g_body);
+        lv_obj_set_size(nup, 40, 45);
+        lv_obj_align(nup, LV_ALIGN_TOP_RIGHT, -10, 80);
+        lv_obj_set_style_bg_color(nup, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(nup, COLOR_OK, 0);
+        lv_obj_set_style_border_width(nup, 2, 0);
+        lv_obj_set_ext_click_area(nup, 10);
+        lv_obj_add_event_cb(nup, net_scroll_up_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(nup);
+        lv_obj_t *nup_lbl = lv_label_create(nup);
+        lv_label_set_text(nup_lbl, LV_SYMBOL_UP);
+        lv_obj_set_style_text_color(nup_lbl, COLOR_OK, 0);
+        lv_obj_center(nup_lbl);
+
+        lv_obj_t *ndn = lv_button_create(g_body);
+        lv_obj_set_size(ndn, 40, 45);
+        lv_obj_align(ndn, LV_ALIGN_TOP_RIGHT, -10, 130);
+        lv_obj_set_style_bg_color(ndn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(ndn, COLOR_OK, 0);
+        lv_obj_set_style_border_width(ndn, 2, 0);
+        lv_obj_set_ext_click_area(ndn, 10);
+        lv_obj_add_event_cb(ndn, net_scroll_down_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(ndn);
+        lv_obj_t *ndn_lbl = lv_label_create(ndn);
+        lv_label_set_text(ndn_lbl, LV_SYMBOL_DOWN);
+        lv_obj_set_style_text_color(ndn_lbl, COLOR_OK, 0);
+        lv_obj_center(ndn_lbl);
 
     } else {
         lv_obj_t *title = lv_label_create(g_body);

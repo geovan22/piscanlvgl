@@ -233,6 +233,17 @@ void text_input_show(lv_obj_t *parent, const char *title, int is_password,
     lv_obj_set_style_border_color(g_ti_textarea, TI_OK, 0);
     lv_obj_set_style_border_width(g_ti_textarea, 2, 0);
 
+    /* El cursor seguia parpadeando (y perdiendo el "foco" visual medio
+     * segundo si y medio no) pese al anim_duration=0 de arriba: LVGL
+     * arranca la animacion de parpadeo en el constructor del textarea
+     * leyendo el anim_duration por defecto del tema, y fijarlo a 0 DESPUES
+     * no la reinicia (en STYLE_CHANGED el textarea solo hace scroll, nunca
+     * vuelve a llamar a start_cursor_blink). Reenviar FOCUSED fuerza a
+     * start_cursor_blink a releer anim_duration=0 y BORRAR la animacion:
+     * cursor fijo, sin parpadeo y sin el redibujo periodico que pesaba en
+     * el SPI por-pixel del KeDei. */
+    lv_obj_send_event(g_ti_textarea, LV_EVENT_FOCUSED, NULL);
+
     /* Contenedor del teclado propio */
     g_ti_kb = lv_obj_create(g_ti_overlay);
     lv_obj_set_size(g_ti_kb, 480, 268);
