@@ -9,7 +9,7 @@
 
 ## Fase 0 — Terminar WiFi / Config (en curso)
 
-### 1. text_input.c (teclado/entrada reutilizable)
+### 1. text_input.c (teclado/entrada reutilizable) — ✅ CERRADO (validado en pantalla)
 - [x] Matar el parpadeo del cursor (reenvío de `FOCUSED` tras `anim_duration=0`).
       *(ya venía del commit anterior)*
 - [x] Botón **ver/ocultar contraseña** (ojo): aparece solo en modo password,
@@ -26,10 +26,19 @@
       y el bobbing vertical desaparece. (Confirmado por el usuario que el ojo y
       las teclas andan; validar este fix en pantalla.)
 
-### 2. Sección Config (editar config en DB)
-- [ ] UI de la sección `config` para leer/editar la tabla **Config** (clave/valor).
-- [ ] Primer parámetro editable: **`deauth_duration`** (segundos).
-- [ ] Contrato con `db_tool.py` para get/set de Config.
+### 2. Sección Config (editar config en DB) — [~] a validar en pantalla
+- [x] Contrato con DB ya existía: `db_tool.py config get/set/list` +
+      `db_client.c` (`db_config_get/set`). Incluido `db_client.h` en ui_shell.c.
+- [x] UI de la sección `config` (rama en `enter_section`): título, valor actual,
+      descripción, botones **-5s / +5s**.
+- [x] Primer parámetro editable: **`deauth_duration`** (0–600 s, paso 5,
+      key=`deauth_duration`, cat=`wifi`). 0 = ráfaga; >0 = sostenido.
+      Carga al entrar, guarda en DB en cada ajuste, feedback en el footer.
+- [ ] **Validar en pantalla**: que carga el valor, que -/+ ajustan y persisten
+      (reabrir Config debe mostrar el último valor).
+- Nota: guarda en cada tap (fork+exec python ~150ms). Si se siente lento al
+  tap repetido, pasar a guardar-al-salir o con botón "Guardar" (anotar en
+  "Por revisar").
 
 ### 3. Deauth sostenido en la UI (Patrón A)
 - [ ] Un solo botón **Deauth** → vuelve a mostrar el listado de redes →

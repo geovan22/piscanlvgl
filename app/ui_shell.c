@@ -14,7 +14,9 @@
 #include "wifi_client.h"
 #include "net_client.h"
 #include "text_input.h"
+#include "db_client.h"
 #include "ui_style.h"
+#include <stdlib.h>   /* atoi */
 #include <pthread.h>
 #define COLOR_OK    lv_color_hex(0x33FF33)
 static void row_select_event_cb(lv_event_t *e);
@@ -61,6 +63,10 @@ static lv_obj_t *g_battery_pct_label;
 
 static int g_menu_index = 0;
 static lv_timer_t *g_stats_timer = NULL;
+
+/* ── Config: parametro deauth_duration (segundos) ── */
+static lv_obj_t *g_cfg_deauth_label = NULL;
+static int g_cfg_deauth_val = 0;   /* 0 = rafaga; >0 = sostenido N s */
 
 /* ── WiFi: escaneo en hilo aparte (nunca tocar LVGL desde el hilo) ── */
 static lv_obj_t *g_wifi_status_label = NULL;
@@ -1124,6 +1130,61 @@ static void net_saved_btn_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
     net_render_saved();
 }
+
+/* ── Config: deauth_duration ──────────────────────────────────────────
+ * Un solo parametro por ahora; la seccion esta pensada para crecer.
+ * El valor se guarda en la tabla Config (key=deauth_duration, cat=wifi) y
+ * lo consume el deauth sostenido (Patron A). 0 = rafaga. */
+#define CFG_DEAUTH_STEP 5
+#define CFG_DEAUTH_MIN  0
+#define CFG_DEAUTH_MAX  600
+
+static void cfg_refresh_deauth_label(void) {
+    if (!g_cfg_deauth_label) return;
+    char buf[64];
+    if (g_cfg_deauth_val <= 0)
+        snprintf(buf, sizeof(buf), "Deauth: %d s  (0 = rafaga)", g_cfg_deauth_val);
+    else
+        snprintf(buf, sizeof(buf), "Deauth: %d s  (sostenido)", g_cfg_deauth_val);
+    lv_label_set_text(g_cfg_deauth_label, buf);
+}
+
+static void cfg_load_deauth(void) {
+    char val[32];
+    if (db_config_get("deauth_duration", val, sizeof(val)))
+        g_cfg_deauth_val = atoi(val);
+    else
+        g_cfg_deauth_val = 0;   /* no configurado -> rafaga por defecto */
+    if (g_cfg_deauth_val < CFG_DEAUTH_MIN) g_cfg_deauth_val = CFG_DEAUTH_MIN;
+    if (g_cfg_deauth_val > CFG_DEAUTH_MAX) g_cfg_deauth_val = CFG_DEAUTH_MAX;
+}
+
+static void cfg_save_deauth(void) {
+    char val[16];
+    snprintf(val, sizeof(val), "%d", g_cfg_deauth_val);
+    if (db_config_set("deauth_duration", val, "wifi"))
+        ui_shell_set_status("deauth_duration guardado", UI_STATUS_OK);
+    else
+        ui_shell_set_status("Error guardando config", UI_STATUS_ERROR);
+}
+
+static void cfg_deauth_adjust(int delta) {
+    g_cfg_deauth_val += delta;
+    if (g_cfg_deauth_val < CFG_DEAUTH_MIN) g_cfg_deauth_val = CFG_DEAUTH_MIN;
+    if (g_cfg_deauth_val > CFG_DEAUTH_MAX) g_cfg_deauth_val = CFG_DEAUTH_MAX;
+    cfg_refresh_deauth_label();
+    cfg_save_deauth();
+}
+
+static void cfg_deauth_minus_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    cfg_deauth_adjust(-CFG_DEAUTH_STEP);
+}
+
+static void cfg_deauth_plus_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    cfg_deauth_adjust(+CFG_DEAUTH_STEP);
+}
 static void enter_section(const char *id, const char *label) {
     lv_obj_clean(g_body);
     g_wifi_status_label = NULL;
@@ -1136,6 +1197,7 @@ static void enter_section(const char *id, const char *label) {
     g_net_status_label = NULL;
     g_net_selected_row = NULL;
     g_selected_row = NULL;
+    g_cfg_deauth_label = NULL;
 
     if (strcmp(id, "wifi") == 0) {
         lv_obj_t *title = lv_label_create(g_body);
@@ -1332,6 +1394,59 @@ static void enter_section(const char *id, const char *label) {
         lv_label_set_text(ndn_lbl, LV_SYMBOL_DOWN);
         lv_obj_set_style_text_color(ndn_lbl, COLOR_OK, 0);
         lv_obj_center(ndn_lbl);
+
+    } else if (strcmp(id, "config") == 0) {
+        lv_obj_t *title = lv_label_create(g_body);
+        lv_label_set_text(title, "Config");
+        lv_obj_set_style_text_color(title, COLOR_OK, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
+
+        cfg_load_deauth();
+
+        /* Valor actual del parametro */
+        g_cfg_deauth_label = lv_label_create(g_body);
+        lv_obj_set_style_text_color(g_cfg_deauth_label, COLOR_OK, 0);
+        lv_obj_set_style_text_font(g_cfg_deauth_label, &lv_font_montserrat_10, 0);
+        lv_obj_align(g_cfg_deauth_label, LV_ALIGN_TOP_LEFT, 12, 38);
+        cfg_refresh_deauth_label();
+
+        /* Descripcion */
+        lv_obj_t *desc = lv_label_create(g_body);
+        lv_label_set_text(desc, "Duracion del deauth sostenido (seg).\n"
+                                "0 = rafaga (envia y para).");
+        lv_obj_set_style_text_color(desc, COLOR_DIM, 0);
+        lv_obj_set_style_text_font(desc, &lv_font_montserrat_10, 0);
+        lv_obj_align(desc, LV_ALIGN_TOP_LEFT, 12, 56);
+
+        /* Boton -5s */
+        lv_obj_t *minus = lv_button_create(g_body);
+        lv_obj_set_size(minus, 70, 46);
+        lv_obj_align(minus, LV_ALIGN_TOP_LEFT, 12, 95);
+        lv_obj_set_style_bg_color(minus, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(minus, COLOR_OK, 0);
+        lv_obj_set_style_border_width(minus, 2, 0);
+        lv_obj_set_ext_click_area(minus, 12);
+        lv_obj_add_event_cb(minus, cfg_deauth_minus_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(minus);
+        lv_obj_t *ml = lv_label_create(minus);
+        lv_label_set_text(ml, "-5s");
+        lv_obj_set_style_text_color(ml, COLOR_OK, 0);
+        lv_obj_center(ml);
+
+        /* Boton +5s */
+        lv_obj_t *plus = lv_button_create(g_body);
+        lv_obj_set_size(plus, 70, 46);
+        lv_obj_align(plus, LV_ALIGN_TOP_LEFT, 92, 95);
+        lv_obj_set_style_bg_color(plus, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(plus, COLOR_OK, 0);
+        lv_obj_set_style_border_width(plus, 2, 0);
+        lv_obj_set_ext_click_area(plus, 12);
+        lv_obj_add_event_cb(plus, cfg_deauth_plus_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(plus);
+        lv_obj_t *pl = lv_label_create(plus);
+        lv_label_set_text(pl, "+5s");
+        lv_obj_set_style_text_color(pl, COLOR_OK, 0);
+        lv_obj_center(pl);
 
     } else {
         lv_obj_t *title = lv_label_create(g_body);
