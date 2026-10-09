@@ -154,12 +154,15 @@ int wifi_client_scan_clients(const char *bssid, int channel,
             cJSON *mac = cJSON_GetObjectItemCaseSensitive(item, "mac");
             cJSON *power = cJSON_GetObjectItemCaseSensitive(item, "power");
             cJSON *packets = cJSON_GetObjectItemCaseSensitive(item, "packets");
+            cJSON *vendor = cJSON_GetObjectItemCaseSensitive(item, "vendor");
             snprintf(out[count].mac, sizeof(out[count].mac), "%s",
                      cJSON_IsString(mac) ? mac->valuestring : "");
             snprintf(out[count].power, sizeof(out[count].power), "%s",
                      cJSON_IsString(power) ? power->valuestring : "");
             snprintf(out[count].packets, sizeof(out[count].packets), "%s",
                      cJSON_IsString(packets) ? packets->valuestring : "");
+            snprintf(out[count].vendor, sizeof(out[count].vendor), "%s",
+                     cJSON_IsString(vendor) ? vendor->valuestring : "?");
             count++;
         }
     }
@@ -200,6 +203,7 @@ int wifi_client_monitor_status(char *out_mode, int mode_size) {
 }
 
 int wifi_client_deauth(const char *bssid, int channel, int count, int duration,
+                       const char *client_mac,
                        char *out_output, int output_size,
                        char *out_error, int error_size) {
     char *argv_path = PISCAN_WIFI_OPS_PATH;
@@ -208,8 +212,19 @@ int wifi_client_deauth(const char *bssid, int channel, int count, int duration,
     snprintf(count_str, sizeof(count_str), "%d", count);
     snprintf(duration_str, sizeof(duration_str), "%d", duration);
 
-    /* wifi_ops.py deauth <bssid> <channel> <count> <iface> [duration] */
-    char *argv[] = { "python3", argv_path, "deauth", (char *)bssid, channel_str, count_str, "wlan1", duration_str, NULL };
+    /* wifi_ops.py deauth <bssid> <channel> <count> <iface> <duration> [client_mac] */
+    char *argv[10];
+    int ai = 0;
+    argv[ai++] = "python3";
+    argv[ai++] = argv_path;
+    argv[ai++] = "deauth";
+    argv[ai++] = (char *)bssid;
+    argv[ai++] = channel_str;
+    argv[ai++] = count_str;
+    argv[ai++] = "wlan1";
+    argv[ai++] = duration_str;
+    if (client_mac && client_mac[0]) argv[ai++] = (char *)client_mac;  /* selectivo */
+    argv[ai] = NULL;
 
     char *raw = run_and_capture(argv);
     if (!raw) {

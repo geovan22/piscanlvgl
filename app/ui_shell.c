@@ -113,6 +113,7 @@ static volatile int g_deauth_done = 0;
 static int g_deauth_ok = 0;
 static char g_deauth_error[128];
 static int g_deauth_duration = 0;   /* seg; 0 = rafaga. Leido de la DB al atacar */
+static char g_deauth_client_mac[24] = "";  /* "" = toda la red; si no, deauth selectivo a ese cliente */
 
 static void set_wifi_buttons_disabled(int disabled) {
     if (!g_scan_btn || !g_deauth_btn || !g_handshake_btn) return;
@@ -136,6 +137,7 @@ static void *deauth_thread_fn(void *arg) {
     char output[512];
     output[0] = '\0';
     g_deauth_ok = wifi_client_deauth(g_wifi_target.bssid, g_wifi_target.channel, 10, g_deauth_duration,
+                                      g_deauth_client_mac,
                                       output, sizeof(output), g_deauth_error, sizeof(g_deauth_error));
     g_deauth_done = 1;
     return NULL;
@@ -172,11 +174,12 @@ static void on_deauth_confirm(bool confirmed, void *user_data) {
 
     g_deauth_running = 1;
     g_deauth_done = 0;
-    char st[64];
+    const char *tgt = g_deauth_client_mac[0] ? "cliente" : "red";
+    char st[96];
     if (g_deauth_duration > 0)
-        snprintf(st, sizeof(st), "Deauth sostenido %ds...", g_deauth_duration);
+        snprintf(st, sizeof(st), "Deauth sostenido %ds a %s...", g_deauth_duration, tgt);
     else
-        snprintf(st, sizeof(st), "Enviando deauth (rafaga)...");
+        snprintf(st, sizeof(st), "Deauth (rafaga) a %s...", tgt);
     if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, st);
     ui_shell_set_status(st, UI_STATUS_WORKING);
     set_wifi_buttons_disabled(1);
@@ -193,6 +196,8 @@ static void deauth_btn_event_cb(lv_event_t *e) {
         return;
     }
     if (g_deauth_running) return;
+
+    g_deauth_client_mac[0] = '\0';   /* boton = deauth a TODA la red (broadcast) */
 
     /* Duracion configurada en la DB (seccion Config -> deauth_duration).
      * 0 = rafaga; >0 = sostenido N s. Se lee fresca en cada ataque para
@@ -425,6 +430,36 @@ static void show_capture_list(void) {
  * Filas informativas (sin accion); el deauth selectivo a un cliente es el
  * siguiente item de la fase. Las filas son lv_obj_create SIN press-effect
  * (regla §2). */
+/* Tap en una fila de cliente -> deauth SELECTIVO a ese cliente (con confirm).
+ * Reutiliza el mismo hilo/confirm que el deauth de red; solo fija el MAC
+ * objetivo (g_deauth_client_mac) y la duracion desde la DB. */
+static void client_row_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_deauth_running || g_clients_running) return;
+    lv_obj_t *row = lv_event_get_target_obj(e);
+    int idx = (int)(intptr_t)lv_obj_get_user_data(row);
+    if (idx < 0 || idx >= g_clients_count) return;
+
+    if (g_selected_row) lv_obj_set_style_bg_opa(g_selected_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(0x1a5c1a), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    g_selected_row = row;
+
+    snprintf(g_deauth_client_mac, sizeof(g_deauth_client_mac), "%s", g_clients[idx].mac);
+
+    char dur[32];
+    g_deauth_duration = db_config_get("deauth_duration", dur, sizeof(dur)) ? atoi(dur) : 0;
+    if (g_deauth_duration < 0) g_deauth_duration = 0;
+    if (g_deauth_duration > 600) g_deauth_duration = 600;
+
+    char msg[160];
+    if (g_deauth_duration > 0)
+        snprintf(msg, sizeof(msg), "Deauth sostenido %ds al cliente %s?", g_deauth_duration, g_deauth_client_mac);
+    else
+        snprintf(msg, sizeof(msg), "Deauth (rafaga) al cliente %s?", g_deauth_client_mac);
+    confirm_dialog_show(g_main_screen, msg, on_deauth_confirm, NULL);
+}
+
 static void render_client_list(void) {
     if (!g_wifi_results_box || !g_wifi_status_label) return;
     lv_obj_clean(g_wifi_results_box);
@@ -444,7 +479,7 @@ static void render_client_list(void) {
         return;
     }
     char hdr[80];
-    snprintf(hdr, sizeof(hdr), "%d cliente(s) en %.20s", g_clients_count, g_wifi_target.ssid);
+    snprintf(hdr, sizeof(hdr), "%d cliente(s) - toca uno para deauth", g_clients_count);
     lv_label_set_text(g_wifi_status_label, hdr);
     ui_shell_set_status(hdr, UI_STATUS_OK);
     for (int i = 0; i < g_clients_count; i++) {
@@ -454,13 +489,18 @@ static void render_client_list(void) {
         lv_obj_set_style_border_width(row, 0, 0);
         lv_obj_set_style_pad_all(row, 0, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(row, 10);
+        lv_obj_set_user_data(row, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(row, client_row_cb, LV_EVENT_PRESSED, NULL);
         make_row_label(row, g_clients[i].mac, COLOR_OK, 0);
-        char pbuf[24];
-        snprintf(pbuf, sizeof(pbuf), "%s dBm", g_clients[i].power);
-        make_row_label(row, pbuf, COLOR_DIM, 190);
-        char kbuf[24];
-        snprintf(kbuf, sizeof(kbuf), "%s pkts", g_clients[i].packets);
-        make_row_label(row, kbuf, COLOR_DIM, 290);
+        char vbuf[20];
+        snprintf(vbuf, sizeof(vbuf), "%.12s", g_clients[i].vendor);
+        make_row_label(row, vbuf, lv_color_hex(0x33CCFF), 115);
+        make_row_label(row, g_clients[i].power, COLOR_DIM, 250);
+        char kbuf[16];
+        snprintf(kbuf, sizeof(kbuf), "%sp", g_clients[i].packets);
+        make_row_label(row, kbuf, COLOR_DIM, 300);
     }
 }
 

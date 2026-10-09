@@ -62,7 +62,7 @@
 
 > Marco: siempre laboratorio controlado / redes propias o con permiso.
 
-### 1. Escaneo de clientes conectados por AP — [~] código listo, a validar
+### 1. Escaneo de clientes conectados por AP — ✅ VALIDADO (lista MACs en red real)
 - [x] Python `wifi_ops.py clients <bssid> <channel> [iface] [seg]`: `scan_clients`
       corre airodump filtrado por bssid unos seg (SOLO escucha, sin inyección),
       parsea la sección Station del CSV y devuelve los MAC asociados (+power,
@@ -70,13 +70,24 @@
 - [x] Wrapper C `wifi_client_scan_clients` (+ struct `wifi_client_sta_t`).
 - [x] UI: botón **Clientes** en la sección WiFi (celeste). Con un AP seleccionado,
       escanea en hilo (poll `ui_shell_poll_clients`) y lista los clientes en el
-      box de resultados (`g_list_mode=3`). Filas informativas (sin acción aún).
-- [ ] **Validar en red real**: con un cliente conectado a la red de pruebas,
-      seleccionar el AP → Clientes → debe listar su MAC.
+      box de resultados (`g_list_mode=3`).
+- [x] **Validado en red real**: lista el MAC de los dispositivos conectados.
+- [x] Info extra: **fabricante por OUI** (archivo del sistema si existe +
+      fallback chico, incluye Raspberry Pi), **orden por actividad** (más
+      paquetes primero = mejor objetivo de handshake), columnas MAC/fabricante/
+      dBm/pkts.
 
-### 2. Deauth selectivo a un cliente — [ ] siguiente
-- [ ] Hacer las filas de clientes seleccionables y pasar `-c <client>` al deauth
-      (requiere extender `deauth()` py y el wrapper con `client_mac` opcional).
+### 2. Deauth selectivo a un cliente — [~] código listo, a validar en red
+- [x] Python: `deauth()` acepta `client_mac` → `aireplay-ng -c <mac>` (selectivo)
+      vs broadcast. Dispatcher toma el 7º arg y lo loguea en WifiAttackLog
+      (`target_client_mac`, para reportes Fase 8).
+- [x] Wrapper C: `wifi_client_deauth` toma `const char *client_mac` (NULL/""=
+      broadcast) y lo agrega al argv solo si viene.
+- [x] UI: **tocar una fila de cliente** → confirm "Deauth al cliente <MAC>?" →
+      deauth SELECTIVO usando `deauth_duration` de la DB (mismo hilo/confirm que
+      el deauth de red). El botón Deauth sigue siendo a toda la red (broadcast).
+- [ ] **Validar en red real**: tocar un cliente y confirmar que solo ESE se cae
+      (el resto sigue conectado).
 
 ### Resto Fase 1 (pendiente, ver CLAUDE.md §8)
 - [ ] Evil Twin / AP falso (hostapd+dnsmasq) — solo lab.

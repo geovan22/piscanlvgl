@@ -24,8 +24,11 @@ int wifi_client_monitor_status(char *out_mode, int mode_size);
 /* Ataque de deauth. out_output recibe el texto real de aireplay-ng
  * (para mostrar en pantalla si se quiere), out_error si ok=0.
  * duration: 0 = rafaga (envia `count` y para); >0 = sostenido durante
- * `duration` segundos (--deauth 0 bajo timeout). */
+ * `duration` segundos (--deauth 0 bajo timeout).
+ * client_mac: NULL o "" = deauth a toda la red (broadcast); si viene un MAC,
+ * el deauth es SELECTIVO a ese cliente (-c <mac>). */
 int wifi_client_deauth(const char *bssid, int channel, int count, int duration,
+                       const char *client_mac,
                        char *out_output, int output_size,
                        char *out_error, int error_size);
 
@@ -44,6 +47,7 @@ typedef struct {
     char mac[24];
     char power[8];     /* dBm, como string (ej "-45", o "-1" desconocido) */
     char packets[12];  /* # de paquetes vistos */
+    char vendor[24];   /* fabricante por OUI, o "?" si desconocido */
 } wifi_client_sta_t;
 
 /* Enumera los clientes asociados al AP `bssid` en `channel` (SOLO ESCUCHA,
