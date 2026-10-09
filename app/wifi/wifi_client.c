@@ -144,15 +144,17 @@ int wifi_client_monitor_status(char *out_mode, int mode_size) {
     return run_wifi_ops("status", out_mode, mode_size);
 }
 
-int wifi_client_deauth(const char *bssid, int channel, int count,
+int wifi_client_deauth(const char *bssid, int channel, int count, int duration,
                        char *out_output, int output_size,
                        char *out_error, int error_size) {
     char *argv_path = PISCAN_WIFI_OPS_PATH;
-    char channel_str[8], count_str[8];
+    char channel_str[8], count_str[8], duration_str[12];
     snprintf(channel_str, sizeof(channel_str), "%d", channel);
     snprintf(count_str, sizeof(count_str), "%d", count);
+    snprintf(duration_str, sizeof(duration_str), "%d", duration);
 
-    char *argv[] = { "python3", argv_path, "deauth", (char *)bssid, channel_str, count_str, "wlan1", NULL };
+    /* wifi_ops.py deauth <bssid> <channel> <count> <iface> [duration] */
+    char *argv[] = { "python3", argv_path, "deauth", (char *)bssid, channel_str, count_str, "wlan1", duration_str, NULL };
 
     char *raw = run_and_capture(argv);
     if (!raw) {

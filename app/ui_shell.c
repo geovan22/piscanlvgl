@@ -104,6 +104,7 @@ static volatile int g_deauth_running = 0;
 static volatile int g_deauth_done = 0;
 static int g_deauth_ok = 0;
 static char g_deauth_error[128];
+static int g_deauth_duration = 0;   /* seg; 0 = rafaga. Leido de la DB al atacar */
 
 static void set_wifi_buttons_disabled(int disabled) {
     if (!g_scan_btn || !g_deauth_btn || !g_handshake_btn) return;
@@ -124,7 +125,7 @@ static void *deauth_thread_fn(void *arg) {
     (void)arg;
     char output[512];
     output[0] = '\0';
-    g_deauth_ok = wifi_client_deauth(g_wifi_target.bssid, g_wifi_target.channel, 10,
+    g_deauth_ok = wifi_client_deauth(g_wifi_target.bssid, g_wifi_target.channel, 10, g_deauth_duration,
                                       output, sizeof(output), g_deauth_error, sizeof(g_deauth_error));
     g_deauth_done = 1;
     return NULL;
@@ -138,8 +139,13 @@ void ui_shell_poll_deauth(void) {
     if (!g_wifi_status_label) return; /* salimos de la seccion mientras corria */
 
     if (g_deauth_ok) {
-        lv_label_set_text(g_wifi_status_label, "Deauth enviado");
-        ui_shell_set_status("Deauth enviado", UI_STATUS_OK);
+        char okmsg[64];
+        if (g_deauth_duration > 0)
+            snprintf(okmsg, sizeof(okmsg), "Deauth sostenido %ds completado", g_deauth_duration);
+        else
+            snprintf(okmsg, sizeof(okmsg), "Deauth enviado");
+        lv_label_set_text(g_wifi_status_label, okmsg);
+        ui_shell_set_status(okmsg, UI_STATUS_OK);
     } else {
         char buf[160];
         snprintf(buf, sizeof(buf), "Error deauth: %s", g_deauth_error);
@@ -156,8 +162,13 @@ static void on_deauth_confirm(bool confirmed, void *user_data) {
 
     g_deauth_running = 1;
     g_deauth_done = 0;
-    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Enviando deauth...");
-    ui_shell_set_status("Enviando deauth...", UI_STATUS_WORKING);
+    char st[64];
+    if (g_deauth_duration > 0)
+        snprintf(st, sizeof(st), "Deauth sostenido %ds...", g_deauth_duration);
+    else
+        snprintf(st, sizeof(st), "Enviando deauth (rafaga)...");
+    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, st);
+    ui_shell_set_status(st, UI_STATUS_WORKING);
     set_wifi_buttons_disabled(1);
 
     pthread_t tid;
@@ -173,8 +184,19 @@ static void deauth_btn_event_cb(lv_event_t *e) {
     }
     if (g_deauth_running) return;
 
-    char msg[96];
-    snprintf(msg, sizeof(msg), "Deauth a %s?", g_wifi_target.ssid);
+    /* Duracion configurada en la DB (seccion Config -> deauth_duration).
+     * 0 = rafaga; >0 = sostenido N s. Se lee fresca en cada ataque para
+     * reflejar lo ultimo guardado aunque no se haya abierto Config. */
+    char dur[32];
+    g_deauth_duration = db_config_get("deauth_duration", dur, sizeof(dur)) ? atoi(dur) : 0;
+    if (g_deauth_duration < 0) g_deauth_duration = 0;
+    if (g_deauth_duration > 600) g_deauth_duration = 600;
+
+    char msg[128];
+    if (g_deauth_duration > 0)
+        snprintf(msg, sizeof(msg), "Deauth sostenido %ds a %s?", g_deauth_duration, g_wifi_target.ssid);
+    else
+        snprintf(msg, sizeof(msg), "Deauth (rafaga) a %s?", g_wifi_target.ssid);
     confirm_dialog_show(g_main_screen, msg, on_deauth_confirm, NULL);
 }
 

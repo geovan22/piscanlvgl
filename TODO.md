@@ -9,6 +9,10 @@
 
 ## Fase 0 — Terminar WiFi / Config (en curso)
 
+> Estado: **código de los 3 ítems completo.** Ítem 1 cerrado. Ítems 2 y 3 a
+> validar en red real (tiempo del deauth sostenido). Cuando eso quede OK, se
+> cierra la Fase 0 y se arranca la Fase 1 (CLAUDE.md §8).
+
 ### 1. text_input.c (teclado/entrada reutilizable) — ✅ CERRADO (validado en pantalla)
 - [x] Matar el parpadeo del cursor (reenvío de `FOCUSED` tras `anim_duration=0`).
       *(ya venía del commit anterior)*
@@ -26,7 +30,7 @@
       y el bobbing vertical desaparece. (Confirmado por el usuario que el ojo y
       las teclas andan; validar este fix en pantalla.)
 
-### 2. Sección Config (editar config en DB) — [~] a validar en pantalla
+### 2. Sección Config (editar config en DB) — ✅ FUNCIONA (UI validada)
 - [x] Contrato con DB ya existía: `db_tool.py config get/set/list` +
       `db_client.c` (`db_config_get/set`). Incluido `db_client.h` en ui_shell.c.
 - [x] UI de la sección `config` (rama en `enter_section`): título, valor actual,
@@ -34,15 +38,23 @@
 - [x] Primer parámetro editable: **`deauth_duration`** (0–600 s, paso 5,
       key=`deauth_duration`, cat=`wifi`). 0 = ráfaga; >0 = sostenido.
       Carga al entrar, guarda en DB en cada ajuste, feedback en el footer.
-- [ ] **Validar en pantalla**: que carga el valor, que -/+ ajustan y persisten
-      (reabrir Config debe mostrar el último valor).
+- [x] **Validado en pantalla**: carga el valor, -/+ ajustan y persisten.
+- [ ] Pendiente: confirmar en red real que el tiempo configurado se respeta en
+      el deauth sostenido (el usuario lo prueba cuando libere su red de pruebas).
 - Nota: guarda en cada tap (fork+exec python ~150ms). Si se siente lento al
   tap repetido, pasar a guardar-al-salir o con botón "Guardar" (anotar en
   "Por revisar").
 
-### 3. Deauth sostenido en la UI (Patrón A)
-- [ ] Un solo botón **Deauth** → vuelve a mostrar el listado de redes →
-      seleccionar 1 → usa `deauth_duration` de la DB como `duration`.
+### 3. Deauth sostenido en la UI (Patrón A) — [~] código listo, a validar en red
+- [x] Cableado C→Python del `duration`: `wifi_client_deauth` ahora toma
+      `int duration` y lo pasa como 6º arg a `wifi_ops.py deauth` (el Python ya
+      soportaba sostenido; solo el wrapper C no lo pasaba — mandaba ráfaga fija).
+- [x] El botón **Deauth** lee `deauth_duration` de la DB (fresco en cada ataque),
+      lo muestra en el diálogo de confirmación ("sostenido Ns" vs "ráfaga") y lo
+      usa en el ataque. Mensajes de estado/éxito reflejan el modo.
+- [x] Flujo Patrón A (ya existía): escanear → tocar red → Deauth → confirmar.
+- [ ] **Validar en red real**: configurar N en Config, atacar la red de pruebas
+      y confirmar que la red queda caída ~N s (sostenido) y vuelve al soltar.
 
 ---
 
