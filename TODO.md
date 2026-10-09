@@ -76,6 +76,13 @@
       fallback chico, incluye Raspberry Pi), **orden por actividad** (más
       paquetes primero = mejor objetivo de handshake), columnas MAC/fabricante/
       dBm/pkts.
+- [x] MAC **aleatorias/privadas** (bit 0x02 del 1er octeto = localmente
+      administrada, ej. 2a/6x/Ax/Ex; iOS/Android por privacidad) se etiquetan
+      como `(aleatoria)` en vez de `?` — ninguna base OUI las resuelve.
+- [x] **Base OUI completa en el repo** (`data/oui.txt`, ~40k fabricantes IEEE,
+      1.3MB, formato `AA:BB:CC\tFabricante`). `_oui_file()` la prioriza sobre
+      las del sistema. Llega con `git pull`, funciona offline. Para
+      actualizarla: bajar oui.txt de IEEE y recompactar (ver commit).
 
 ### 2. Deauth selectivo a un cliente — [~] código listo, a validar en red
 - [x] Python: `deauth()` acepta `client_mac` → `aireplay-ng -c <mac>` (selectivo)

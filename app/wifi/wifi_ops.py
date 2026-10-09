@@ -176,7 +176,10 @@ _OUI_BUILTIN = {
 }
 
 def _oui_file():
-    for p in ("/usr/share/ieee-data/oui.txt", "/var/lib/ieee-data/oui.txt",
+    # Primero la base que viene en el repo (completa, IEEE, formato
+    # "AA:BB:CC\tFabricante"); si no, bases del sistema por si existieran.
+    for p in (os.path.expanduser("~/piscanlvgl/data/oui.txt"),
+              "/usr/share/ieee-data/oui.txt", "/var/lib/ieee-data/oui.txt",
               "/usr/share/aircrack-ng/airodump-ng-oui.txt",
               "/usr/share/wireshark/manuf", "/usr/share/misc/oui.txt"):
         if os.path.exists(p):
@@ -276,11 +279,23 @@ def scan_clients(bssid, channel, iface, seconds=12):
             return -1
     clients.sort(key=_pk, reverse=True)
 
-    # Fabricante por OUI (primeros 3 bytes del MAC)
+    # Fabricante por OUI (primeros 3 bytes del MAC). Las MAC con el bit
+    # 0x02 del primer octeto en 1 son "localmente administradas" = aleatorias
+    # (privacidad de iOS/Android); no pertenecen a ningun fabricante, asi que
+    # ninguna base OUI las resuelve: se etiquetan como (aleatoria).
     prefixes = {c["mac"].replace(":", "").replace("-", "").upper()[:6] for c in clients}
     vendors = _resolve_vendors(prefixes)
     for c in clients:
-        c["vendor"] = vendors.get(c["mac"].replace(":", "").replace("-", "").upper()[:6], "?")
+        pref = c["mac"].replace(":", "").replace("-", "").upper()[:6]
+        v = vendors.get(pref)
+        if v:
+            c["vendor"] = v
+        else:
+            try:
+                local_admin = bool(int(pref[:2], 16) & 0x02)
+            except ValueError:
+                local_admin = False
+            c["vendor"] = "(aleatoria)" if local_admin else "?"
 
     return clients, None
 
