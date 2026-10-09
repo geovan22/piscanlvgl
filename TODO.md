@@ -104,6 +104,36 @@
 
 ---
 
+## Splash de inicio — [~] rediseñado, a validar en pantalla
+- [x] Problema: el Tux era **negro sobre fondo negro** (solo se veía la panza)
+      y la frambuesa de bajo contraste. El negro del pingüino y el del fondo
+      eran el mismo color → no se podía separar por color ni con panel detrás.
+- [x] Solución: **regenerada la imagen** (`assets/splash/current.bin`, RGB565
+      480×320) con Node — pingüino con **contorno claro** (cuerpo visible),
+      panza blanca, pico/patas naranjas; frambuesa en rojos vivos + hojas;
+      triángulo de precaución; marco verde. Generador en scratchpad
+      (`make_splash.js`): dibuja en RGB888 y escribe .bin RGB565 + .png preview.
+- [x] Texto movido a **labels LVGL** en `splash.c` (nítido): "PiScan 22" (verde)
+      + "Ethical Hacking Toolkit" (cyan) + estado abajo.
+- [ ] Validar en pantalla. Si se quiere el título **más grande/bold**: hornearlo
+      en la imagen o habilitar `montserrat_28` (requiere rebuild de liblvgl).
+
+## Bugs reportados (sesión de prueba en red real)
+- [x] **#1 Lista de redes pierde entradas al volver de Clientes**: el box de
+      resultados no reseteaba el scroll al mostrar una lista nueva → quedaba
+      scrolleado y ocultaba las primeras filas. Fix: `lv_obj_scroll_to_y(box,0)`
+      en cada render (redes, clientes, capturas, wordlists).
+- [x] **#2 Deauth selectivo (por cliente)**: FUNCIONA. ✅
+- [ ] **#3 Deauth por red (broadcast) no tumba**: esperado — los clientes
+      modernos ignoran el deauth broadcast; el dirigido (`-c`) sí. Mejora
+      propuesta: "Deauth red" = iterar deauth dirigido a cada cliente asociado.
+      (Además, con el tiempo en 0 por el #4 quedaba en ráfaga, aún más débil.)
+- [~] **#4 Error al guardar deauth_duration en Config**: sin bug de código
+      evidente; sospecha = permisos del `data/piscan.db` (creado por root →
+      geo22 no puede escribir). Fix de código: el footer ahora muestra el error
+      REAL de la DB (`db_config_set` con out_error). En la Pi: revisar
+      `ls -l ~/piscanlvgl/data/piscan.db` y `chown geo22:geo22` si es de root.
+
 ## Por revisar (confirmar en pantalla; revertir si molesta)
 - [ ] **Scroll animado HORIZONTAL del textarea** (`lv_obj_scroll_to_x(..., LV_ANIM_ON)`
       en `lv_textarea_scroll_to_cusor_pos`, en cada tecla). Solo aplica a claves

@@ -85,7 +85,8 @@ int db_config_get(const char *key, char *value_out, int value_out_size) {
     return result;
 }
 
-int db_config_set(const char *key, const char *value, const char *category) {
+int db_config_set(const char *key, const char *value, const char *category,
+                  char *out_error, int error_size) {
     char *argv_path = PISCAN_DB_TOOL_PATH;
     char *argv[7];
     int i = 0;
@@ -99,11 +100,25 @@ int db_config_set(const char *key, const char *value, const char *category) {
     argv[i] = NULL;
 
     char *raw = run_and_capture(argv);
-    cJSON *root;
-    int result = parse_ok_json(raw, &root);
-    if (result) cJSON_Delete(root);
+    if (!raw) {
+        if (out_error) snprintf(out_error, error_size, "no se pudo ejecutar db_tool.py");
+        return 0;
+    }
+    cJSON *root = cJSON_Parse(raw);
     free(raw);
-    return result;
+    if (!root) {
+        if (out_error) snprintf(out_error, error_size, "JSON invalido de db_tool.py");
+        return 0;
+    }
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    int success = cJSON_IsTrue(ok) ? 1 : 0;
+    if (!success && out_error) {
+        cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+        snprintf(out_error, error_size, "%s",
+                 cJSON_IsString(err) ? err->valuestring : "error desconocido");
+    }
+    cJSON_Delete(root);
+    return success;
 }
 
 int db_credential_set(const char *cred_type, const char *plaintext) {

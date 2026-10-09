@@ -363,6 +363,7 @@ static volatile int g_caplist_done = 0;
 static void render_capture_list(void) {
     if (!g_wifi_results_box || !g_wifi_status_label) return;
     lv_obj_clean(g_wifi_results_box);
+    lv_obj_scroll_to_y(g_wifi_results_box, 0, LV_ANIM_OFF);  /* lista nueva arranca arriba */
     g_selected_row = NULL;
     g_list_mode = 1;
     if (g_captures_count < 0) {
@@ -463,6 +464,7 @@ static void client_row_cb(lv_event_t *e) {
 static void render_client_list(void) {
     if (!g_wifi_results_box || !g_wifi_status_label) return;
     lv_obj_clean(g_wifi_results_box);
+    lv_obj_scroll_to_y(g_wifi_results_box, 0, LV_ANIM_OFF);  /* lista nueva arranca arriba */
     g_selected_row = NULL;
     g_list_mode = 3;
     if (g_clients_count < 0) {
@@ -548,6 +550,7 @@ static void show_wordlist_list(void) {
     char err[128];
     g_wordlists_count = wifi_client_list_wordlists(g_wordlists, WIFI_MAX_WORDLISTS, err, sizeof(err));
     lv_obj_clean(g_wifi_results_box);
+    lv_obj_scroll_to_y(g_wifi_results_box, 0, LV_ANIM_OFF);  /* lista nueva arranca arriba */
     g_selected_row = NULL;
     g_list_mode = 2;
     if (g_wordlists_count <= 0) {
@@ -648,6 +651,7 @@ void ui_shell_poll_wifi_scan(void) {
     if (!g_wifi_status_label || !g_wifi_results_box) return;
 
     lv_obj_clean(g_wifi_results_box);
+    lv_obj_scroll_to_y(g_wifi_results_box, 0, LV_ANIM_OFF);  /* lista nueva arranca arriba */
     /* Las filas viejas fueron destruidas por lv_obj_clean; g_selected_row
      * apuntaria a memoria liberada. Reseteamos para evitar puntero colgante. */
     g_selected_row = NULL;
@@ -1316,12 +1320,15 @@ static void cfg_load_deauth(void) {
 }
 
 static void cfg_save_deauth(void) {
-    char val[16];
+    char val[16], err[128] = {0};
     snprintf(val, sizeof(val), "%d", g_cfg_deauth_val);
-    if (db_config_set("deauth_duration", val, "wifi"))
+    if (db_config_set("deauth_duration", val, "wifi", err, sizeof(err))) {
         ui_shell_set_status("deauth_duration guardado", UI_STATUS_OK);
-    else
-        ui_shell_set_status("Error guardando config", UI_STATUS_ERROR);
+    } else {
+        char m[160];
+        snprintf(m, sizeof(m), "Error DB: %s", err[0] ? err : "desconocido");
+        ui_shell_set_status(m, UI_STATUS_ERROR);
+    }
 }
 
 static void cfg_deauth_adjust(int delta) {
