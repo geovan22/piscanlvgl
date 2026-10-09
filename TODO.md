@@ -104,19 +104,17 @@
 
 ---
 
-## Splash de inicio — [~] rediseñado, a validar en pantalla
-- [x] Problema: el Tux era **negro sobre fondo negro** (solo se veía la panza)
-      y la frambuesa de bajo contraste. El negro del pingüino y el del fondo
-      eran el mismo color → no se podía separar por color ni con panel detrás.
-- [x] Solución: **regenerada la imagen** (`assets/splash/current.bin`, RGB565
-      480×320) con Node — pingüino con **contorno claro** (cuerpo visible),
-      panza blanca, pico/patas naranjas; frambuesa en rojos vivos + hojas;
-      triángulo de precaución; marco verde. Generador en scratchpad
-      (`make_splash.js`): dibuja en RGB888 y escribe .bin RGB565 + .png preview.
-- [x] Texto movido a **labels LVGL** en `splash.c` (nítido): "PiScan 22" (verde)
-      + "Ethical Hacking Toolkit" (cyan) + estado abajo.
-- [ ] Validar en pantalla. Si se quiere el título **más grande/bold**: hornearlo
-      en la imagen o habilitar `montserrat_28` (requiere rebuild de liblvgl).
+## Splash de inicio — [~] rediseño CYBER (terminal), a validar en pantalla
+- Descartado el pingüino/frambuesa (muy "infantil", pedido del usuario). Nueva
+  dirección: **ciberseguridad / terminal hacker**.
+- [x] Imagen regenerada (`assets/splash/current.bin`, RGB565 480×320) con Node:
+      **lluvia matrix** de 0/1 (columnas verdes, cabeza brillante, cola que se
+      apaga), marco verde, y **banda central oscurecida** para que el texto se
+      lea. Generador: scratchpad `make_splash2.js`.
+- [x] Texto en **labels LVGL** (nítido) en `splash.c`: `root@piscan:~#` +
+      "PiScan 22" (verde) + "> ethical hacking toolkit" (cyan) + estado abajo.
+- [ ] Validar en pantalla. Si se quiere "PiScan 22" **más grande/bold**:
+      habilitar `montserrat_28` (rebuild liblvgl) o hornear letras de bloque.
 
 ## Bugs reportados (sesión de prueba en red real)
 - [x] **#1 Lista de redes pierde entradas al volver de Clientes**: el box de

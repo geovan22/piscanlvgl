@@ -25,6 +25,26 @@ lv_obj_t *splash_show(const char *extra_text) {
     for (int i = 0; i < 3; i++) { lv_timer_handler(); usleep(2000); }
     lv_obj_center(img);
 
+    /* Texto como labels LVGL (nitidos) sobre la banda central oscurecida de
+     * la imagen (lluvia matrix). Estetica terminal. */
+    lv_obj_t *prompt = lv_label_create(scr);
+    lv_label_set_text(prompt, "root@piscan:~#");
+    lv_obj_set_style_text_color(prompt, lv_color_hex(0x33FF33), 0);
+    lv_obj_set_style_text_font(prompt, &lv_font_montserrat_10, 0);
+    lv_obj_align(prompt, LV_ALIGN_CENTER, 0, -34);
+
+    lv_obj_t *title = lv_label_create(scr);
+    lv_label_set_text(title, "PiScan 22");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x33FF33), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -8);
+
+    lv_obj_t *sub = lv_label_create(scr);
+    lv_label_set_text(sub, "> ethical hacking toolkit");
+    lv_obj_set_style_text_color(sub, lv_color_hex(0x33CCFF), 0);
+    lv_obj_set_style_text_font(sub, &lv_font_montserrat_10, 0);
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 16);
+
     if (extra_text) {
         lv_obj_t *label = lv_label_create(scr);
         lv_label_set_text(label, extra_text);
