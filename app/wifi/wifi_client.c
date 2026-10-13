@@ -383,6 +383,7 @@ int wifi_client_list_captures(wifi_capture_t *out, int max_count,
             cJSON *ssid = cJSON_GetObjectItemCaseSensitive(item, "ssid");
             cJSON *bssid = cJSON_GetObjectItemCaseSensitive(item, "bssid");
             cJSON *ts = cJSON_GetObjectItemCaseSensitive(item, "ts");
+            cJSON *size = cJSON_GetObjectItemCaseSensitive(item, "size");
             cJSON *hs = cJSON_GetObjectItemCaseSensitive(item, "handshake");
             snprintf(out[count].file, sizeof(out[count].file), "%s",
                      cJSON_IsString(file) ? file->valuestring : "");
@@ -391,6 +392,7 @@ int wifi_client_list_captures(wifi_capture_t *out, int max_count,
             snprintf(out[count].bssid, sizeof(out[count].bssid), "%s",
                      cJSON_IsString(bssid) ? bssid->valuestring : "??");
             out[count].ts = cJSON_IsNumber(ts) ? (long)ts->valuedouble : 0;
+            out[count].size = cJSON_IsNumber(size) ? (long)size->valuedouble : 0;
             out[count].has_handshake = cJSON_IsTrue(hs) ? 1 : 0;
             count++;
         }

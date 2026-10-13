@@ -122,8 +122,13 @@
       patrón del `confirm_dialog`. Escala para Export y lo que venga.
       - [ ] Validar en pantalla (ubicación, que no pise el botón Menú, que cada
         acción abra su confirm/flujo).
-- [ ] Export `.cap` / `.hc22000` para crackeo externo (reusa data/captures).
-- [ ] Beacon flood / probe spam (mdk4 — NO instalado aún; ver alternativa).
+- [x] **Export `.cap` / `.hc22000`** — cubierto. Cada captura deja en
+      `data/captures/` el `.hc22000` (listo para `hashcat -m 22000`) y el `.cap`.
+      Se sacan por scp (hay SSH en .195). + Vista **Capturas** en pantalla:
+      botón propio en la fila WiFi (Escanear · Acciones · Capturas), lista
+      SSID/BSSID/tipo (HS/PMKID)/tamaño; tocar = auditar on-device. "Auditar"
+      salió del menú Acciones (su lugar es Capturas). A validar en pantalla.
+- [ ] Beacon flood / probe spam (mdk4 — NO instalado; resolver instalación).
 - [ ] Evil Twin / AP falso (hostapd+dnsmasq) — solo lab.
 
 ---

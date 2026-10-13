@@ -422,21 +422,26 @@ static void render_capture_list(void) {
         ui_shell_set_status("Sin capturas para auditar", UI_STATUS_INFO);
         return;
     }
-    lv_label_set_text(g_wifi_status_label, "Toca una captura para auditar");
-    ui_shell_set_status("Elegi una captura", UI_STATUS_INFO);
+    lv_label_set_text(g_wifi_status_label, "Capturas en data/captures (toca=auditar; scp->hashcat)");
+    ui_shell_set_status("Capturas: toca una para auditar", UI_STATUS_INFO);
     for (int i = 0; i < g_captures_count; i++) {
         lv_obj_t *row = make_list_row(i);
-        char sbuf[24];
-        snprintf(sbuf, sizeof(sbuf), "%.20s", g_captures[i].ssid);
+        /* SSID */
+        char sbuf[20];
+        snprintf(sbuf, sizeof(sbuf), "%.16s", g_captures[i].ssid);
         make_row_label(row, sbuf, COLOR_OK, 0);
-        char dbuf[24];
-        time_t t = (time_t)g_captures[i].ts;
-        struct tm *tmv = localtime(&t);
-        if (tmv) strftime(dbuf, sizeof(dbuf), "%d/%m %H:%M", tmv);
-        else snprintf(dbuf, sizeof(dbuf), "?");
-        make_row_label(row, dbuf, COLOR_DIM, 210);
-        make_row_label(row, g_captures[i].has_handshake ? "[HS]" : "[--]",
-                       g_captures[i].has_handshake ? COLOR_OK : COLOR_ERR, 330);
+        /* BSSID */
+        make_row_label(row, g_captures[i].bssid, COLOR_DIM, 115);
+        /* Tipo: PMKID (morado) / HS (verde) / -- (rojo) */
+        int is_pmkid = (strstr(g_captures[i].file, "pmkid_") != NULL);
+        const char *tag = is_pmkid ? "PMKID" : (g_captures[i].has_handshake ? "HS" : "--");
+        lv_color_t tagc = is_pmkid ? lv_color_hex(0xCC66FF)
+                                   : (g_captures[i].has_handshake ? COLOR_OK : COLOR_ERR);
+        make_row_label(row, tag, tagc, 250);
+        /* Tamano en KB */
+        char zbuf[16];
+        snprintf(zbuf, sizeof(zbuf), "%ldKB", g_captures[i].size / 1024);
+        make_row_label(row, zbuf, COLOR_DIM, 315);
     }
 }
 
@@ -693,8 +698,15 @@ static void act_clientes_cb(lv_event_t *e)  { if (lv_event_get_code(e)!=LV_EVENT
 static void act_deauth_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_deauth(); }
 static void act_handshake_cb(lv_event_t *e) { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_handshake(); }
 static void act_pmkid_cb(lv_event_t *e)     { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_pmkid(); }
-static void act_audit_cb(lv_event_t *e)     { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_audit(); }
 static void act_cancel_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); }
+
+/* Boton "Capturas" (fila superior, sin necesitar red seleccionada): abre la
+ * lista de capturas (handshakes + PMKID) para auditar on-device o ver el
+ * archivo a sacar por scp. */
+static void capturas_btn_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    trigger_audit();
+}
 
 static void make_action_btn(lv_obj_t *parent, const char *text, uint32_t color, int y, lv_event_cb_t cb) {
     lv_obj_t *b = lv_button_create(parent);
@@ -727,7 +739,7 @@ static void wifi_actions_menu_show(void) {
     lv_obj_add_flag(g_actions_overlay, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *box = lv_obj_create(g_actions_overlay);
-    lv_obj_set_size(box, 320, 300);
+    lv_obj_set_size(box, 300, 262);
     lv_obj_center(box);
     lv_obj_set_style_bg_color(box, lv_color_hex(0x071007), 0);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
@@ -744,13 +756,12 @@ static void wifi_actions_menu_show(void) {
     lv_obj_set_style_text_font(title, &lv_font_montserrat_10, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
 
-    int y = 24;
-    make_action_btn(box, "Clientes",        0x33CCFF, y, act_clientes_cb);  y += 40;
-    make_action_btn(box, "Deauth red",       0xFF4444, y, act_deauth_cb);    y += 40;
-    make_action_btn(box, "Handshake",       0xFFCC33, y, act_handshake_cb); y += 40;
-    make_action_btn(box, "PMKID / EAPOL",   0xCC66FF, y, act_pmkid_cb);     y += 40;
-    make_action_btn(box, "Auditar captura", 0x33CCFF, y, act_audit_cb);     y += 40;
-    make_action_btn(box, "Cancelar",        0x33FF33, y, act_cancel_cb);
+    int y = 30;
+    make_action_btn(box, "Clientes",      0x33CCFF, y, act_clientes_cb);  y += 44;
+    make_action_btn(box, "Deauth red",    0xFF4444, y, act_deauth_cb);    y += 44;
+    make_action_btn(box, "Handshake",     0xFFCC33, y, act_handshake_cb); y += 44;
+    make_action_btn(box, "PMKID / EAPOL", 0xCC66FF, y, act_pmkid_cb);     y += 44;
+    make_action_btn(box, "Cancelar",      0x33FF33, y, act_cancel_cb);
 }
 
 static void actions_btn_event_cb(lv_event_t *e) {
@@ -1528,12 +1539,12 @@ static void enter_section(const char *id, const char *label) {
         /* Boton Acciones: abre el menu overlay con Clientes/Deauth/Handshake/
          * PMKID/Auditar del AP seleccionado. Reemplaza la fila de botones. */
         g_actions_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_actions_btn, 150, 34);
-        lv_obj_align(g_actions_btn, LV_ALIGN_TOP_LEFT, 170, 28);
+        lv_obj_set_size(g_actions_btn, 125, 34);
+        lv_obj_align(g_actions_btn, LV_ALIGN_TOP_LEFT, 168, 28);
         lv_obj_set_style_bg_color(g_actions_btn, lv_color_hex(0x0a2a0a), 0);
         lv_obj_set_style_border_color(g_actions_btn, lv_color_hex(0x33CCFF), 0);
         lv_obj_set_style_border_width(g_actions_btn, 2, 0);
-        lv_obj_set_ext_click_area(g_actions_btn, 12);
+        lv_obj_set_ext_click_area(g_actions_btn, 10);
         lv_obj_add_event_cb(g_actions_btn, actions_btn_event_cb, LV_EVENT_PRESSED, NULL);
         ui_apply_press_effect(g_actions_btn);
         lv_obj_t *actions_lbl = lv_label_create(g_actions_btn);
@@ -1541,6 +1552,23 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(actions_lbl, lv_color_hex(0x33CCFF), 0);
         lv_obj_set_style_text_font(actions_lbl, &lv_font_montserrat_10, 0);
         lv_obj_center(actions_lbl);
+
+        /* Boton Capturas: abre la lista de capturas (HS + PMKID) sin necesitar
+         * red seleccionada; para auditar on-device o ver el archivo para scp. */
+        lv_obj_t *cap_btn = lv_button_create(g_body);
+        lv_obj_set_size(cap_btn, 105, 34);
+        lv_obj_align(cap_btn, LV_ALIGN_TOP_LEFT, 298, 28);
+        lv_obj_set_style_bg_color(cap_btn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(cap_btn, lv_color_hex(0xCC66FF), 0);
+        lv_obj_set_style_border_width(cap_btn, 2, 0);
+        lv_obj_set_ext_click_area(cap_btn, 10);
+        lv_obj_add_event_cb(cap_btn, capturas_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(cap_btn);
+        lv_obj_t *cap_lbl = lv_label_create(cap_btn);
+        lv_label_set_text(cap_lbl, "Capturas");
+        lv_obj_set_style_text_color(cap_lbl, lv_color_hex(0xCC66FF), 0);
+        lv_obj_set_style_text_font(cap_lbl, &lv_font_montserrat_10, 0);
+        lv_obj_center(cap_lbl);
 
         g_wifi_status_label = lv_label_create(g_body);
         lv_label_set_text(g_wifi_status_label, "Toca Escanear para buscar redes");

@@ -75,7 +75,8 @@ typedef struct {
     char ssid[64];     /* nombre de red (cruzado con la DB) o "(desconocida)" */
     char bssid[24];
     long ts;           /* timestamp unix del nombre de archivo */
-    int has_handshake; /* 1 si aircrack confirma handshake */
+    long size;         /* tamano del archivo en bytes */
+    int has_handshake; /* 1 si aircrack confirma handshake / PMKID */
 } wifi_capture_t;
 
 /* Lista las capturas .cap disponibles. Llena out[] (hasta max_count),
