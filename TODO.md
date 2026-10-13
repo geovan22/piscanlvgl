@@ -156,10 +156,20 @@
       scrolleado y ocultaba las primeras filas. Fix: `lv_obj_scroll_to_y(box,0)`
       en cada render (redes, clientes, capturas, wordlists).
 - [x] **#2 Deauth selectivo (por cliente)**: FUNCIONA. ✅
-- [ ] **#3 Deauth por red (broadcast) no tumba**: esperado — los clientes
-      modernos ignoran el deauth broadcast; el dirigido (`-c`) sí. Mejora
-      propuesta (pendiente de OK): "Deauth red" = iterar deauth dirigido a cada
-      cliente asociado.
+- [~] **#3 Deauth por red (broadcast) no tumba** — IMPLEMENTADO, a validar en
+      red. Los clientes modernos ignoran el deauth broadcast; el dirigido (`-c`)
+      sí. Ahora "Deauth red" (sin `client_mac`) → `wifi_ops.py` enumera las
+      estaciones asociadas (airodump ~8s, solo escucha) y lanza un
+      `aireplay --deauth -a <bssid> -c <mac>` DIRIGIDO a CADA cliente **en
+      paralelo** durante `deauth_duration`. Si no detecta clientes, cae al
+      broadcast clásico. Sin cambios en C/UI (el botón ya llama con
+      `client_mac` vacío; el tap por cliente sigue siendo selectivo). Nueva
+      función `deauth_network()` + helper `_station_macs()`; se loguea como
+      `deauth_red`. El escaneo y la inyección NO corren a la vez (evita el
+      problema de concurrencia airodump+aireplay documentado en
+      `capture_handshake`).
+      - [ ] **Validar en red real**: atacar tu red de lab con clientes y
+        confirmar que caen ~N s. Ver cuántos clientes reporta el footer.
 - [~] **#4 Error "utf-8 codec can't encode" al guardar Config**: el servicio
       systemd corre sin locale (C/POSIX) → Python falla al codificar salida.
       Fix: `db_tool.py` fuerza `sys.stdout.reconfigure(utf-8)` + err ascii-safe;
