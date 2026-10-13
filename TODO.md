@@ -116,6 +116,18 @@
 - [ ] Validar en pantalla. Si se quiere "PiScan 22" **más grande/bold**:
       habilitar `montserrat_28` (rebuild liblvgl) o hornear letras de bloque.
 
+## Scanner WiFi — pocas redes (RESUELTO: antena)
+- Causa real: **wlan1 (dongle USB RTL8821CU) tiene peor recepción** que la
+  antena onboard. Pista del usuario: "Conectar Red" (escanea wlan0) lista más.
+  NO era reg domain (wlan0=GT ve lo mismo que wlan1=99 en lo fuerte) ni parseo
+  (`iw scan` crudo = lo que devolvía el script). wlan1 es self-managed en país
+  99 y no se mueve ni con reboot (firmware world) — pero eso no era el límite.
+- [x] **Fix: el scan de la sección WiFi suma lo que ve wlan0** (onboard) vía
+  nmcli (`_scan_nmcli`), fusionado con el de wlan1. El ataque sigue en wlan1
+  con el BSSID+canal obtenidos. Así el listado queda completo (como el teléfono).
+- Nota: deauth/handshake sobre un AP 5GHz-alto (ch 149-165) que solo ve wlan0
+  pueden fallar (wlan1 en país 99 no fija esos canales); 2.4 y 5G UNII-1 OK.
+
 ## Bugs reportados (sesión de prueba en red real)
 - [x] **#1 Lista de redes pierde entradas al volver de Clientes**: el box de
       resultados no reseteaba el scroll al mostrar una lista nueva → quedaba
