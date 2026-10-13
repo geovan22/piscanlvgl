@@ -11,6 +11,28 @@ def ensure_interface_up(iface):
     subprocess.run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'up'],
                     capture_output=True, timeout=5)
 
+def _db_config_get(key):
+    """Lee un valor de la tabla Config (silencioso si falla)."""
+    try:
+        sys.path.insert(0, os.path.expanduser("~/piscanlvgl/app"))
+        from db.models import get_session, Config
+        row = get_session().get(Config, key)
+        return row.value if row and row.value else None
+    except Exception:
+        return None
+
+def ensure_reg_domain():
+    """El dominio regulatorio en 99/00 (world) DESHABILITA muchos canales
+    (sobre todo 5GHz) -> el scan no los barre y se ven menos redes. Ademas el
+    pais puede volver a 99 tras recargas de modulo. Si hay un pais configurado
+    (Config key 'wifi_country', ej 'GT'/'HN'/'MX'), lo fijamos antes de
+    escanear para habilitar todos los canales. No-op si no esta seteado."""
+    cc = _db_config_get('wifi_country')
+    if cc and len(cc.strip()) == 2:
+        subprocess.run(['sudo', '/usr/sbin/iw', 'reg', 'set', cc.strip().upper()],
+                       capture_output=True, timeout=5)
+        time.sleep(0.5)
+
 def _freq_to_channel(freq):
     """Deriva el canal del freq en MHz. Fuente mas confiable que
     'DS Parameter set' (muchos APs 5GHz/HT no emiten esa linea -> canal 0,
@@ -95,6 +117,7 @@ def scan_networks(iface='wlan1', passes=3):
     emiten beacon durante el barrido y los 5GHz DFS son escaneo pasivo. Con
     2-3 pasadas se captan bastantes mas."""
     ensure_interface_up(iface)
+    ensure_reg_domain()   # habilita todos los canales si hay pais configurado
     networks = {}
     last_err = None
     for i in range(max(1, passes)):
