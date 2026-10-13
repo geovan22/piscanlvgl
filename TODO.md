@@ -107,7 +107,15 @@
         lo suelta, es normal). hashes=3.
       - UI: botón **PMKID** (morado) en WiFi; `wifi_client_pmkid` + hilo + poll.
       - sudoers: +`/usr/bin/hcxdumptool`. Deps: `hcxdumptool hcxtools` (ya en Pi).
-      - [ ] Validar el botón en pantalla (rebuild hecho) contra la red de lab.
+      - [ ] Validar en pantalla contra la red de lab (vía menú Acciones).
+- [x] **UI: menú "Acciones" (overlay)** — la sección WiFi no escalaba con un
+      botón por acción (y PMKID chocaba con el botón Menú). Ahora la fila es solo
+      **Escanear + Acciones**; "Acciones" (con red seleccionada) abre un overlay
+      modal con Clientes / Deauth red / Handshake / PMKID-EAPOL / Auditar /
+      Cancelar. Cada uno cierra el overlay y lanza su `trigger_*()`. Reusa el
+      patrón del `confirm_dialog`. Escala para Export y lo que venga.
+      - [ ] Validar en pantalla (ubicación, que no pise el botón Menú, que cada
+        acción abra su confirm/flujo).
 - [ ] Export `.cap` / `.hc22000` para crackeo externo (reusa data/captures).
 - [ ] Beacon flood / probe spam (mdk4 — NO instalado aún; ver alternativa).
 - [ ] Evil Twin / AP falso (hostapd+dnsmasq) — solo lab.

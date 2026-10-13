@@ -90,11 +90,7 @@ typedef struct {
 
 static wifi_target_t g_wifi_target = {0};
 static lv_obj_t *g_target_label = NULL;
-static lv_obj_t *g_deauth_btn = NULL;
-static lv_obj_t *g_handshake_btn = NULL;
-static lv_obj_t *g_pmkid_btn = NULL;
-static lv_obj_t *g_audit_btn = NULL;
-static lv_obj_t *g_clients_btn = NULL;
+static lv_obj_t *g_actions_btn = NULL;   /* abre el menu de Acciones del AP seleccionado */
 static lv_obj_t *g_selected_row = NULL;
 static int g_list_mode = 0;   /* box de resultados: 0=scan 1=capturas 2=wordlists 3=clientes */
 static wifi_capture_t g_captures[WIFI_MAX_CAPTURES];
@@ -117,21 +113,14 @@ static int g_deauth_duration = 0;   /* seg; 0 = rafaga. Leido de la DB al atacar
 static char g_deauth_client_mac[24] = "";  /* "" = toda la red; si no, deauth selectivo a ese cliente */
 
 static void set_wifi_buttons_disabled(int disabled) {
-    if (!g_scan_btn || !g_deauth_btn || !g_handshake_btn) return;
+    /* Con el menu de Acciones, en pantalla solo quedan Escanear y Acciones;
+     * el resto de acciones vive en el overlay (que se cierra al lanzar una). */
     if (disabled) {
-        lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
-        lv_obj_add_state(g_deauth_btn, LV_STATE_DISABLED);
-        lv_obj_add_state(g_handshake_btn, LV_STATE_DISABLED);
-        if (g_pmkid_btn) lv_obj_add_state(g_pmkid_btn, LV_STATE_DISABLED);
-        if (g_audit_btn) lv_obj_add_state(g_audit_btn, LV_STATE_DISABLED);
-        if (g_clients_btn) lv_obj_add_state(g_clients_btn, LV_STATE_DISABLED);
+        if (g_scan_btn) lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
+        if (g_actions_btn) lv_obj_add_state(g_actions_btn, LV_STATE_DISABLED);
     } else {
-        lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
-        lv_obj_clear_state(g_deauth_btn, LV_STATE_DISABLED);
-        lv_obj_clear_state(g_handshake_btn, LV_STATE_DISABLED);
-        if (g_pmkid_btn) lv_obj_clear_state(g_pmkid_btn, LV_STATE_DISABLED);
-        if (g_audit_btn) lv_obj_clear_state(g_audit_btn, LV_STATE_DISABLED);
-        if (g_clients_btn) lv_obj_clear_state(g_clients_btn, LV_STATE_DISABLED);
+        if (g_scan_btn) lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
+        if (g_actions_btn) lv_obj_clear_state(g_actions_btn, LV_STATE_DISABLED);
     }
 }
 
@@ -192,15 +181,14 @@ static void on_deauth_confirm(bool confirmed, void *user_data) {
     pthread_detach(tid);
 }
 
-static void deauth_btn_event_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+static void trigger_deauth(void) {
     if (!g_wifi_target.has_target) {
         if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
         return;
     }
     if (g_deauth_running) return;
 
-    g_deauth_client_mac[0] = '\0';   /* boton = deauth a TODA la red (broadcast) */
+    g_deauth_client_mac[0] = '\0';   /* deauth a TODA la red (dirigido a todos los clientes) */
 
     /* Duracion configurada en la DB (seccion Config -> deauth_duration).
      * 0 = rafaga; >0 = sostenido N s. Se lee fresca en cada ataque para
@@ -582,8 +570,7 @@ void ui_shell_poll_clients(void) {
     render_client_list();
 }
 
-static void clients_btn_event_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+static void trigger_clients(void) {
     if (!g_wifi_target.has_target) {
         if (g_wifi_status_label)
             lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
@@ -659,14 +646,11 @@ static void audit_list_row_cb(lv_event_t *e) {
     }
 }
 
-static void audit_btn_event_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
-    /* Paso 3 conectara esto con la lista de capturas. Por ahora, aviso. */
+static void trigger_audit(void) {
     show_capture_list();
 }
 
-static void handshake_btn_event_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+static void trigger_handshake(void) {
     if (!g_wifi_target.has_target) {
         if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
         return;
@@ -678,8 +662,7 @@ static void handshake_btn_event_cb(lv_event_t *e) {
     confirm_dialog_show(g_main_screen, msg, on_handshake_confirm, NULL);
 }
 
-static void pmkid_btn_event_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+static void trigger_pmkid(void) {
     if (!g_wifi_target.has_target) {
         if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
         return;
@@ -689,6 +672,94 @@ static void pmkid_btn_event_cb(lv_event_t *e) {
     char msg[96];
     snprintf(msg, sizeof(msg), "Capturar PMKID/EAPOL de %s?", g_wifi_target.ssid);
     confirm_dialog_show(g_main_screen, msg, on_pmkid_confirm, NULL);
+}
+
+/* ── Menu de Acciones (overlay) ──────────────────────────────────────────
+ * Un solo boton "Acciones" abre esta lista con todo lo que se le puede hacer
+ * al AP seleccionado. Escala sin llenar la pantalla de botones. Cada accion
+ * cierra el overlay y lanza su trigger_*() (que a su vez muestra su confirm o
+ * arranca su hilo). El overlay es modal (cubre la pantalla), asi que la unica
+ * salida es por sus propios botones -> no queda colgado al navegar. ── */
+static lv_obj_t *g_actions_overlay = NULL;
+
+static void close_actions_menu(void) {
+    if (g_actions_overlay) {
+        lv_obj_del(g_actions_overlay);
+        g_actions_overlay = NULL;
+    }
+}
+
+static void act_clientes_cb(lv_event_t *e)  { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_clients(); }
+static void act_deauth_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_deauth(); }
+static void act_handshake_cb(lv_event_t *e) { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_handshake(); }
+static void act_pmkid_cb(lv_event_t *e)     { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_pmkid(); }
+static void act_audit_cb(lv_event_t *e)     { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_audit(); }
+static void act_cancel_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); }
+
+static void make_action_btn(lv_obj_t *parent, const char *text, uint32_t color, int y, lv_event_cb_t cb) {
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_size(b, 284, 34);
+    lv_obj_align(b, LV_ALIGN_TOP_MID, 0, y);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x0a1a0a), 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(color), 0);
+    lv_obj_set_style_border_width(b, 2, 0);
+    lv_obj_set_ext_click_area(b, 4);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(b);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
+    lv_obj_center(l);
+}
+
+static void wifi_actions_menu_show(void) {
+    if (g_actions_overlay) return;
+
+    g_actions_overlay = lv_obj_create(g_main_screen);
+    lv_obj_set_size(g_actions_overlay, 480, 320);
+    lv_obj_set_pos(g_actions_overlay, 0, 0);
+    lv_obj_set_style_bg_color(g_actions_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(g_actions_overlay, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(g_actions_overlay, 0, 0);
+    lv_obj_set_style_pad_all(g_actions_overlay, 0, 0);
+    lv_obj_clear_flag(g_actions_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(g_actions_overlay, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *box = lv_obj_create(g_actions_overlay);
+    lv_obj_set_size(box, 320, 300);
+    lv_obj_center(box);
+    lv_obj_set_style_bg_color(box, lv_color_hex(0x071007), 0);
+    lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(box, lv_color_hex(0x33FF33), 0);
+    lv_obj_set_style_border_width(box, 2, 0);
+    lv_obj_set_style_pad_all(box, 6, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(box);
+    char tb[80];
+    snprintf(tb, sizeof(tb), "Acciones: %.20s", g_wifi_target.ssid);
+    lv_label_set_text(title, tb);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x33FF33), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_10, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
+
+    int y = 24;
+    make_action_btn(box, "Clientes",        0x33CCFF, y, act_clientes_cb);  y += 40;
+    make_action_btn(box, "Deauth red",       0xFF4444, y, act_deauth_cb);    y += 40;
+    make_action_btn(box, "Handshake",       0xFFCC33, y, act_handshake_cb); y += 40;
+    make_action_btn(box, "PMKID / EAPOL",   0xCC66FF, y, act_pmkid_cb);     y += 40;
+    make_action_btn(box, "Auditar captura", 0x33CCFF, y, act_audit_cb);     y += 40;
+    make_action_btn(box, "Cancelar",        0x33FF33, y, act_cancel_cb);
+}
+
+static void actions_btn_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (!g_wifi_target.has_target) {
+        if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
+        return;
+    }
+    wifi_actions_menu_show();
 }
 
 static void *wifi_scan_thread_fn(void *arg) {
@@ -1425,16 +1496,13 @@ static void enter_section(const char *id, const char *label) {
     g_wifi_results_box = NULL;
     g_scan_btn = NULL;
     g_target_label = NULL;
-    g_deauth_btn = NULL;
-    g_handshake_btn = NULL;
-    g_pmkid_btn = NULL;
-    g_audit_btn = NULL;
-    g_clients_btn = NULL;
+    g_actions_btn = NULL;
     g_net_box = NULL;
     g_net_status_label = NULL;
     g_net_selected_row = NULL;
     g_selected_row = NULL;
     g_cfg_deauth_label = NULL;
+    close_actions_menu();   /* por si quedo un overlay de acciones abierto */
 
     if (strcmp(id, "wifi") == 0) {
         lv_obj_t *title = lv_label_create(g_body);
@@ -1457,23 +1525,22 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(scan_lbl, COLOR_OK, 0);
         lv_obj_center(scan_lbl);
 
-        /* Clientes del AP seleccionado (Fase 1, solo escucha) */
-        lv_obj_t *clients_btn = lv_button_create(g_body);
-        lv_obj_set_size(clients_btn, 110, 34);
-        lv_obj_align(clients_btn, LV_ALIGN_TOP_LEFT, 170, 28);
-        lv_obj_set_style_bg_color(clients_btn, lv_color_hex(0x0a2a0a), 0);
-        lv_obj_set_style_border_color(clients_btn, lv_color_hex(0x33CCFF), 0);
-        lv_obj_set_style_border_width(clients_btn, 2, 0);
-        lv_obj_set_ext_click_area(clients_btn, 12);
-        lv_obj_add_event_cb(clients_btn, clients_btn_event_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(clients_btn);
-        g_clients_btn = clients_btn;
-        lv_obj_t *clients_lbl = lv_label_create(clients_btn);
-        lv_label_set_text(clients_lbl, "Clientes");
-        lv_obj_set_style_text_color(clients_lbl, lv_color_hex(0x33CCFF), 0);
-        lv_obj_set_style_text_font(clients_lbl, &lv_font_montserrat_10, 0);
-        lv_obj_center(clients_lbl);
-
+        /* Boton Acciones: abre el menu overlay con Clientes/Deauth/Handshake/
+         * PMKID/Auditar del AP seleccionado. Reemplaza la fila de botones. */
+        g_actions_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_actions_btn, 150, 34);
+        lv_obj_align(g_actions_btn, LV_ALIGN_TOP_LEFT, 170, 28);
+        lv_obj_set_style_bg_color(g_actions_btn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(g_actions_btn, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_border_width(g_actions_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_actions_btn, 12);
+        lv_obj_add_event_cb(g_actions_btn, actions_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(g_actions_btn);
+        lv_obj_t *actions_lbl = lv_label_create(g_actions_btn);
+        lv_label_set_text(actions_lbl, "Acciones " LV_SYMBOL_LIST);
+        lv_obj_set_style_text_color(actions_lbl, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_text_font(actions_lbl, &lv_font_montserrat_10, 0);
+        lv_obj_center(actions_lbl);
 
         g_wifi_status_label = lv_label_create(g_body);
         lv_label_set_text(g_wifi_status_label, "Toca Escanear para buscar redes");
@@ -1525,65 +1592,8 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_font(g_target_label, &lv_font_montserrat_10, 0);
         lv_obj_align(g_target_label, LV_ALIGN_BOTTOM_LEFT, 10, -48);
 
-        g_deauth_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_deauth_btn, 95, 32);
-        lv_obj_align(g_deauth_btn, LV_ALIGN_BOTTOM_LEFT, 10, -14);
-        lv_obj_set_style_bg_color(g_deauth_btn, lv_color_hex(0x330000), 0);
-        lv_obj_set_style_border_color(g_deauth_btn, COLOR_ERR, 0);
-        lv_obj_set_style_border_width(g_deauth_btn, 2, 0);
-        lv_obj_set_ext_click_area(g_deauth_btn, 12);
-        lv_obj_add_event_cb(g_deauth_btn, deauth_btn_event_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect_danger(g_deauth_btn);
-        lv_obj_t *deauth_lbl = lv_label_create(g_deauth_btn);
-        lv_label_set_text(deauth_lbl, "Deauth");
-        lv_obj_set_style_text_color(deauth_lbl, COLOR_ERR, 0);
-        lv_obj_center(deauth_lbl);
-
-        g_handshake_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_handshake_btn, 130, 32);
-        lv_obj_align(g_handshake_btn, LV_ALIGN_BOTTOM_LEFT, 115, -14);
-        lv_obj_set_style_bg_color(g_handshake_btn, lv_color_hex(0x0a2a0a), 0);
-        lv_obj_set_style_border_color(g_handshake_btn, COLOR_WARN, 0);
-        lv_obj_set_style_border_width(g_handshake_btn, 2, 0);
-        lv_obj_set_ext_click_area(g_handshake_btn, 12);
-        lv_obj_add_event_cb(g_handshake_btn, handshake_btn_event_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(g_handshake_btn);
-        lv_obj_t *handshake_lbl = lv_label_create(g_handshake_btn);
-        lv_label_set_text(handshake_lbl, "Handshake");
-        lv_obj_set_style_text_color(handshake_lbl, COLOR_WARN, 0);
-        lv_obj_set_style_text_font(handshake_lbl, &lv_font_montserrat_10, 0);
-        lv_obj_center(handshake_lbl);
-
-        g_audit_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_audit_btn, 95, 32);
-        lv_obj_align(g_audit_btn, LV_ALIGN_BOTTOM_LEFT, 250, -14);
-        lv_obj_set_style_bg_color(g_audit_btn, lv_color_hex(0x0a2a0a), 0);
-        lv_obj_set_style_border_color(g_audit_btn, lv_color_hex(0x33CCFF), 0);
-        lv_obj_set_style_border_width(g_audit_btn, 2, 0);
-        lv_obj_set_ext_click_area(g_audit_btn, 12);
-        lv_obj_add_event_cb(g_audit_btn, audit_btn_event_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(g_audit_btn);
-        lv_obj_t *audit_lbl = lv_label_create(g_audit_btn);
-        lv_label_set_text(audit_lbl, "Auditar");
-        lv_obj_set_style_text_color(audit_lbl, lv_color_hex(0x33CCFF), 0);
-        lv_obj_set_style_text_font(audit_lbl, &lv_font_montserrat_10, 0);
-        lv_obj_center(audit_lbl);
-
-        /* PMKID/EAPOL clientless (Fase 1): captura del AP sin esperar cliente */
-        g_pmkid_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_pmkid_btn, 118, 32);
-        lv_obj_align(g_pmkid_btn, LV_ALIGN_BOTTOM_LEFT, 350, -14);
-        lv_obj_set_style_bg_color(g_pmkid_btn, lv_color_hex(0x1a0a2a), 0);
-        lv_obj_set_style_border_color(g_pmkid_btn, lv_color_hex(0xCC66FF), 0);
-        lv_obj_set_style_border_width(g_pmkid_btn, 2, 0);
-        lv_obj_set_ext_click_area(g_pmkid_btn, 12);
-        lv_obj_add_event_cb(g_pmkid_btn, pmkid_btn_event_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(g_pmkid_btn);
-        lv_obj_t *pmkid_lbl = lv_label_create(g_pmkid_btn);
-        lv_label_set_text(pmkid_lbl, "PMKID");
-        lv_obj_set_style_text_color(pmkid_lbl, lv_color_hex(0xCC66FF), 0);
-        lv_obj_set_style_text_font(pmkid_lbl, &lv_font_montserrat_10, 0);
-        lv_obj_center(pmkid_lbl);
+        /* Las acciones (Deauth/Handshake/PMKID/Clientes/Auditar) ya no son
+         * botones sueltos: viven en el overlay que abre el boton "Acciones". */
     } else if (strcmp(id, "net_connect") == 0) {
         lv_obj_t *title = lv_label_create(g_body);
         lv_label_set_text(title, "Conectar Red (gestion / SSH)");
@@ -1769,6 +1779,7 @@ static void draw_menu_current(void) {
 }
 
 static void show_carousel(void) {
+    close_actions_menu();   /* por si quedara un overlay de acciones abierto */
     lv_obj_clean(g_body);
     g_net_box = NULL;
     g_net_status_label = NULL;
@@ -1780,11 +1791,7 @@ static void show_carousel(void) {
     g_net_status_label = NULL;
     g_net_selected_row = NULL;
     g_target_label = NULL;
-    g_deauth_btn = NULL;
-    g_handshake_btn = NULL;
-    g_pmkid_btn = NULL;
-    g_audit_btn = NULL;
-    g_clients_btn = NULL;
+    g_actions_btn = NULL;
     g_net_box = NULL;
     g_net_status_label = NULL;
     g_net_selected_row = NULL;
