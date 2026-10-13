@@ -97,11 +97,20 @@
 - [x] **Validado en red real (2026-10-13)**: el deauth por cliente funciona y
       respeta el tiempo configurado (tras el fix de canal 0 en 5GHz + rebuild).
 
-### Resto Fase 1 (pendiente, ver CLAUDE.md §8)
+### Resto Fase 1 (ver CLAUDE.md §8)
+- [~] **Captura PMKID/EAPOL (hcxdumptool 6.3.5)** — backend VALIDADO directo,
+      UI cableada, a probar en pantalla.
+      - Backend `wifi_ops.pmkid_capture`: hcxdumptool `-F` ~30s (pone monitor él
+        mismo, por eso NO usamos enable_monitor) → `.pcapng` → `hcxpcapngtool`
+        → `.hc22000`; filtra por BSSID (pmkid_target/eapol_target). Validado en
+        red: de CLARO_fCexjw sacó **EAPOL clientless** (no PMKID — el router no
+        lo suelta, es normal). hashes=3.
+      - UI: botón **PMKID** (morado) en WiFi; `wifi_client_pmkid` + hilo + poll.
+      - sudoers: +`/usr/bin/hcxdumptool`. Deps: `hcxdumptool hcxtools` (ya en Pi).
+      - [ ] Validar el botón en pantalla (rebuild hecho) contra la red de lab.
+- [ ] Export `.cap` / `.hc22000` para crackeo externo (reusa data/captures).
+- [ ] Beacon flood / probe spam (mdk4 — NO instalado aún; ver alternativa).
 - [ ] Evil Twin / AP falso (hostapd+dnsmasq) — solo lab.
-- [ ] Captura PMKID (hcxdumptool).
-- [ ] Beacon flood / probe spam (demo).
-- [ ] Export .cap / .hccapx para crackeo externo.
 
 ---
 
