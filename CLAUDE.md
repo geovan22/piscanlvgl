@@ -131,6 +131,41 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
 - **Sudoers** `/etc/sudoers.d/piscan-wifi` con NOPASSWD para los binarios
   necesarios (ver §7).
 
+### Fase 1 — WiFi avanzado (COMPLETA, 2026-10-13)
+- **Menú "Acciones" (overlay)** por AP en la sección WiFi: fila superior
+  Escanear · Acciones · Capturas. Acciones abre un modal (patrón
+  `confirm_dialog`) con: Clientes / Deauth red / Handshake / PMKID·EAPOL /
+  Beacon flood / Evil Twin / Cancelar. Escala sin llenar la pantalla.
+- **Clientes por AP** (`scan_clients`, airodump estaciones) + **OUI→fabricante**
+  (base IEEE completa `data/oui.txt`) + MAC aleatorias etiquetadas.
+- **Deauth**: selectivo por cliente (`-c`) y **"Deauth red" = dirigido a TODOS
+  los clientes en paralelo** (el broadcast no tumba modernos). Duración
+  configurable (`deauth_duration`, Config).
+- **Handshake** + **Auditoría** (aircrack + wordlist común/rockyou).
+- **PMKID/EAPOL clientless** (`hcxdumptool` 6.3.x → `.pcapng` → `hcxpcapngtool`
+  → `.hc22000`). Se convierte también a `.cap` (tcpdump) para auditar
+  on-device; aparece en **Capturas**.
+- **Vista Capturas/Export**: lista HS + PMKID (SSID/BSSID/tipo/tamaño); tocar =
+  auditar. Export = los `.hc22000`/`.cap` en `data/captures` salen por scp a
+  hashcat (`-m 22000`).
+- **Beacon flood** (`mdk4`, en `/usr/sbin`): nombres realistas (clon del scan +
+  `data/beacon_ssids.txt`), duración configurable (`beacon_duration`, Config).
+- **Evil Twin** (`evil_twin()` en wifi_ops): deauth corto al canal real →
+  hostapd AP abierto con el SSID objetivo (2.4) → `ip 10.0.0.1/24` + dnsmasq
+  (DHCP+DNS wildcard) → redirect :80→:8080 con **nft** (trixie; fallback
+  iptables) → portal cautivo (http.server threading :8080) que CAPTURA la
+  clave → teardown a managed. Log en `data/captures/evil_twin.log`.
+  - Caveats (no bugs, inherentes al evil twin): el **popup captive automático**
+    depende del teléfono (DNS cifrado lo evita → el usuario entra por el
+    navegador); un device con la red guardada como **WPA** no se auto-une al
+    gemelo **abierto** (mismatch de seguridad) → en demo, "olvidar" la red o
+    usar otro device. La captura siempre funciona una vez en el portal.
+  - **wlan1 soporta AP mode** (`iw phy` lista `* AP`). El índice del phy
+    **cambia** entre reboots/recargas → derivarlo de
+    `/sys/class/net/wlan1/phy80211/index`, no asumir `phy2`.
+- Pendiente de Fase 1 (diferido): captura PMKID ya hecha; lo único no hecho es
+  si se quisiera un portal HTTPS/clonado más elaborado (no necesario).
+
 ---
 
 ## 4. ⏳ PENDIENTE
