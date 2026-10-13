@@ -134,7 +134,21 @@
       En el menú **Acciones** ("Beacon flood", naranja); usa el canal del AP
       seleccionado, ~20s fijos (BEACON_SECONDS). mdk4 en /usr/sbin (+sudoers).
       - [ ] Validar el botón en pantalla contra el lab.
-- [ ] Evil Twin / AP falso (hostapd+dnsmasq) — solo lab.
+- [x] **Evil Twin / AP falso (hostapd+dnsmasq+portal)** — backend VALIDADO
+      directo (capturó `password:"123456"`, `captured:true`) + UI cableada.
+      `evil_twin()`: deauth corto al AP real → hostapd AP abierto con el nombre
+      objetivo (2.4, ch fiable) → ip 10.0.0.1/24 + dnsmasq (DHCP+DNS wildcard)
+      → redirect :80→:8080 con **nft** (trixie; fallback iptables) → portal
+      cautivo (http.server threading en :8080) que CAPTURA la clave → teardown
+      limpio. En **Acciones → Evil Twin** (rojo), usa SSID/BSSID/canal del AP
+      seleccionado, hasta ET_SECONDS=180s. Log en data/captures/evil_twin.log.
+      sudoers: + hostapd/dnsmasq/nft/iptables/pkill.
+      Caveat honesto: el **popup captive automático** depende del teléfono
+      (DNS cifrado lo evita); y un device con la red guardada como WPA puede no
+      auto-unirse al gemelo ABIERTO (mismatch de seguridad). Captura siempre que
+      la víctima entre al portal (auto o por navegador). Limitación de todo
+      evil twin, no bug.
+      - [ ] Validar el botón en pantalla contra el lab.
 
 ---
 

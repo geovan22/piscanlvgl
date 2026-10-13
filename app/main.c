@@ -164,6 +164,7 @@ int main(void) {
         ui_shell_poll_handshake();
         ui_shell_poll_pmkid();
         ui_shell_poll_beacon();
+        ui_shell_poll_eviltwin();
         ui_shell_poll_audit();
         ui_shell_poll_caplist();
         ui_shell_poll_netscan();

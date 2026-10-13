@@ -55,6 +55,14 @@ int wifi_client_pmkid(const char *bssid, int channel, int seconds,
 int wifi_client_beacon(int channel, int seconds,
                        char *out_detail, int detail_size);
 
+/* Evil Twin: AP falso abierto con el SSID objetivo + portal cautivo que
+ * captura la contrasena WiFi. Primero hace un deauth corto al AP real. SOLO
+ * lab. Retorna 1 si capturo (out_password con la clave), 0 si no capturo,
+ * -1 error (ver out_detail). Bloquea hasta captura o `seconds`. */
+int wifi_client_evil_twin(const char *ssid, const char *bssid, int channel, int seconds,
+                          char *out_password, int pw_size,
+                          char *out_detail, int detail_size);
+
 #define WIFI_MAX_CLIENTS 20
 
 /* Un cliente (estacion) asociado a un AP, visto por airodump. */

