@@ -15,4 +15,5 @@ geo22 ALL=(ALL) NOPASSWD: /usr/sbin/iptables
 geo22 ALL=(ALL) NOPASSWD: /sbin/iptables
 geo22 ALL=(ALL) NOPASSWD: /usr/sbin/nft
 geo22 ALL=(ALL) NOPASSWD: /sbin/nft
+geo22 ALL=(ALL) NOPASSWD: /usr/sbin/sysctl
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/pkill

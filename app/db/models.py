@@ -73,6 +73,24 @@ class WifiAttackLog(Base):
     result: Mapped[str] = mapped_column(String(16), nullable=False)
     details: Mapped[str] = mapped_column(Text, nullable=True)
 
+class HoneypotLog(Base):
+    """Telemetria de dispositivos que caen en el honeypot (AP abierto +
+    portal informativo). SIN credenciales: solo datos para analisis/estadistica
+    en una auditoria autorizada. Una fila por cliente observado por sesion."""
+    __tablename__ = "honeypot_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    ssid: Mapped[str] = mapped_column(String(64), nullable=True)          # nombre del honeypot
+    client_mac: Mapped[str] = mapped_column(String(24), nullable=True)
+    vendor: Mapped[str] = mapped_column(String(32), nullable=True)        # OUI -> fabricante
+    client_ip: Mapped[str] = mapped_column(String(24), nullable=True)
+    hostname: Mapped[str] = mapped_column(String(64), nullable=True)      # del DHCP
+    os_guess: Mapped[str] = mapped_column(String(24), nullable=True)      # Android/iOS/Windows/...
+    user_agent: Mapped[str] = mapped_column(String(256), nullable=True)
+    requests: Mapped[int] = mapped_column(Integer, nullable=True)         # nro de hits al portal
+    domains: Mapped[str] = mapped_column(Text, nullable=True)             # dominios DNS consultados
+    details: Mapped[str] = mapped_column(Text, nullable=True)
+
 _engine = None
 _SessionLocal = None
 
