@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-wifi_scan.py — Escaneo de redes via `iw scan`. Salida JSON, mismo
-patron que db_tool.py: {"ok": true, "networks": [...]} o {"ok": false, "error": ...}
+wifi_scan.py — Escaneo de redes via `iw scan` sobre wlan1 (adaptador de
+ataque). Salida JSON, mismo patron que db_tool.py:
+{"ok": true, "networks": [...]} o {"ok": false, "error": ...}
+
+Solo-wlan1 a proposito: la seccion WiFi escanea y ataca con el MISMO
+adaptador (wlan1), asi lo que se lista es lo que se puede atacar. Si wlan1
+lista pocas, casi siempre es que su phy revirtio a pais 99 (ver CLAUDE.md §6)
+-> hay que volver a fijarle GT.
 """
 import sys, os, json, subprocess, time
 
@@ -10,28 +16,6 @@ def ensure_interface_up(iface):
     modo monitor/ataque), asi que nada la levanta sola tras un reinicio."""
     subprocess.run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'up'],
                     capture_output=True, timeout=5)
-
-def _db_config_get(key):
-    """Lee un valor de la tabla Config (silencioso si falla)."""
-    try:
-        sys.path.insert(0, os.path.expanduser("~/piscanlvgl/app"))
-        from db.models import get_session, Config
-        row = get_session().get(Config, key)
-        return row.value if row and row.value else None
-    except Exception:
-        return None
-
-def ensure_reg_domain():
-    """El dominio regulatorio en 99/00 (world) DESHABILITA muchos canales
-    (sobre todo 5GHz) -> el scan no los barre y se ven menos redes. Ademas el
-    pais puede volver a 99 tras recargas de modulo. Si hay un pais configurado
-    (Config key 'wifi_country', ej 'GT'/'HN'/'MX'), lo fijamos antes de
-    escanear para habilitar todos los canales. No-op si no esta seteado."""
-    cc = _db_config_get('wifi_country')
-    if cc and len(cc.strip()) == 2:
-        subprocess.run(['sudo', '/usr/sbin/iw', 'reg', 'set', cc.strip().upper()],
-                       capture_output=True, timeout=5)
-        time.sleep(0.5)
 
 def _freq_to_channel(freq):
     """Deriva el canal del freq en MHz. Fuente mas confiable que
@@ -51,75 +35,19 @@ def _freq_to_channel(freq):
         return (f - 5950) // 5   # 6 GHz (WiFi 6E), por si acaso
     return 0
 
-def _pct_to_dbm(pct):
-    """nmcli da la senal en % (0-100); la convertimos a dBm aprox para que
-    sea comparable con la de `iw` (dBm). 100%->-50, 0%->-100."""
-    try:
-        return float(int(pct)) / 2.0 - 100.0
-    except (ValueError, TypeError):
-        return -100.0
-
-def _scan_nmcli(networks, iface='wlan0'):
-    """Suma al dict las redes que ve el ONBOARD (wlan0) via NetworkManager.
-    La antena onboard capta bastante mas que el dongle USB (wlan1), asi el
-    listado de la seccion WiFi queda completo. El ataque sigue usando wlan1
-    con el BSSID+canal obtenidos aca. rescan en background = no corta el SSH."""
-    try:
-        subprocess.run(['sudo', '/usr/bin/nmcli', 'device', 'wifi', 'rescan', 'ifname', iface],
-                       capture_output=True, timeout=15)
-        r = subprocess.run(['sudo', '/usr/bin/nmcli', '-t', '-f',
-                            'BSSID,SSID,CHAN,SIGNAL,SECURITY', 'device', 'wifi', 'list', 'ifname', iface],
-                           capture_output=True, text=True, timeout=20)
-    except Exception:
-        return
-    if not r or r.returncode != 0 or not r.stdout:
-        return
-    for line in r.stdout.splitlines():
-        # nmcli -t escapa ':' internos como '\:' (el BSSID los tiene); los
-        # protegemos, separamos por el ':' de campos, y los restauramos.
-        parts = line.replace('\\:', '\x00').split(':')
-        parts = [p.replace('\x00', ':') for p in parts]
-        if len(parts) < 5:
-            continue
-        bssid, ssid, chan, signal, security = parts[0], parts[1], parts[2], parts[3], parts[4]
-        try:
-            ch = int(chan)
-        except ValueError:
-            ch = 0
-        sig = _pct_to_dbm(signal)
-        key = ssid if ssid else ('\x00' + bssid)
-        if not key:
-            continue
-        if key not in networks or sig > networks[key]['signal']:
-            networks[key] = {
-                'ssid': ssid if ssid else '(oculta)',
-                'bssid': bssid.upper(),
-                'signal': sig,
-                'channel': ch,
-                'security': security if (security and security != '--') else 'OPEN',
-                'band': '5G' if ch >= 32 else ('2.4G' if ch >= 1 else '?'),
-            }
-
 def _parse_scan_output(out, networks):
-    """Parsea la salida de `iw scan` y acumula en `networks` (dict por key).
+    """Parsea la salida de `iw scan` y acumula en `networks` (dict por SSID).
     Al acumular sobre varias pasadas, se queda con la senal mas fuerte vista."""
     cur = None
 
     def commit(c):
-        if not c:
+        if not c or not c.get('ssid'):
             return
-        ssid = c.get('ssid') or ''
-        # Redes ocultas (SSID vacio): antes se descartaban; ahora se muestran
-        # como (oculta), con key por BSSID para no colapsarlas entre si.
-        key = ssid if ssid else ('\x00' + c.get('bssid', ''))
-        if not key:
-            return
+        key = c['ssid']
         if key not in networks or c['signal'] > networks[key]['signal']:
-            entry = {k: v for k, v in c.items() if not k.startswith('_')}
-            entry['ssid'] = ssid if ssid else '(oculta)'
-            ch = entry.get('channel', 0)
-            entry['band'] = '5G' if ch >= 32 else ('2.4G' if ch >= 1 else '?')
-            networks[key] = entry
+            networks[key] = {k: v for k, v in c.items() if not k.startswith('_')}
+            ch = networks[key].get('channel', 0)
+            networks[key]['band'] = '5G' if ch >= 32 else ('2.4G' if ch >= 1 else '?')
 
     for raw in out.splitlines():
         line = raw.strip()
@@ -161,18 +89,13 @@ def _parse_scan_output(out, networks):
 
 
 def scan_networks(iface='wlan1', passes=2):
-    """Escanea en VARIAS pasadas y fusiona (por BSSID/SSID). Una sola pasada
-    de `iw scan` suele quedarse corta en este adaptador: no todos los APs
-    emiten beacon durante el barrido y los 5GHz DFS son escaneo pasivo. Con
-    2-3 pasadas se captan bastantes mas."""
+    """Escanea wlan1 en 1-2 pasadas y fusiona (misma red = senal mas fuerte).
+    La pausa entre pasadas evita el -EBUSY de `iw scan` seguido y deja variar
+    los beacons intermitentes."""
     ensure_interface_up(iface)
-    ensure_reg_domain()   # habilita todos los canales si hay pais configurado
     networks = {}
     last_err = None
     for i in range(max(1, passes)):
-        # Pausa entre pasadas: sin ella, `iw scan` seguido devuelve -EBUSY
-        # (la pasada previa sigue corriendo) y se descarta -> en la practica
-        # quedaba 1 sola pasada. La pausa tambien deja variar los beacons.
         if i > 0:
             time.sleep(3)
         try:
@@ -187,9 +110,6 @@ def scan_networks(iface='wlan1', passes=2):
         except Exception as e:
             last_err = str(e)
             continue
-
-    # Sumar lo que ve el onboard (wlan0): capta mas que el dongle wlan1.
-    _scan_nmcli(networks)
 
     if not networks and last_err:
         return None, last_err

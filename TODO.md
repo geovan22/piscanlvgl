@@ -116,17 +116,20 @@
 - [ ] Validar en pantalla. Si se quiere "PiScan 22" **más grande/bold**:
       habilitar `montserrat_28` (rebuild liblvgl) o hornear letras de bloque.
 
-## Scanner WiFi — pocas redes (RESUELTO: antena)
-- Causa real: **wlan1 (dongle USB RTL8821CU) tiene peor recepción** que la
-  antena onboard. Pista del usuario: "Conectar Red" (escanea wlan0) lista más.
-  NO era reg domain (wlan0=GT ve lo mismo que wlan1=99 en lo fuerte) ni parseo
-  (`iw scan` crudo = lo que devolvía el script). wlan1 es self-managed en país
-  99 y no se mueve ni con reboot (firmware world) — pero eso no era el límite.
-- [x] **Fix: el scan de la sección WiFi suma lo que ve wlan0** (onboard) vía
-  nmcli (`_scan_nmcli`), fusionado con el de wlan1. El ataque sigue en wlan1
-  con el BSSID+canal obtenidos. Así el listado queda completo (como el teléfono).
-- Nota: deauth/handshake sobre un AP 5GHz-alto (ch 149-165) que solo ve wlan0
-  pueden fallar (wlan1 en país 99 no fija esos canales); 2.4 y 5G UNII-1 OK.
+## Scanner WiFi — pocas redes (CAUSA: wlan1 revirtió a país 99)
+- Decisión del usuario: la sección WiFi debe **escanear y atacar con el MISMO
+  wlan1** (lo que se lista = lo que se puede atacar). Por eso se **revirtió** el
+  merge con wlan0 (que mostraba redes no atacables por el dongle).
+- Causa real de la regresión: en `3d9d835` el `wifi_scan.py` usa el MISMO método
+  (un `iw dev wlan1 scan`) y listaba muchas → el código no es el problema. Ahí
+  wlan1 estaba en **GT** (veía ambas bandas, lo dice el commit). Hoy su phy
+  revirtió a **país 99** (world) → canales deshabilitados → pocas redes. Es el
+  riesgo documentado en CLAUDE.md §6 ("el phy country puede volver a 99").
+- `iw reg set GT` (global) NO lo mueve (self-managed), y un **reboot tampoco**
+  (en boot rtw88 carga ANTES de que se aplique el país → arranca en 99).
+- [~] **A probar (autorizado por el usuario):** fijar reg GT y RECARGAR el
+  modulo rtw88 (orden distinto al boot) a ver si toma GT. Es reversible (reboot
+  restaura). CLAUDE.md §2 lo marca como fragil → test manual, no en la app.
 
 ## Bugs reportados (sesión de prueba en red real)
 - [x] **#1 Lista de redes pierde entradas al volver de Clientes**: el box de
