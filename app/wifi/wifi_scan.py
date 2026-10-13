@@ -20,10 +20,13 @@ def ensure_interface_up(iface):
 def _freq_to_channel(freq):
     """Deriva el canal del freq en MHz. Fuente mas confiable que
     'DS Parameter set' (muchos APs 5GHz/HT no emiten esa linea -> canal 0,
-    y un canal 0 rompe el deauth y el scan de clientes)."""
+    y un canal 0 rompe el deauth y el scan de clientes).
+    OJO: las versiones nuevas de `iw` imprimen el freq como FLOAT
+    ('freq: 5240.0'); por eso int(float(...)) y no int(...) (que reventaba
+    con el '.0' y dejaba canal 0 en las redes 5GHz)."""
     try:
-        f = int(freq)
-    except (ValueError, TypeError):
+        f = int(float(str(freq).split()[0]))
+    except (ValueError, TypeError, IndexError):
         return 0
     if f == 2484:
         return 14
@@ -59,11 +62,17 @@ def _parse_scan_output(out, networks):
         if cur is None:
             continue
         if line.startswith('freq:'):
-            # Canal desde el freq (siempre presente). DS Parameter set, si
-            # viene despues, lo confirma; si no viene, ya quedo bien.
+            # Canal desde el freq (siempre presente). DS Parameter set o
+            # '* primary channel', si vienen despues, lo confirman.
             ch = _freq_to_channel(line.split('freq:')[1].strip())
             if ch:
                 cur['channel'] = ch
+        elif line.startswith('* primary channel:'):
+            # Fuente mas fiable del canal real en HT/VHT (ambas bandas).
+            try:
+                cur['channel'] = int(line.split(':')[1].strip())
+            except (ValueError, IndexError):
+                pass
         elif line.startswith('signal:'):
             try:
                 cur['signal'] = float(line.split('signal:')[1].split('dBm')[0].strip())
