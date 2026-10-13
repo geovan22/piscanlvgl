@@ -521,6 +521,43 @@ class _ETPortalHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(msg)
 
+def _first_existing(*paths):
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    return None
+
+def _et_redirect_add(iface):
+    """Redirige el TCP:80 del cliente -> :8080 (portal no-root). Trixie usa
+    nftables por defecto (iptables suele no estar), asi que probamos nft
+    primero y caemos a iptables si existe. Devuelve 'nft'/'iptables'/None."""
+    nft = _first_existing("/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft")
+    if nft:
+        _run(['sudo', nft, 'add', 'table', 'ip', 'piscan_et'])
+        _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_et', 'prerouting',
+              '{ type nat hook prerouting priority -100 ; }'])
+        r = _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_et', 'prerouting',
+                  'iifname', iface, 'tcp', 'dport', '80', 'redirect', 'to', ':8080'])
+        if r is not None and r.returncode == 0:
+            return 'nft'
+    ipt = _first_existing("/usr/sbin/iptables", "/sbin/iptables", "/usr/bin/iptables")
+    if ipt:
+        r = _run(['sudo', ipt, '-t', 'nat', '-A', 'PREROUTING', '-i', iface,
+                  '-p', 'tcp', '--dport', '80', '-j', 'REDIRECT', '--to-ports', '8080'])
+        if r is not None and r.returncode == 0:
+            return 'iptables'
+    return None
+
+def _et_redirect_del(iface):
+    """Quita el redirect (ambos metodos, best-effort)."""
+    nft = _first_existing("/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft")
+    if nft:
+        _run(['sudo', nft, 'delete', 'table', 'ip', 'piscan_et'])
+    ipt = _first_existing("/usr/sbin/iptables", "/sbin/iptables", "/usr/bin/iptables")
+    if ipt:
+        _run(['sudo', ipt, '-t', 'nat', '-D', 'PREROUTING', '-i', iface,
+              '-p', 'tcp', '--dport', '80', '-j', 'REDIRECT', '--to-ports', '8080'])
+
 def _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd):
     """Baja todo el Evil Twin y restaura wlan1 a managed. Best-effort."""
     try:
@@ -529,10 +566,7 @@ def _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd):
             httpd.server_close()
     except Exception:
         pass
-    # iptables: quitar el redirect 80->8080
-    _run(['sudo', '/usr/sbin/iptables', '-t', 'nat', '-D', 'PREROUTING',
-          '-i', iface, '-p', 'tcp', '--dport', '80', '-j', 'REDIRECT',
-          '--to-ports', '8080'])
+    _et_redirect_del(iface)
     for p in procs:
         try:
             p.terminate()
@@ -641,10 +675,9 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
         if procs[-1].poll() is not None:
             log("dnsmasq murio al arrancar (probable conflicto de puerto 53/67)")
 
-        # redirigir el :80 al portal (:8080, no-root)
-        diag(['sudo', '/usr/sbin/iptables', '-t', 'nat', '-A', 'PREROUTING',
-              '-i', iface, '-p', 'tcp', '--dport', '80', '-j', 'REDIRECT',
-              '--to-ports', '8080'])
+        # redirigir el :80 al portal (:8080, no-root). nft (trixie) o iptables.
+        method = _et_redirect_add(iface)
+        log(f"redirect 80->8080 via: {method}")
 
         # portal cautivo en :8080
         try:
