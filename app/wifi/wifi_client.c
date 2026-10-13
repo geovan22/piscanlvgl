@@ -259,6 +259,54 @@ int wifi_client_deauth(const char *bssid, int channel, int count, int duration,
     return success;
 }
 
+int wifi_client_pmkid(const char *bssid, int channel, int seconds,
+                      char *out_hc22000, int hc_size,
+                      char *out_detail, int detail_size) {
+    char *argv_path = PISCAN_WIFI_OPS_PATH;
+    char channel_str[8], seconds_str[8];
+    snprintf(channel_str, sizeof(channel_str), "%d", channel);
+    snprintf(seconds_str, sizeof(seconds_str), "%d", seconds);
+
+    char *argv[] = { "python3", argv_path, "pmkid", (char *)bssid, channel_str,
+                     "wlan1", seconds_str, NULL };
+
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_detail) snprintf(out_detail, detail_size, "no se pudo ejecutar wifi_ops.py");
+        return -1;
+    }
+
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_detail) snprintf(out_detail, detail_size, "JSON invalido de pmkid");
+        return -1;
+    }
+
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    if (!cJSON_IsTrue(ok)) {
+        cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+        if (out_detail) snprintf(out_detail, detail_size, "%s",
+                                 cJSON_IsString(err) ? err->valuestring : "error en pmkid");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    cJSON *pk = cJSON_GetObjectItemCaseSensitive(root, "pmkid_target");
+    cJSON *ea = cJSON_GetObjectItemCaseSensitive(root, "eapol_target");
+    cJSON *hc = cJSON_GetObjectItemCaseSensitive(root, "hc22000");
+    cJSON *detail = cJSON_GetObjectItemCaseSensitive(root, "detail");
+    int got = (cJSON_IsTrue(pk) || cJSON_IsTrue(ea)) ? 1 : 0;
+
+    if (out_hc22000) snprintf(out_hc22000, hc_size, "%s",
+                              cJSON_IsString(hc) ? hc->valuestring : "");
+    if (out_detail) snprintf(out_detail, detail_size, "%s",
+                             cJSON_IsString(detail) ? detail->valuestring : "");
+
+    cJSON_Delete(root);
+    return got;
+}
+
 int wifi_client_handshake(const char *bssid, int channel, int capture_seconds, int deauth_count,
                           char *out_cap_file, int cap_file_size,
                           char *out_detail, int detail_size) {

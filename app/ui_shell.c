@@ -92,6 +92,7 @@ static wifi_target_t g_wifi_target = {0};
 static lv_obj_t *g_target_label = NULL;
 static lv_obj_t *g_deauth_btn = NULL;
 static lv_obj_t *g_handshake_btn = NULL;
+static lv_obj_t *g_pmkid_btn = NULL;
 static lv_obj_t *g_audit_btn = NULL;
 static lv_obj_t *g_clients_btn = NULL;
 static lv_obj_t *g_selected_row = NULL;
@@ -121,12 +122,14 @@ static void set_wifi_buttons_disabled(int disabled) {
         lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
         lv_obj_add_state(g_deauth_btn, LV_STATE_DISABLED);
         lv_obj_add_state(g_handshake_btn, LV_STATE_DISABLED);
+        if (g_pmkid_btn) lv_obj_add_state(g_pmkid_btn, LV_STATE_DISABLED);
         if (g_audit_btn) lv_obj_add_state(g_audit_btn, LV_STATE_DISABLED);
         if (g_clients_btn) lv_obj_add_state(g_clients_btn, LV_STATE_DISABLED);
     } else {
         lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
         lv_obj_clear_state(g_deauth_btn, LV_STATE_DISABLED);
         lv_obj_clear_state(g_handshake_btn, LV_STATE_DISABLED);
+        if (g_pmkid_btn) lv_obj_clear_state(g_pmkid_btn, LV_STATE_DISABLED);
         if (g_audit_btn) lv_obj_clear_state(g_audit_btn, LV_STATE_DISABLED);
         if (g_clients_btn) lv_obj_clear_state(g_clients_btn, LV_STATE_DISABLED);
     }
@@ -246,6 +249,61 @@ void ui_shell_poll_handshake(void) {
         ui_shell_set_status("Sin handshake, reintenta", UI_STATUS_ERROR);
     }
     set_wifi_buttons_disabled(0);
+}
+
+/* ── PMKID/EAPOL (clientless): hcxdumptool captura del AP sin esperar un
+ *    cliente. Mismo patron hilo + poll que el handshake. ── */
+static volatile int g_pmkid_running = 0;
+static volatile int g_pmkid_done = 0;
+static int g_pmkid_ok = 0;              /* 1=capturo, 0=nada, -1=error */
+static char g_pmkid_hc[256];
+static char g_pmkid_detail[256];
+
+static void *pmkid_thread_fn(void *arg) {
+    (void)arg;
+    g_pmkid_hc[0] = '\0';
+    g_pmkid_detail[0] = '\0';
+    g_pmkid_ok = wifi_client_pmkid(g_wifi_target.bssid, g_wifi_target.channel, 30,
+                                   g_pmkid_hc, sizeof(g_pmkid_hc),
+                                   g_pmkid_detail, sizeof(g_pmkid_detail));
+    g_pmkid_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_pmkid(void) {
+    if (!g_pmkid_done) return;
+    g_pmkid_done = 0;
+    g_pmkid_running = 0;
+
+    if (!g_wifi_status_label) return; /* salimos de la seccion mientras corria */
+
+    if (g_pmkid_ok == 1) {
+        lv_label_set_text(g_wifi_status_label, "PMKID/EAPOL capturado!");
+        ui_shell_set_status("PMKID/EAPOL capturado (.hc22000)", UI_STATUS_OK);
+    } else if (g_pmkid_ok == 0) {
+        lv_label_set_text(g_wifi_status_label, "Sin PMKID/EAPOL (reintenta)");
+        ui_shell_set_status("Sin PMKID/EAPOL, reintenta", UI_STATUS_ERROR);
+    } else {
+        lv_label_set_text(g_wifi_status_label, "Error en PMKID");
+        ui_shell_set_status("Error en PMKID (ver log)", UI_STATUS_ERROR);
+    }
+    set_wifi_buttons_disabled(0);
+}
+
+static void on_pmkid_confirm(bool confirmed, void *user_data) {
+    (void)user_data;
+    if (!confirmed) return;
+    if (g_pmkid_running) return;
+
+    g_pmkid_running = 1;
+    g_pmkid_done = 0;
+    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Capturando PMKID/EAPOL (~35s)...");
+    ui_shell_set_status("Capturando PMKID/EAPOL (~35s)...", UI_STATUS_WORKING);
+    set_wifi_buttons_disabled(1);
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, pmkid_thread_fn, NULL);
+    pthread_detach(tid);
 }
 
 /* ── Auditoria de handshake: corre una wordlist contra un .cap elegido.
@@ -618,6 +676,19 @@ static void handshake_btn_event_cb(lv_event_t *e) {
     char msg[96];
     snprintf(msg, sizeof(msg), "Capturar handshake de %s?", g_wifi_target.ssid);
     confirm_dialog_show(g_main_screen, msg, on_handshake_confirm, NULL);
+}
+
+static void pmkid_btn_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (!g_wifi_target.has_target) {
+        if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
+        return;
+    }
+    if (g_pmkid_running) return;
+
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Capturar PMKID/EAPOL de %s?", g_wifi_target.ssid);
+    confirm_dialog_show(g_main_screen, msg, on_pmkid_confirm, NULL);
 }
 
 static void *wifi_scan_thread_fn(void *arg) {
@@ -1356,6 +1427,7 @@ static void enter_section(const char *id, const char *label) {
     g_target_label = NULL;
     g_deauth_btn = NULL;
     g_handshake_btn = NULL;
+    g_pmkid_btn = NULL;
     g_audit_btn = NULL;
     g_clients_btn = NULL;
     g_net_box = NULL;
@@ -1496,6 +1568,22 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(audit_lbl, lv_color_hex(0x33CCFF), 0);
         lv_obj_set_style_text_font(audit_lbl, &lv_font_montserrat_10, 0);
         lv_obj_center(audit_lbl);
+
+        /* PMKID/EAPOL clientless (Fase 1): captura del AP sin esperar cliente */
+        g_pmkid_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_pmkid_btn, 118, 32);
+        lv_obj_align(g_pmkid_btn, LV_ALIGN_BOTTOM_LEFT, 350, -14);
+        lv_obj_set_style_bg_color(g_pmkid_btn, lv_color_hex(0x1a0a2a), 0);
+        lv_obj_set_style_border_color(g_pmkid_btn, lv_color_hex(0xCC66FF), 0);
+        lv_obj_set_style_border_width(g_pmkid_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_pmkid_btn, 12);
+        lv_obj_add_event_cb(g_pmkid_btn, pmkid_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(g_pmkid_btn);
+        lv_obj_t *pmkid_lbl = lv_label_create(g_pmkid_btn);
+        lv_label_set_text(pmkid_lbl, "PMKID");
+        lv_obj_set_style_text_color(pmkid_lbl, lv_color_hex(0xCC66FF), 0);
+        lv_obj_set_style_text_font(pmkid_lbl, &lv_font_montserrat_10, 0);
+        lv_obj_center(pmkid_lbl);
     } else if (strcmp(id, "net_connect") == 0) {
         lv_obj_t *title = lv_label_create(g_body);
         lv_label_set_text(title, "Conectar Red (gestion / SSH)");
@@ -1694,6 +1782,7 @@ static void show_carousel(void) {
     g_target_label = NULL;
     g_deauth_btn = NULL;
     g_handshake_btn = NULL;
+    g_pmkid_btn = NULL;
     g_audit_btn = NULL;
     g_clients_btn = NULL;
     g_net_box = NULL;

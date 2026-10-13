@@ -27,6 +27,7 @@ void ui_shell_poll_wifi_scan(void);
 /* Igual, para la operacion de deauth. */
 void ui_shell_poll_deauth(void);
 void ui_shell_poll_handshake(void);
+void ui_shell_poll_pmkid(void);
 void ui_shell_poll_audit(void);
 void ui_shell_poll_caplist(void);
 void ui_shell_poll_netscan(void);

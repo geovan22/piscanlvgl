@@ -40,6 +40,15 @@ int wifi_client_handshake(const char *bssid, int channel, int capture_seconds, i
                           char *out_cap_file, int cap_file_size,
                           char *out_detail, int detail_size);
 
+/* Captura PMKID/EAPOL con hcxdumptool (clientless: NO necesita un cliente
+ * conectado, a diferencia del handshake). Convierte a .hc22000 (hashcat).
+ * Retorna 1 si capturo PMKID o EAPOL PARA ESE bssid, 0 si no capturo nada
+ * util para ese AP, -1 si error. out_hc22000 recibe la ruta del .hc22000;
+ * out_detail el resumen de hcxpcapngtool (o el mensaje de error). */
+int wifi_client_pmkid(const char *bssid, int channel, int seconds,
+                      char *out_hc22000, int hc_size,
+                      char *out_detail, int detail_size);
+
 #define WIFI_MAX_CLIENTS 20
 
 /* Un cliente (estacion) asociado a un AP, visto por airodump. */
