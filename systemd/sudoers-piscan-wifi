@@ -9,3 +9,7 @@ geo22 ALL=(ALL) NOPASSWD: /usr/bin/aircrack-ng
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/nmcli
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/hcxdumptool
 geo22 ALL=(ALL) NOPASSWD: /usr/sbin/mdk4
+geo22 ALL=(ALL) NOPASSWD: /usr/sbin/hostapd
+geo22 ALL=(ALL) NOPASSWD: /usr/sbin/dnsmasq
+geo22 ALL=(ALL) NOPASSWD: /usr/sbin/iptables
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/pkill
