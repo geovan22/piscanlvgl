@@ -307,6 +307,40 @@ int wifi_client_pmkid(const char *bssid, int channel, int seconds,
     return got;
 }
 
+int wifi_client_beacon(int channel, int seconds,
+                       char *out_detail, int detail_size) {
+    char *argv_path = PISCAN_WIFI_OPS_PATH;
+    char channel_str[8], seconds_str[8];
+    snprintf(channel_str, sizeof(channel_str), "%d", channel);
+    snprintf(seconds_str, sizeof(seconds_str), "%d", seconds);
+
+    /* wifi_ops.py beacon <channel> <seconds> <iface> */
+    char *argv[] = { "python3", argv_path, "beacon", channel_str, seconds_str,
+                     "wlan1", NULL };
+
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_detail) snprintf(out_detail, detail_size, "no se pudo ejecutar wifi_ops.py");
+        return 0;
+    }
+
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_detail) snprintf(out_detail, detail_size, "JSON invalido de beacon");
+        return 0;
+    }
+
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    int success = cJSON_IsTrue(ok) ? 1 : 0;
+    cJSON *detail = cJSON_GetObjectItemCaseSensitive(root, success ? "detail" : "error");
+    if (out_detail) snprintf(out_detail, detail_size, "%s",
+                             cJSON_IsString(detail) ? detail->valuestring : "");
+
+    cJSON_Delete(root);
+    return success;
+}
+
 int wifi_client_handshake(const char *bssid, int channel, int capture_seconds, int deauth_count,
                           char *out_cap_file, int cap_file_size,
                           char *out_detail, int detail_size) {

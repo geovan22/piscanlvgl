@@ -49,6 +49,12 @@ int wifi_client_pmkid(const char *bssid, int channel, int seconds,
                       char *out_hc22000, int hc_size,
                       char *out_detail, int detail_size);
 
+/* Beacon flood (mdk4): inunda APs falsos de SSID aleatorio en `channel`
+ * durante `seconds`. Demo/ruido, SOLO lab. Retorna 1 si corrio ok, 0 si error
+ * (ver out_detail). */
+int wifi_client_beacon(int channel, int seconds,
+                       char *out_detail, int detail_size);
+
 #define WIFI_MAX_CLIENTS 20
 
 /* Un cliente (estacion) asociado a un AP, visto por airodump. */

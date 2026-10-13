@@ -128,7 +128,12 @@
       botón propio en la fila WiFi (Escanear · Acciones · Capturas), lista
       SSID/BSSID/tipo (HS/PMKID)/tamaño; tocar = auditar on-device. "Auditar"
       salió del menú Acciones (su lugar es Capturas). A validar en pantalla.
-- [ ] Beacon flood / probe spam (mdk4 — NO instalado; resolver instalación).
+- [x] **Beacon flood (mdk4)** — backend VALIDADO directo (mdk4 inyecta beacons
+      de SSID/MAC aleatorios, ~80pps) + UI cableada. `beacon_flood()` →
+      reset→monitor→`mdk4 <if> b -c <ch> -s <pps>` bajo timeout→managed.
+      En el menú **Acciones** ("Beacon flood", naranja); usa el canal del AP
+      seleccionado, ~20s fijos (BEACON_SECONDS). mdk4 en /usr/sbin (+sudoers).
+      - [ ] Validar el botón en pantalla contra el lab.
 - [ ] Evil Twin / AP falso (hostapd+dnsmasq) — solo lab.
 
 ---

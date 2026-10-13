@@ -294,6 +294,54 @@ static void on_pmkid_confirm(bool confirmed, void *user_data) {
     pthread_detach(tid);
 }
 
+/* ── Beacon flood (mdk4): inunda APs falsos en el canal del AP seleccionado.
+ *    Demo/ruido, SOLO lab. Mismo patron hilo + poll. ── */
+#define BEACON_SECONDS 20
+static volatile int g_beacon_running = 0;
+static volatile int g_beacon_done = 0;
+static int g_beacon_ok = 0;
+static int g_beacon_channel = 6;
+static char g_beacon_detail[256];
+
+static void *beacon_thread_fn(void *arg) {
+    (void)arg;
+    g_beacon_detail[0] = '\0';
+    g_beacon_ok = wifi_client_beacon(g_beacon_channel, BEACON_SECONDS,
+                                     g_beacon_detail, sizeof(g_beacon_detail));
+    g_beacon_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_beacon(void) {
+    if (!g_beacon_done) return;
+    g_beacon_done = 0;
+    g_beacon_running = 0;
+    if (!g_wifi_status_label) return;
+    if (g_beacon_ok) {
+        lv_label_set_text(g_wifi_status_label, "Beacon flood terminado");
+        ui_shell_set_status("Beacon flood terminado", UI_STATUS_OK);
+    } else {
+        lv_label_set_text(g_wifi_status_label, "Error en beacon flood");
+        ui_shell_set_status("Error en beacon flood (ver log)", UI_STATUS_ERROR);
+    }
+    set_wifi_buttons_disabled(0);
+}
+
+static void on_beacon_confirm(bool confirmed, void *user_data) {
+    (void)user_data;
+    if (!confirmed) return;
+    if (g_beacon_running) return;
+    g_beacon_channel = g_wifi_target.channel;
+    g_beacon_running = 1;
+    g_beacon_done = 0;
+    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Beacon flood (~20s)...");
+    ui_shell_set_status("Beacon flood (~20s)...", UI_STATUS_WORKING);
+    set_wifi_buttons_disabled(1);
+    pthread_t tid;
+    pthread_create(&tid, NULL, beacon_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
 /* ── Auditoria de handshake: corre una wordlist contra un .cap elegido.
  *    Mismo patron de hilo separado + poll desde el loop principal. ── */
 static volatile int g_audit_running = 0;
@@ -679,6 +727,19 @@ static void trigger_pmkid(void) {
     confirm_dialog_show(g_main_screen, msg, on_pmkid_confirm, NULL);
 }
 
+static void trigger_beacon(void) {
+    if (!g_wifi_target.has_target) {
+        if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
+        return;
+    }
+    if (g_beacon_running) return;
+
+    char msg[110];
+    snprintf(msg, sizeof(msg), "Beacon flood en canal %d (~%ds, solo lab)?",
+             g_wifi_target.channel, BEACON_SECONDS);
+    confirm_dialog_show(g_main_screen, msg, on_beacon_confirm, NULL);
+}
+
 /* ── Menu de Acciones (overlay) ──────────────────────────────────────────
  * Un solo boton "Acciones" abre esta lista con todo lo que se le puede hacer
  * al AP seleccionado. Escala sin llenar la pantalla de botones. Cada accion
@@ -698,6 +759,7 @@ static void act_clientes_cb(lv_event_t *e)  { if (lv_event_get_code(e)!=LV_EVENT
 static void act_deauth_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_deauth(); }
 static void act_handshake_cb(lv_event_t *e) { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_handshake(); }
 static void act_pmkid_cb(lv_event_t *e)     { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_pmkid(); }
+static void act_beacon_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_beacon(); }
 static void act_cancel_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); }
 
 /* Boton "Capturas" (fila superior, sin necesitar red seleccionada): abre la
@@ -739,7 +801,7 @@ static void wifi_actions_menu_show(void) {
     lv_obj_add_flag(g_actions_overlay, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *box = lv_obj_create(g_actions_overlay);
-    lv_obj_set_size(box, 300, 262);
+    lv_obj_set_size(box, 300, 290);
     lv_obj_center(box);
     lv_obj_set_style_bg_color(box, lv_color_hex(0x071007), 0);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
@@ -756,11 +818,12 @@ static void wifi_actions_menu_show(void) {
     lv_obj_set_style_text_font(title, &lv_font_montserrat_10, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
 
-    int y = 30;
-    make_action_btn(box, "Clientes",      0x33CCFF, y, act_clientes_cb);  y += 44;
-    make_action_btn(box, "Deauth red",    0xFF4444, y, act_deauth_cb);    y += 44;
-    make_action_btn(box, "Handshake",     0xFFCC33, y, act_handshake_cb); y += 44;
-    make_action_btn(box, "PMKID / EAPOL", 0xCC66FF, y, act_pmkid_cb);     y += 44;
+    int y = 24;
+    make_action_btn(box, "Clientes",      0x33CCFF, y, act_clientes_cb);  y += 38;
+    make_action_btn(box, "Deauth red",    0xFF4444, y, act_deauth_cb);    y += 38;
+    make_action_btn(box, "Handshake",     0xFFCC33, y, act_handshake_cb); y += 38;
+    make_action_btn(box, "PMKID / EAPOL", 0xCC66FF, y, act_pmkid_cb);     y += 38;
+    make_action_btn(box, "Beacon flood",  0xFF9933, y, act_beacon_cb);    y += 38;
     make_action_btn(box, "Cancelar",      0x33FF33, y, act_cancel_cb);
 }
 
