@@ -95,6 +95,7 @@ typedef struct {
 static wifi_target_t g_wifi_target = {0};
 static lv_obj_t *g_target_label = NULL;
 static lv_obj_t *g_actions_btn = NULL;   /* abre el menu de Acciones del AP seleccionado */
+static lv_obj_t *g_honeypot_btn = NULL;  /* accion directa: honeypot AP (no depende del listado) */
 static lv_obj_t *g_selected_row = NULL;
 static int g_list_mode = 0;   /* box de resultados: 0=scan 1=capturas 2=wordlists 3=clientes */
 static wifi_capture_t g_captures[WIFI_MAX_CAPTURES];
@@ -122,9 +123,11 @@ static void set_wifi_buttons_disabled(int disabled) {
     if (disabled) {
         if (g_scan_btn) lv_obj_add_state(g_scan_btn, LV_STATE_DISABLED);
         if (g_actions_btn) lv_obj_add_state(g_actions_btn, LV_STATE_DISABLED);
+        if (g_honeypot_btn) lv_obj_add_state(g_honeypot_btn, LV_STATE_DISABLED);
     } else {
         if (g_scan_btn) lv_obj_clear_state(g_scan_btn, LV_STATE_DISABLED);
         if (g_actions_btn) lv_obj_clear_state(g_actions_btn, LV_STATE_DISABLED);
+        if (g_honeypot_btn) lv_obj_clear_state(g_honeypot_btn, LV_STATE_DISABLED);
     }
 }
 
@@ -846,7 +849,11 @@ static void act_deauth_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT
 static void act_handshake_cb(lv_event_t *e) { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_handshake(); }
 static void act_pmkid_cb(lv_event_t *e)     { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_pmkid(); }
 static void act_beacon_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_beacon(); }
-static void act_eviltwin_cb(lv_event_t *e)  { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_eviltwin(); }
+/* El Honeypot es un boton directo de la fila superior (no del menu Acciones). */
+static void honeypot_btn_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    trigger_eviltwin();
+}
 static void act_cancel_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); }
 
 /* Boton "Capturas" (fila superior, sin necesitar red seleccionada): abre la
@@ -888,7 +895,7 @@ static void wifi_actions_menu_show(void) {
     lv_obj_add_flag(g_actions_overlay, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *box = lv_obj_create(g_actions_overlay);
-    lv_obj_set_size(box, 300, 290);
+    lv_obj_set_size(box, 300, 262);
     lv_obj_center(box);
     lv_obj_set_style_bg_color(box, lv_color_hex(0x071007), 0);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
@@ -905,13 +912,12 @@ static void wifi_actions_menu_show(void) {
     lv_obj_set_style_text_font(title, &lv_font_montserrat_10, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
 
-    int y = 20;
-    make_action_btn(box, "Clientes",      0x33CCFF, y, act_clientes_cb);  y += 36;
-    make_action_btn(box, "Deauth red",    0xFF4444, y, act_deauth_cb);    y += 36;
-    make_action_btn(box, "Handshake",     0xFFCC33, y, act_handshake_cb); y += 36;
-    make_action_btn(box, "PMKID / EAPOL", 0xCC66FF, y, act_pmkid_cb);     y += 36;
-    make_action_btn(box, "Beacon flood",  0xFF9933, y, act_beacon_cb);    y += 36;
-    make_action_btn(box, "Honeypot AP",   0xFF3366, y, act_eviltwin_cb);  y += 36;
+    int y = 24;
+    make_action_btn(box, "Clientes",      0x33CCFF, y, act_clientes_cb);  y += 38;
+    make_action_btn(box, "Deauth red",    0xFF4444, y, act_deauth_cb);    y += 38;
+    make_action_btn(box, "Handshake",     0xFFCC33, y, act_handshake_cb); y += 38;
+    make_action_btn(box, "PMKID / EAPOL", 0xCC66FF, y, act_pmkid_cb);     y += 38;
+    make_action_btn(box, "Beacon flood",  0xFF9933, y, act_beacon_cb);    y += 38;
     make_action_btn(box, "Cancelar",      0x33FF33, y, act_cancel_cb);
 }
 
@@ -1712,6 +1718,7 @@ static void enter_section(const char *id, const char *label) {
     g_scan_btn = NULL;
     g_target_label = NULL;
     g_actions_btn = NULL;
+    g_honeypot_btn = NULL;
     g_net_box = NULL;
     g_net_status_label = NULL;
     g_net_selected_row = NULL;
@@ -1727,8 +1734,8 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
 
         lv_obj_t *scan_btn = lv_button_create(g_body);
-        lv_obj_set_size(scan_btn, 100, 34);
-        lv_obj_align(scan_btn, LV_ALIGN_TOP_LEFT, 60, 28);
+        lv_obj_set_size(scan_btn, 96, 34);
+        lv_obj_align(scan_btn, LV_ALIGN_TOP_LEFT, 6, 28);
         lv_obj_set_style_bg_color(scan_btn, lv_color_hex(0x0a2a0a), 0);
         lv_obj_set_style_border_color(scan_btn, COLOR_OK, 0);
         lv_obj_set_style_border_width(scan_btn, 2, 0);
@@ -1739,13 +1746,14 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_t *scan_lbl = lv_label_create(scan_btn);
         lv_label_set_text(scan_lbl, "Escanear");
         lv_obj_set_style_text_color(scan_lbl, COLOR_OK, 0);
+        lv_obj_set_style_text_font(scan_lbl, &lv_font_montserrat_10, 0);
         lv_obj_center(scan_lbl);
 
         /* Boton Acciones: abre el menu overlay con Clientes/Deauth/Handshake/
          * PMKID/Auditar del AP seleccionado. Reemplaza la fila de botones. */
         g_actions_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_actions_btn, 125, 34);
-        lv_obj_align(g_actions_btn, LV_ALIGN_TOP_LEFT, 168, 28);
+        lv_obj_set_size(g_actions_btn, 116, 34);
+        lv_obj_align(g_actions_btn, LV_ALIGN_TOP_LEFT, 106, 28);
         lv_obj_set_style_bg_color(g_actions_btn, lv_color_hex(0x0a2a0a), 0);
         lv_obj_set_style_border_color(g_actions_btn, lv_color_hex(0x33CCFF), 0);
         lv_obj_set_style_border_width(g_actions_btn, 2, 0);
@@ -1761,8 +1769,8 @@ static void enter_section(const char *id, const char *label) {
         /* Boton Capturas: abre la lista de capturas (HS + PMKID) sin necesitar
          * red seleccionada; para auditar on-device o ver el archivo para scp. */
         lv_obj_t *cap_btn = lv_button_create(g_body);
-        lv_obj_set_size(cap_btn, 105, 34);
-        lv_obj_align(cap_btn, LV_ALIGN_TOP_LEFT, 298, 28);
+        lv_obj_set_size(cap_btn, 100, 34);
+        lv_obj_align(cap_btn, LV_ALIGN_TOP_LEFT, 226, 28);
         lv_obj_set_style_bg_color(cap_btn, lv_color_hex(0x0a2a0a), 0);
         lv_obj_set_style_border_color(cap_btn, lv_color_hex(0xCC66FF), 0);
         lv_obj_set_style_border_width(cap_btn, 2, 0);
@@ -1774,6 +1782,23 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(cap_lbl, lv_color_hex(0xCC66FF), 0);
         lv_obj_set_style_text_font(cap_lbl, &lv_font_montserrat_10, 0);
         lv_obj_center(cap_lbl);
+
+        /* Boton Honeypot AP: accion directa (no depende del listado). Abre el
+         * teclado para el nombre del AP y levanta el honeypot abierto + portal. */
+        g_honeypot_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_honeypot_btn, 134, 34);
+        lv_obj_align(g_honeypot_btn, LV_ALIGN_TOP_LEFT, 330, 28);
+        lv_obj_set_style_bg_color(g_honeypot_btn, lv_color_hex(0x2a0a14), 0);
+        lv_obj_set_style_border_color(g_honeypot_btn, lv_color_hex(0xFF3366), 0);
+        lv_obj_set_style_border_width(g_honeypot_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_honeypot_btn, 10);
+        lv_obj_add_event_cb(g_honeypot_btn, honeypot_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(g_honeypot_btn);
+        lv_obj_t *hp_lbl = lv_label_create(g_honeypot_btn);
+        lv_label_set_text(hp_lbl, "Honeypot");
+        lv_obj_set_style_text_color(hp_lbl, lv_color_hex(0xFF3366), 0);
+        lv_obj_set_style_text_font(hp_lbl, &lv_font_montserrat_10, 0);
+        lv_obj_center(hp_lbl);
 
         g_wifi_status_label = lv_label_create(g_body);
         lv_label_set_text(g_wifi_status_label, "Toca Escanear para buscar redes");
@@ -2067,6 +2092,7 @@ static void show_carousel(void) {
     g_net_selected_row = NULL;
     g_target_label = NULL;
     g_actions_btn = NULL;
+    g_honeypot_btn = NULL;
     g_net_box = NULL;
     g_net_status_label = NULL;
     g_net_selected_row = NULL;

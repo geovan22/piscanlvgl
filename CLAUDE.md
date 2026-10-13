@@ -150,8 +150,9 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
   hashcat (`-m 22000`).
 - **Beacon flood** (`mdk4`, en `/usr/sbin`): nombres realistas (clon del scan +
   `data/beacon_ssids.txt`), duración configurable (`beacon_duration`, Config).
-- **Evil Twin / Honeypot AP** (`evil_twin()` en wifi_ops, botón "Honeypot AP"
-  en Acciones): **AP abierto con nombre a elección** (se tipea con el teclado,
+- **Evil Twin / Honeypot AP** (`evil_twin()` en wifi_ops, botón **Honeypot** en
+  la fila WiFi — acción directa, no depende del listado): **AP abierto con
+  nombre a elección** (se tipea con el teclado,
   ej. `Sala_Estar_Lopez`) → `ip 10.0.0.1/24` + dnsmasq (DHCP+DNS wildcard) →
   redirect :80→:8080 con **nft** (trixie; fallback iptables) → portal cautivo
   (http.server threading :8080) que CAPTURA la clave que ingrese el cliente →
