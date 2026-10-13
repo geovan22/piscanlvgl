@@ -392,18 +392,20 @@ void ui_shell_poll_eviltwin(void) {
     set_wifi_buttons_disabled(0);
 }
 
-static void on_eviltwin_confirm(bool confirmed, void *user_data) {
+/* Recibe el NOMBRE del AP tipeado en el teclado y lanza el honeypot: AP
+ * abierto con ese nombre + portal cautivo. Sin deauth (bssid vacio): es una
+ * red propia abierta a la que el cliente se conecta voluntariamente. */
+static void eviltwin_ssid_cb(const char *text, void *user_data) {
     (void)user_data;
-    if (!confirmed) return;
+    if (!text || !text[0]) return;   /* cancelado o vacio */
     if (g_et_running) return;
-    snprintf(g_et_ssid, sizeof(g_et_ssid), "%s", g_wifi_target.ssid);
-    snprintf(g_et_bssid, sizeof(g_et_bssid), "%s", g_wifi_target.bssid);
-    g_et_channel = g_wifi_target.channel;
+    snprintf(g_et_ssid, sizeof(g_et_ssid), "%s", text);
+    g_et_bssid[0] = '\0';            /* honeypot: sin deauth */
+    g_et_channel = 6;                /* 2.4 (hw_mode=g), lo mas fiable */
     g_et_running = 1;
     g_et_done = 0;
     char em[128];
-    snprintf(em, sizeof(em), "Evil Twin '%s' activo: conecta al AP ABIERTO y abri el portal (~3min)",
-             g_wifi_target.ssid);
+    snprintf(em, sizeof(em), "AP '%s' abierto + portal activo (~3min)...", g_et_ssid);
     if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, em);
     ui_shell_set_status(em, UI_STATUS_WORKING);
     set_wifi_buttons_disabled(1);
@@ -817,17 +819,11 @@ static void trigger_beacon(void) {
 }
 
 static void trigger_eviltwin(void) {
-    if (!g_wifi_target.has_target) {
-        if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
-        return;
-    }
     if (g_et_running) return;
-
-    char msg[140];
-    snprintf(msg, sizeof(msg),
-             "Evil Twin de %s?\nDeauth + AP falso + portal (solo lab)",
-             g_wifi_target.ssid);
-    confirm_dialog_show(g_main_screen, msg, on_eviltwin_confirm, NULL);
+    /* No necesita red seleccionada: es un AP honeypot con nombre a elección.
+     * Pedimos el nombre con el teclado (ej: Sala_Estar_Lopez, FREE_WiFi...). */
+    text_input_show(g_main_screen, "Nombre del AP (ej: Sala_Estar_Lopez):", 0,
+                    eviltwin_ssid_cb, NULL);
 }
 
 /* ── Menu de Acciones (overlay) ──────────────────────────────────────────
@@ -915,7 +911,7 @@ static void wifi_actions_menu_show(void) {
     make_action_btn(box, "Handshake",     0xFFCC33, y, act_handshake_cb); y += 36;
     make_action_btn(box, "PMKID / EAPOL", 0xCC66FF, y, act_pmkid_cb);     y += 36;
     make_action_btn(box, "Beacon flood",  0xFF9933, y, act_beacon_cb);    y += 36;
-    make_action_btn(box, "Evil Twin",     0xFF3366, y, act_eviltwin_cb);  y += 36;
+    make_action_btn(box, "Honeypot AP",   0xFF3366, y, act_eviltwin_cb);  y += 36;
     make_action_btn(box, "Cancelar",      0x33FF33, y, act_cancel_cb);
 }
 

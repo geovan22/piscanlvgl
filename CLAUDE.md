@@ -150,16 +150,20 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
   hashcat (`-m 22000`).
 - **Beacon flood** (`mdk4`, en `/usr/sbin`): nombres realistas (clon del scan +
   `data/beacon_ssids.txt`), duración configurable (`beacon_duration`, Config).
-- **Evil Twin** (`evil_twin()` en wifi_ops): deauth corto al canal real →
-  hostapd AP abierto con el SSID objetivo (2.4) → `ip 10.0.0.1/24` + dnsmasq
-  (DHCP+DNS wildcard) → redirect :80→:8080 con **nft** (trixie; fallback
-  iptables) → portal cautivo (http.server threading :8080) que CAPTURA la
-  clave → teardown a managed. Log en `data/captures/evil_twin.log`.
-  - Caveats (no bugs, inherentes al evil twin): el **popup captive automático**
-    depende del teléfono (DNS cifrado lo evita → el usuario entra por el
-    navegador); un device con la red guardada como **WPA** no se auto-une al
-    gemelo **abierto** (mismatch de seguridad) → en demo, "olvidar" la red o
-    usar otro device. La captura siempre funciona una vez en el portal.
+- **Evil Twin / Honeypot AP** (`evil_twin()` en wifi_ops, botón "Honeypot AP"
+  en Acciones): **AP abierto con nombre a elección** (se tipea con el teclado,
+  ej. `Sala_Estar_Lopez`) → `ip 10.0.0.1/24` + dnsmasq (DHCP+DNS wildcard) →
+  redirect :80→:8080 con **nft** (trixie; fallback iptables) → portal cautivo
+  (http.server threading :8080) que CAPTURA la clave que ingrese el cliente →
+  teardown a managed. Log en `data/captures/evil_twin.log`. **Es un honeypot
+  (sin deauth)**: el cliente se conecta voluntariamente a la red abierta. (El
+  código aún soporta clonar un SSID+deauth si se pasa `bssid`, pero la UI usa
+  el modo honeypot con nombre genérico porque clonar una red WPA no sirve: el
+  device no se une al gemelo abierto por el mismatch de seguridad.)
+  - Caveats (no bugs): el **popup captive automático** depende del teléfono
+    (DNS cifrado lo evita → el usuario entra por el navegador). Levanta **una
+    sola** red conectable (hostapd multi-BSS no va bien en rtw88); la "variedad"
+    de nombres la da el beacon flood (no conectable).
   - **wlan1 soporta AP mode** (`iw phy` lista `* AP`). El índice del phy
     **cambia** entre reboots/recargas → derivarlo de
     `/sys/class/net/wlan1/phy80211/index`, no asumir `phy2`.
