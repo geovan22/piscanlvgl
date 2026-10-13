@@ -1,0 +1,26 @@
+# Lista de SSIDs "creibles" para el beacon flood (data/beacon_ssids.txt).
+# Una por linea. Las lineas que empiezan con # se ignoran.
+# El beacon flood ademas CLONA los SSIDs del entorno (scan), asi que esta
+# lista los complementa con nombres plausibles. SOLO para laboratorio.
+# Para personalizar: edita este archivo y sube el cambio (git).
+Movistar_Fibra
+Movistar_Plus
+CLARO_WiFi
+CLARO_HOGAR
+Tigo-WiFi
+TurboNet_5G
+TP-LINK_2.4GHz
+TP-Link_Guest
+Linksys00234
+NETGEAR_EXT
+FREE_WiFi
+WiFi_Gratis
+Hotel_WiFi
+Starbucks WiFi
+Aeropuerto_WiFi
+AndroidAP
+iPhone
+HUAWEI-Home
+ZTE_2.4G
+Guest
+Invitados

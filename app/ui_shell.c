@@ -68,6 +68,10 @@ static lv_timer_t *g_stats_timer = NULL;
 static lv_obj_t *g_cfg_deauth_label = NULL;
 static int g_cfg_deauth_val = 0;   /* 0 = rafaga; >0 = sostenido N s */
 
+/* ── Config: parametro beacon_duration (segundos) ── */
+static lv_obj_t *g_cfg_beacon_label = NULL;
+static int g_cfg_beacon_val = 20;  /* duracion del beacon flood */
+
 /* ── WiFi: escaneo en hilo aparte (nunca tocar LVGL desde el hilo) ── */
 static lv_obj_t *g_wifi_status_label = NULL;
 static lv_obj_t *g_wifi_results_box = NULL;
@@ -296,17 +300,17 @@ static void on_pmkid_confirm(bool confirmed, void *user_data) {
 
 /* ── Beacon flood (mdk4): inunda APs falsos en el canal del AP seleccionado.
  *    Demo/ruido, SOLO lab. Mismo patron hilo + poll. ── */
-#define BEACON_SECONDS 20
 static volatile int g_beacon_running = 0;
 static volatile int g_beacon_done = 0;
 static int g_beacon_ok = 0;
 static int g_beacon_channel = 6;
+static int g_beacon_seconds = 20;   /* leido de la DB (beacon_duration) al atacar */
 static char g_beacon_detail[256];
 
 static void *beacon_thread_fn(void *arg) {
     (void)arg;
     g_beacon_detail[0] = '\0';
-    g_beacon_ok = wifi_client_beacon(g_beacon_channel, BEACON_SECONDS,
+    g_beacon_ok = wifi_client_beacon(g_beacon_channel, g_beacon_seconds,
                                      g_beacon_detail, sizeof(g_beacon_detail));
     g_beacon_done = 1;
     return NULL;
@@ -334,8 +338,10 @@ static void on_beacon_confirm(bool confirmed, void *user_data) {
     g_beacon_channel = g_wifi_target.channel;
     g_beacon_running = 1;
     g_beacon_done = 0;
-    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Beacon flood (~20s)...");
-    ui_shell_set_status("Beacon flood (~20s)...", UI_STATUS_WORKING);
+    char wm[48];
+    snprintf(wm, sizeof(wm), "Beacon flood (~%ds)...", g_beacon_seconds);
+    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, wm);
+    ui_shell_set_status(wm, UI_STATUS_WORKING);
     set_wifi_buttons_disabled(1);
     pthread_t tid;
     pthread_create(&tid, NULL, beacon_thread_fn, NULL);
@@ -734,9 +740,15 @@ static void trigger_beacon(void) {
     }
     if (g_beacon_running) return;
 
+    /* Duracion fresca de la DB (Config -> beacon_duration). Default 20. */
+    char dur[32];
+    g_beacon_seconds = db_config_get("beacon_duration", dur, sizeof(dur)) ? atoi(dur) : 20;
+    if (g_beacon_seconds < 5) g_beacon_seconds = 5;
+    if (g_beacon_seconds > 300) g_beacon_seconds = 300;
+
     char msg[110];
     snprintf(msg, sizeof(msg), "Beacon flood en canal %d (~%ds, solo lab)?",
-             g_wifi_target.channel, BEACON_SECONDS);
+             g_wifi_target.channel, g_beacon_seconds);
     confirm_dialog_show(g_main_screen, msg, on_beacon_confirm, NULL);
 }
 
@@ -1564,6 +1576,59 @@ static void cfg_deauth_plus_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
     cfg_deauth_adjust(+CFG_DEAUTH_STEP);
 }
+
+/* ── Config: beacon_duration (seg). Lo consume el beacon flood. Min 5s. ── */
+#define CFG_BEACON_STEP 5
+#define CFG_BEACON_MIN  5
+#define CFG_BEACON_MAX  300
+
+static void cfg_refresh_beacon_label(void) {
+    if (!g_cfg_beacon_label) return;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Beacon flood: %d s", g_cfg_beacon_val);
+    lv_label_set_text(g_cfg_beacon_label, buf);
+}
+
+static void cfg_load_beacon(void) {
+    char val[32];
+    if (db_config_get("beacon_duration", val, sizeof(val)))
+        g_cfg_beacon_val = atoi(val);
+    else
+        g_cfg_beacon_val = 20;   /* default */
+    if (g_cfg_beacon_val < CFG_BEACON_MIN) g_cfg_beacon_val = CFG_BEACON_MIN;
+    if (g_cfg_beacon_val > CFG_BEACON_MAX) g_cfg_beacon_val = CFG_BEACON_MAX;
+}
+
+static void cfg_save_beacon(void) {
+    char val[16], err[128] = {0};
+    snprintf(val, sizeof(val), "%d", g_cfg_beacon_val);
+    if (db_config_set("beacon_duration", val, "wifi", err, sizeof(err))) {
+        ui_shell_set_status("beacon_duration guardado", UI_STATUS_OK);
+    } else {
+        char m[160];
+        snprintf(m, sizeof(m), "Error DB: %s", err[0] ? err : "desconocido");
+        ui_shell_set_status(m, UI_STATUS_ERROR);
+    }
+}
+
+static void cfg_beacon_adjust(int delta) {
+    g_cfg_beacon_val += delta;
+    if (g_cfg_beacon_val < CFG_BEACON_MIN) g_cfg_beacon_val = CFG_BEACON_MIN;
+    if (g_cfg_beacon_val > CFG_BEACON_MAX) g_cfg_beacon_val = CFG_BEACON_MAX;
+    cfg_refresh_beacon_label();
+    cfg_save_beacon();
+}
+
+static void cfg_beacon_minus_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    cfg_beacon_adjust(-CFG_BEACON_STEP);
+}
+
+static void cfg_beacon_plus_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    cfg_beacon_adjust(+CFG_BEACON_STEP);
+}
+
 static void enter_section(const char *id, const char *label) {
     lv_obj_clean(g_body);
     g_wifi_status_label = NULL;
@@ -1576,6 +1641,7 @@ static void enter_section(const char *id, const char *label) {
     g_net_selected_row = NULL;
     g_selected_row = NULL;
     g_cfg_deauth_label = NULL;
+    g_cfg_beacon_label = NULL;
     close_actions_menu();   /* por si quedo un overlay de acciones abierto */
 
     if (strcmp(id, "wifi") == 0) {
@@ -1818,6 +1884,48 @@ static void enter_section(const char *id, const char *label) {
         lv_label_set_text(pl, "+5s");
         lv_obj_set_style_text_color(pl, COLOR_OK, 0);
         lv_obj_center(pl);
+
+        /* ── beacon_duration ── */
+        cfg_load_beacon();
+        g_cfg_beacon_label = lv_label_create(g_body);
+        lv_obj_set_style_text_color(g_cfg_beacon_label, lv_color_hex(0xFF9933), 0);
+        lv_obj_set_style_text_font(g_cfg_beacon_label, &lv_font_montserrat_10, 0);
+        lv_obj_align(g_cfg_beacon_label, LV_ALIGN_TOP_LEFT, 12, 152);
+        cfg_refresh_beacon_label();
+
+        lv_obj_t *bdesc = lv_label_create(g_body);
+        lv_label_set_text(bdesc, "Duracion del beacon flood (seg).");
+        lv_obj_set_style_text_color(bdesc, COLOR_DIM, 0);
+        lv_obj_set_style_text_font(bdesc, &lv_font_montserrat_10, 0);
+        lv_obj_align(bdesc, LV_ALIGN_TOP_LEFT, 12, 170);
+
+        lv_obj_t *bminus = lv_button_create(g_body);
+        lv_obj_set_size(bminus, 70, 44);
+        lv_obj_align(bminus, LV_ALIGN_TOP_LEFT, 12, 192);
+        lv_obj_set_style_bg_color(bminus, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(bminus, lv_color_hex(0xFF9933), 0);
+        lv_obj_set_style_border_width(bminus, 2, 0);
+        lv_obj_set_ext_click_area(bminus, 12);
+        lv_obj_add_event_cb(bminus, cfg_beacon_minus_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(bminus);
+        lv_obj_t *bml = lv_label_create(bminus);
+        lv_label_set_text(bml, "-5s");
+        lv_obj_set_style_text_color(bml, lv_color_hex(0xFF9933), 0);
+        lv_obj_center(bml);
+
+        lv_obj_t *bplus = lv_button_create(g_body);
+        lv_obj_set_size(bplus, 70, 44);
+        lv_obj_align(bplus, LV_ALIGN_TOP_LEFT, 92, 192);
+        lv_obj_set_style_bg_color(bplus, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(bplus, lv_color_hex(0xFF9933), 0);
+        lv_obj_set_style_border_width(bplus, 2, 0);
+        lv_obj_set_ext_click_area(bplus, 12);
+        lv_obj_add_event_cb(bplus, cfg_beacon_plus_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(bplus);
+        lv_obj_t *bpl = lv_label_create(bplus);
+        lv_label_set_text(bpl, "+5s");
+        lv_obj_set_style_text_color(bpl, lv_color_hex(0xFF9933), 0);
+        lv_obj_center(bpl);
 
     } else {
         lv_obj_t *title = lv_label_create(g_body);

