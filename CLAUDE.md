@@ -77,6 +77,16 @@ Estas cosas ya se intentaron y fallaron, o rompen el proyecto. **No repetir.**
   **RTL8821CU** (driver `rtw88_8821cu`), no necesita reset de módulo.
   `reset_driver()` quedó como `pass` (no-op). El código viejo de `modprobe -r
   rtl8xxxu` era para el adaptador viejo (RTL8188EUS) que se colgaba.
+- **NO perseguir el "país 99 / dominio regulatorio" como causa de que wlan1
+  liste pocas redes.** Ya se descartó a fondo (sesión 2026-10-13):
+  `wlan1 = phy2` con **76 canales habilitados / 1 deshabilitado** → reg
+  COMPLETO. El `phy#0` que aparece en `iw reg get` como **país 99 es el onboard
+  (wlan0)**, NO wlan1. `iw reg set GT` + **recargar `rtw88_8821cu` NO cambió
+  nada** (probado: seguía en ~4 BSS). El "pocas redes" de wlan1 es **límite de
+  RX de su antena fija** (no cambiable), no el reg ni el código. Ve siempre los
+  objetivos del usuario; las que faltan vs el teléfono son vecinos débiles
+  (§11). Única palanca física: alargador USB. **No volver a tocar módulos ni
+  reg por esto.**
 
 ---
 
@@ -198,16 +208,26 @@ el roadmap.)
 - Táctil **XPT2046** en `spidev0.0`. Calibración:
   `TCH_X_MIN=260, TCH_X_MAX=1798, TCH_Y_MIN=211, TCH_Y_MAX=1853`.
 - Protocolo: `lcd_color(col)` = 2 `spi_transmit` (ioctl) de 3 bytes por pixel,
-  con toggle de CS por unidad. **No batchear** (ver §2).
+  con toggle de CS por unidad
+  . **No batchear** (ver §2).
 - `LV_MEM_SIZE = 256 KB`. `RENDER_MODE_PARTIAL`.
 
 ### Adaptadores WiFi
-- **wlan0** = onboard `brcmfmac` → gestión / SSH. Bug país-99 bloqueaba 5 GHz
-  (resuelto fijando país; ojo que `phy` country puede volver a 99 tras cambios
-  de módulo — revisar `iw reg get`).
+- **wlan0** = onboard `brcmfmac` → gestión / SSH. Es un **phy self-managed**;
+  su bug país-99 bloqueaba 5 GHz (se fija país; su `phy` puede volver a 99 tras
+  cambios de módulo). **Este 99 es de wlan0, NO de wlan1** — en `iw reg get`
+  aparece como un phy propio en país 99. No confundirlo con wlan1 (ver §2: no
+  perseguir el reg como causa del "pocas redes" de wlan1).
 - **wlan1** = USB dedicado a ataque, `unmanaged` en NetworkManager.
   - **Actual: RTL8821CU** (`rtw88_8821cu`, `0bda:c820`), dual-band 2.4/5 GHz +
     **Bluetooth**, estable, monitor + inyección OK.
+  - **Reg: OK y completo.** `wlan1 = phy2`, 76 canales habilitados (verificado
+    2026-10-13). NO es self-managed estilo brcmfmac; sigue el `global`. No toca
+    el país 99 del onboard. No hace falta fijarle reg ni recargar el módulo.
+  - **Techo de scan ~4-5 redes = límite de RX de su antena fija** (no se puede
+    cambiar; solo orientar). Oye siempre los objetivos del usuario; las redes
+    que el teléfono ve y wlan1 no son vecinos débiles. No es bug del scanner.
+    Única palanca física: alargador USB. (Diagnóstico completo en `TODO.md`.)
   - (Viejo: RTL8188EUS / `rtl8xxxu`, se colgaba en RX. Ya no se usa.)
 
 ### Módulos para el roadmap (el usuario los tiene)

@@ -116,20 +116,39 @@
 - [ ] Validar en pantalla. Si se quiere "PiScan 22" **más grande/bold**:
       habilitar `montserrat_28` (rebuild liblvgl) o hornear letras de bloque.
 
-## Scanner WiFi — pocas redes (CAUSA: wlan1 revirtió a país 99)
+## Scanner WiFi — ✅ CERRADO (límite de antena del dongle, no bug)
+> **Decisión del usuario: dejar el `iw scan` rápido como está.** Diagnóstico
+> completo abajo. El scanner funciona bien; el "pocas redes" es sensibilidad RX.
+- Evidencia final: unión de todos los métodos probados (4 iw scans + airodump
+  pasivo 2.4 + airodump ambas bandas) = **máx ~5 redes distintas**. El dongle
+  oye SIEMPRE los objetivos del usuario (CLARO_fCexjw 5G, CLARO_J74r3f 2.4, su
+  hotspot Geo22). Las que faltan vs el teléfono (9) son **vecinos de señal
+  débil** (ej. CLARO_DzR99M, solo audible con airodump dedicado a 2.4) que la
+  **antena fija (no cambiable)** del módulo no alcanza de forma fiable — y que
+  §11 dice no tocar sin confirmar.
+- No era país 99 (wlan1=phy2, 76 canales habilitados), no era el código
+  (3d9d835 usa el mismo método), no eran pocas pasadas (4 iw scans saturan en
+  4). Es RX de hardware. Única palanca física restante: alargador USB (antena
+  no se puede cambiar). Se evaluó airodump por-banda (ganancia ±1 red vecina
+  inconsistente a cambio de scan de ~25-30s) y el usuario eligió **no** hacerlo.
+
+## (descartado) Scanner — vieja hipótesis país 99
 - Decisión del usuario: la sección WiFi debe **escanear y atacar con el MISMO
   wlan1** (lo que se lista = lo que se puede atacar). Por eso se **revirtió** el
   merge con wlan0 (que mostraba redes no atacables por el dongle).
-- Causa real de la regresión: en `3d9d835` el `wifi_scan.py` usa el MISMO método
-  (un `iw dev wlan1 scan`) y listaba muchas → el código no es el problema. Ahí
-  wlan1 estaba en **GT** (veía ambas bandas, lo dice el commit). Hoy su phy
-  revirtió a **país 99** (world) → canales deshabilitados → pocas redes. Es el
-  riesgo documentado en CLAUDE.md §6 ("el phy country puede volver a 99").
-- `iw reg set GT` (global) NO lo mueve (self-managed), y un **reboot tampoco**
-  (en boot rtw88 carga ANTES de que se aplique el país → arranca en 99).
-- [~] **A probar (autorizado por el usuario):** fijar reg GT y RECARGAR el
-  modulo rtw88 (orden distinto al boot) a ver si toma GT. Es reversible (reboot
-  restaura). CLAUDE.md §2 lo marca como fragil → test manual, no en la app.
+- **DESCARTADO el dominio regulatorio** (era un fantasma). Diagnóstico en la Pi:
+  `wlan1 = phy2` con **76 canales habilitados, 1 deshabilitado** → acceso
+  regulatorio COMPLETO. El `phy#0` que figuraba en **país 99** es el **onboard
+  (wlan0)**, no wlan1 (coincide con CLAUDE.md §6, que atribuye el bug país-99 a
+  wlan0). Fijar reg GT + **recargar rtw88 NO cambió nada** (seguía en ~4 BSS) →
+  se abandona esa vía y NO se vuelve a tocar el módulo.
+- Causa real en evaluación: el `iw scan` es **una sola foto**; el teléfono
+  escucha en continuo y acumula más APs (sobre todo 2.4G débiles). O el
+  RTL8821CU tiene **peor sensibilidad RX en 2.4G** que el teléfono.
+- [~] **Test decisivo (en curso):** unión de SSIDs en 4 barridos seguidos de
+  wlan1. Si sube a 7-9 → es cuestión de pasadas → subir `passes` en
+  `wifi_scan.py` (3-4, espaciadas). Si se queda en ~4 → **techo de hardware**
+  del dongle (ser honesto con el usuario: otro dongle o aceptar el límite).
 
 ## Bugs reportados (sesión de prueba en red real)
 - [x] **#1 Lista de redes pierde entradas al volver de Clientes**: el box de
