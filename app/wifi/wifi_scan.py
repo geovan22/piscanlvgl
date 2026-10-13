@@ -3,7 +3,7 @@
 wifi_scan.py — Escaneo de redes via `iw scan`. Salida JSON, mismo
 patron que db_tool.py: {"ok": true, "networks": [...]} o {"ok": false, "error": ...}
 """
-import sys, os, json, subprocess
+import sys, os, json, subprocess, time
 
 def ensure_interface_up(iface):
     """wlan1 esta 'unmanaged' en NetworkManager a proposito (para
@@ -97,11 +97,16 @@ def scan_networks(iface='wlan1', passes=3):
     ensure_interface_up(iface)
     networks = {}
     last_err = None
-    for _ in range(max(1, passes)):
+    for i in range(max(1, passes)):
+        # Pausa entre pasadas: sin ella, `iw scan` seguido devuelve -EBUSY
+        # (la pasada previa sigue corriendo) y se descarta -> en la practica
+        # quedaba 1 sola pasada. La pausa tambien deja variar los beacons.
+        if i > 0:
+            time.sleep(3)
         try:
             proc = subprocess.run(
                 ['sudo', '/usr/sbin/iw', 'dev', iface, 'scan'],
-                capture_output=True, text=True, timeout=15
+                capture_output=True, text=True, timeout=20
             )
             if proc.returncode != 0:
                 last_err = f"iw scan fallo: {proc.stderr.strip() or proc.stdout.strip()}"
