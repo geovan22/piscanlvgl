@@ -401,8 +401,11 @@ static void on_eviltwin_confirm(bool confirmed, void *user_data) {
     g_et_channel = g_wifi_target.channel;
     g_et_running = 1;
     g_et_done = 0;
-    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Evil Twin activo (portal ~3min)...");
-    ui_shell_set_status("Evil Twin: AP falso + portal activo...", UI_STATUS_WORKING);
+    char em[128];
+    snprintf(em, sizeof(em), "Evil Twin '%s' activo: conecta al AP ABIERTO y abri el portal (~3min)",
+             g_wifi_target.ssid);
+    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, em);
+    ui_shell_set_status(em, UI_STATUS_WORKING);
     set_wifi_buttons_disabled(1);
     pthread_t tid;
     pthread_create(&tid, NULL, eviltwin_thread_fn, NULL);
