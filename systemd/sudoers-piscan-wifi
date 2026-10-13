@@ -7,3 +7,4 @@ geo22 ALL=(ALL) NOPASSWD: /usr/bin/stdbuf
 geo22 ALL=(ALL) NOPASSWD: /usr/sbin/airodump-ng
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/aircrack-ng
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/nmcli
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/hcxdumptool

