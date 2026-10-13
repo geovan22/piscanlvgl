@@ -108,6 +108,12 @@
       - UI: botón **PMKID** (morado) en WiFi; `wifi_client_pmkid` + hilo + poll.
       - sudoers: +`/usr/bin/hcxdumptool`. Deps: `hcxdumptool hcxtools` (ya en Pi).
       - [ ] Validar en pantalla contra la red de lab (vía menú Acciones).
+      - [x] **PMKID auditable on-device**: aircrack NO lee `.pcapng`, así que
+        `pmkid_capture` ahora convierte también a `.cap` clásico (tcpdump). Ese
+        `.cap` entra en la lista de "Auditar" (list_captures + _bssid_from_filename
+        reconocen el prefijo `pmkid_`) y aircrack lo crackea con wordlist.
+        Verificado: tras convertir, aircrack lista CLARO_fCexjw/J74r3f con
+        handshake. El `.hc22000` queda para hashcat en PC.
 - [x] **UI: menú "Acciones" (overlay)** — la sección WiFi no escalaba con un
       botón por acción (y PMKID chocaba con el botón Menú). Ahora la fila es solo
       **Escanear + Acciones**; "Acciones" (con red seleccionada) abre un overlay

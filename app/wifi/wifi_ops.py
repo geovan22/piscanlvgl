@@ -322,9 +322,18 @@ def pmkid_capture(bssid, channel, iface, seconds=30):
     if not os.path.exists(pcap):
         return None, f"hcxdumptool no genero captura. Log: {_tail(logpath)}"
 
-    # Convertir a hc22000 (no necesita root; lee el pcapng).
+    # Convertir a hc22000 (no necesita root; lee el pcapng). Es el archivo
+    # "serio": se exporta y se crackea en la PC con hashcat (GPU).
     conv = _run(['/usr/bin/hcxpcapngtool', '-o', hc, pcap], timeout=30)
     conv_out = ((conv.stdout or '') + (conv.stderr or '')) if conv else ''
+
+    # Convertir tambien a .cap clasico (pcap) para poder AUDITARLO on-device:
+    # aircrack-ng NO lee pcapng, pero si el .cap. Mismo prefijo -> aparece en
+    # la lista de capturas / "Auditar" junto a los handshakes. Lectura de
+    # archivo, no necesita root.
+    cap = prefix + ".cap"
+    tcpdump = "/usr/bin/tcpdump" if os.path.exists("/usr/bin/tcpdump") else "/usr/sbin/tcpdump"
+    _run([tcpdump, '-r', pcap, '-w', cap], timeout=20)
 
     # Formato hc22000: WPA*<tipo>*<mic/pmkid>*<MAC_AP>*<MAC_STA>*<ESSID_hex>*...
     # tipo 01 = PMKID, 02 = EAPOL. MAC_AP (4o campo) es hex sin ':'.
@@ -347,6 +356,7 @@ def pmkid_capture(bssid, channel, iface, seconds=30):
 
     data = {
         "pcap": pcap,
+        "cap": cap if os.path.exists(cap) else None,
         "hc22000": hc if os.path.exists(hc) else None,
         "hashes": len(lines),
         "pmkid_target": pmkid_target,
@@ -565,10 +575,12 @@ def audit_handshake(cap_file, bssid, wordlist_key="common", timeout_seconds=120)
     return False, None, output
 
 def _bssid_from_filename(fname):
-    """Extrae el BSSID del nombre 'hs_2491BB2A53CC_<ts>-01.cap' -> '24:91:BB:2A:53:CC'.
-    Devuelve (bssid_formateado, timestamp_int) o (None, None) si no matchea."""
+    """Extrae el BSSID del nombre de captura:
+      'hs_2491BB2A53CC_<ts>-01.cap'    (handshake, airodump)
+      'pmkid_2491BB2A53D0_<ts>.cap'    (PMKID/EAPOL convertido de hcxdumptool)
+    -> '24:91:BB:2A:53:CC'. Devuelve (bssid, ts) o (None, None) si no matchea."""
     import re
-    m = re.match(r'hs_([0-9A-Fa-f]{12})_(\d+)', fname)
+    m = re.match(r'(?:hs|pmkid)_([0-9A-Fa-f]{12})_(\d+)', fname)
     if not m:
         return None, None
     hexb = m.group(1).upper()
@@ -614,7 +626,10 @@ def list_captures():
             continue
         bssid, ts = _bssid_from_filename(fname)
         ssid = _ssid_for_bssid(bssid) if bssid else None
-        has_hs = size > 100000   # heuristico rapido (>100KB); la auditoria revela el handshake real
+        # Heuristico rapido: handshake grande (>100KB) O captura PMKID/EAPOL
+        # (el .cap de hcxdumptool es chico pero ya contiene hash crackeable;
+        #  solo se genera cuando hubo captura). La auditoria revela el real.
+        has_hs = size > 100000 or fname.startswith("pmkid_")
         result.append({
             "file": full,
             "name": fname,
