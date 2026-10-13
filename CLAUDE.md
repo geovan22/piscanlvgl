@@ -370,6 +370,12 @@ sudo systemctl stop piscan      # para desarrollar sin que relance
 - Tras cambiar `lv_conf.h` → **rebuild de liblvgl.a** obligatorio, luego app.
 - Compilar entre pasos. Verificar "SINTAXIS OK" antes de probar en pantalla.
 - Para desarrollar: `systemctl stop piscan` para que no pelee por la pantalla.
+- **⚠️ Cambios en `.c`/`.h` NO toman efecto con solo `git pull` + restart:
+  hay que `build_app.sh`.** Solo los `.py` toman efecto con pull+restart (no
+  compilan). Error ya pagado (2026-10-13): el deauth corría ráfaga ~5s en vez de
+  sostenido 20s porque el binario era viejo; el cableado de `deauth_duration`
+  (C) estaba en el repo pero no en `build/piscan_main`. Si algo de la UI/C
+  "no toma" un cambio del repo, **primero reconstruir el binario.**
 
 ### Sudoers (`/etc/sudoers.d/piscan-wifi`, versionado en
 `systemd/sudoers-piscan-wifi`)

@@ -39,13 +39,13 @@
       key=`deauth_duration`, cat=`wifi`). 0 = ráfaga; >0 = sostenido.
       Carga al entrar, guarda en DB en cada ajuste, feedback en el footer.
 - [x] **Validado en pantalla**: carga el valor, -/+ ajustan y persisten.
-- [ ] Pendiente: confirmar en red real que el tiempo configurado se respeta en
-      el deauth sostenido (el usuario lo prueba cuando libere su red de pruebas).
+- [x] **Validado en red real (2026-10-13)**: el tiempo configurado se respeta
+      en el deauth sostenido. (Requirió rebuild del binario C — ver lección abajo.)
 - Nota: guarda en cada tap (fork+exec python ~150ms). Si se siente lento al
   tap repetido, pasar a guardar-al-salir o con botón "Guardar" (anotar en
   "Por revisar").
 
-### 3. Deauth sostenido en la UI (Patrón A) — [~] código listo, a validar en red
+### 3. Deauth sostenido en la UI (Patrón A) — ✅ CERRADO (validado en red real)
 - [x] Cableado C→Python del `duration`: `wifi_client_deauth` ahora toma
       `int duration` y lo pasa como 6º arg a `wifi_ops.py deauth` (el Python ya
       soportaba sostenido; solo el wrapper C no lo pasaba — mandaba ráfaga fija).
@@ -53,8 +53,9 @@
       lo muestra en el diálogo de confirmación ("sostenido Ns" vs "ráfaga") y lo
       usa en el ataque. Mensajes de estado/éxito reflejan el modo.
 - [x] Flujo Patrón A (ya existía): escanear → tocar red → Deauth → confirmar.
-- [ ] **Validar en red real**: configurar N en Config, atacar la red de pruebas
-      y confirmar que la red queda caída ~N s (sostenido) y vuelve al soltar.
+- [x] **Validado en red real (2026-10-13)**: con N=20 en Config, el deauth
+      (red y por cliente) mantiene la red caída ~20s. Antes duraba ~5s porque
+      el binario C era viejo (ráfaga); tras `build_app.sh` respeta el tiempo.
 
 ---
 
@@ -92,9 +93,9 @@
       broadcast) y lo agrega al argv solo si viene.
 - [x] UI: **tocar una fila de cliente** → confirm "Deauth al cliente <MAC>?" →
       deauth SELECTIVO usando `deauth_duration` de la DB (mismo hilo/confirm que
-      el deauth de red). El botón Deauth sigue siendo a toda la red (broadcast).
-- [ ] **Validar en red real**: tocar un cliente y confirmar que solo ESE se cae
-      (el resto sigue conectado).
+      el deauth de red). El botón Deauth sigue siendo a toda la red (dirigido).
+- [x] **Validado en red real (2026-10-13)**: el deauth por cliente funciona y
+      respeta el tiempo configurado (tras el fix de canal 0 en 5GHz + rebuild).
 
 ### Resto Fase 1 (pendiente, ver CLAUDE.md §8)
 - [ ] Evil Twin / AP falso (hostapd+dnsmasq) — solo lab.
@@ -132,23 +133,12 @@
   no se puede cambiar). Se evaluó airodump por-banda (ganancia ±1 red vecina
   inconsistente a cambio de scan de ~25-30s) y el usuario eligió **no** hacerlo.
 
-## (descartado) Scanner — vieja hipótesis país 99
-- Decisión del usuario: la sección WiFi debe **escanear y atacar con el MISMO
-  wlan1** (lo que se lista = lo que se puede atacar). Por eso se **revirtió** el
-  merge con wlan0 (que mostraba redes no atacables por el dongle).
-- **DESCARTADO el dominio regulatorio** (era un fantasma). Diagnóstico en la Pi:
-  `wlan1 = phy2` con **76 canales habilitados, 1 deshabilitado** → acceso
-  regulatorio COMPLETO. El `phy#0` que figuraba en **país 99** es el **onboard
-  (wlan0)**, no wlan1 (coincide con CLAUDE.md §6, que atribuye el bug país-99 a
-  wlan0). Fijar reg GT + **recargar rtw88 NO cambió nada** (seguía en ~4 BSS) →
-  se abandona esa vía y NO se vuelve a tocar el módulo.
-- Causa real en evaluación: el `iw scan` es **una sola foto**; el teléfono
-  escucha en continuo y acumula más APs (sobre todo 2.4G débiles). O el
-  RTL8821CU tiene **peor sensibilidad RX en 2.4G** que el teléfono.
-- [~] **Test decisivo (en curso):** unión de SSIDs en 4 barridos seguidos de
-  wlan1. Si sube a 7-9 → es cuestión de pasadas → subir `passes` en
-  `wifi_scan.py` (3-4, espaciadas). Si se queda en ~4 → **techo de hardware**
-  del dongle (ser honesto con el usuario: otro dongle o aceptar el límite).
+  - Sobre "antes veía 16 redes": esas 16 venían del **onboard wlan0 vía
+    NetworkManager** (escanea en segundo plano y ACUMULA, + mejor antena), no
+    del dongle. Era el merge revertido (`20fea87`). wlan1 en un barrido llega a
+    ~4-5 reales. El usuario reconfirmó (2026-10-13) dejar **solo wlan1** (lo
+    atacable), no mezclar wlan0. Hipótesis vieja del país 99 quedó descartada
+    (wlan1=phy2, 76 canales; el 99 es del onboard wlan0).
 
 ## Bugs reportados (sesión de prueba en red real)
 - [x] **#1 Lista de redes pierde entradas al volver de Clientes**: el box de
@@ -156,8 +146,8 @@
       scrolleado y ocultaba las primeras filas. Fix: `lv_obj_scroll_to_y(box,0)`
       en cada render (redes, clientes, capturas, wordlists).
 - [x] **#2 Deauth selectivo (por cliente)**: FUNCIONA. ✅
-- [~] **#3 Deauth por red (broadcast) no tumba** — IMPLEMENTADO, a validar en
-      red. Los clientes modernos ignoran el deauth broadcast; el dirigido (`-c`)
+- [x] **#3 Deauth por red (broadcast) no tumba** — ✅ RESUELTO Y VALIDADO.
+      Los clientes modernos ignoran el deauth broadcast; el dirigido (`-c`)
       sí. Ahora "Deauth red" (sin `client_mac`) → `wifi_ops.py` enumera las
       estaciones asociadas (airodump ~8s, solo escucha) y lanza un
       `aireplay --deauth -a <bssid> -c <mac>` DIRIGIDO a CADA cliente **en
@@ -168,19 +158,21 @@
       `deauth_red`. El escaneo y la inyección NO corren a la vez (evita el
       problema de concurrencia airodump+aireplay documentado en
       `capture_handshake`).
-      - [ ] **Validar en red real**: atacar tu red de lab con clientes y
-        confirmar que caen ~N s. Ver cuántos clientes reporta el footer.
-- [~] **#4 Error "utf-8 codec can't encode" al guardar Config**: el servicio
-      systemd corre sin locale (C/POSIX) → Python falla al codificar salida.
+      - [x] **Validado en red real (2026-10-13)**: "Deauth dirigido a N
+        cliente(s), sostenido 20s" — tumba la red el tiempo configurado.
+- [x] **#4 Error "utf-8 codec can't encode" al guardar Config** — RESUELTO.
+      systemd corría sin locale (C/POSIX) → Python fallaba al codificar salida.
       Fix: `db_tool.py` fuerza `sys.stdout.reconfigure(utf-8)` + err ascii-safe;
-      `piscan.service` ahora setea LANG/LC_ALL=C.UTF-8 + PYTHONUTF8. **En la Pi:
-      copiar el unit nuevo + `daemon-reload` + restart** (ver instrucciones).
-- [x] **Escaneo listaba menos redes / canal 0**: `wifi_scan.py` sacaba el canal
-      solo de `DS Parameter set` (ausente en muchos APs 5GHz/HT → canal 0, que
-      además rompía deauth/clientes). Ahora deriva el canal del `freq:` (siempre
-      presente). Tope de redes subido 15→20.
-- [~] **#1 Lista pierde redes**: reset de scroll ya aplicado; lo que faltaba era
-      el escaneo incompleto (canal/cap, arriba). A revalidar.
+      `piscan.service` setea LANG/LC_ALL=C.UTF-8 + PYTHONUTF8. Config guarda OK
+      (DB value="20" confirmado).
+- [x] **Canal 0 en redes 5GHz** (rompía deauth con `-22 invalid argument`) —
+      RESUELTO (2026-10-13). El `iw` de trixie imprime `freq:` como **float**
+      (`5180.0`) y `int("5180.0")` reventaba → canal 0; además las 5GHz no traen
+      `DS Parameter set`. Fix en `wifi_scan.py`: `int(float(primer_token))` + se
+      lee `* primary channel:` (fiable en HT/VHT). Validado: 5180→36, 5805→161.
+- [x] **Escaneo canal 0 (origen previo)**: ya se derivaba del `freq:`; el bug que
+      quedaba era el float (arriba). Tope de redes 15→20.
+- [x] **#1 Lista pierde redes** — reset de scroll + escaneo completo. Validado.
 
 ## Por revisar (confirmar en pantalla; revertir si molesta)
 - [ ] **Scroll animado HORIZONTAL del textarea** (`lv_obj_scroll_to_x(..., LV_ANIM_ON)`
