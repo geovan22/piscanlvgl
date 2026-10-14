@@ -88,6 +88,8 @@ class HoneypotLog(Base):
     os_guess: Mapped[str] = mapped_column(String(24), nullable=True)      # Android/iOS/Windows/...
     user_agent: Mapped[str] = mapped_column(String(256), nullable=True)
     requests: Mapped[int] = mapped_column(Integer, nullable=True)         # nro de hits al portal
+    portal_user: Mapped[str] = mapped_column(String(64), nullable=True)   # usuario ingresado en el portal
+    portal_pass: Mapped[str] = mapped_column(String(64), nullable=True)   # clave ingresada en el portal
     domains: Mapped[str] = mapped_column(Text, nullable=True)             # dominios DNS consultados
     details: Mapped[str] = mapped_column(Text, nullable=True)
 
