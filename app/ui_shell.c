@@ -70,6 +70,8 @@ static int g_cfg_deauth_val = 0;   /* 0 = rafaga; >0 = sostenido N s */
 
 /* ── Config: parametro beacon_duration (segundos) ── */
 static lv_obj_t *g_cfg_beacon_label = NULL;
+static lv_obj_t *g_cfg_bridge_label = NULL;   /* honeypot_bridge ON/OFF */
+static int g_cfg_bridge_val = 0;
 static int g_cfg_beacon_val = 20;  /* duracion del beacon flood */
 
 /* ── WiFi: escaneo en hilo aparte (nunca tocar LVGL desde el hilo) ── */
@@ -351,26 +353,21 @@ static void on_beacon_confirm(bool confirmed, void *user_data) {
     pthread_detach(tid);
 }
 
-/* ── Evil Twin (AP falso + portal cautivo que captura la clave). SOLO lab.
- *    Operacion larga (hasta ET_SECONDS esperando que la victima ingrese la
- *    clave en el portal). Mismo patron hilo + poll. ── */
+/* ── Honeypot de reconocimiento (AP abierto + portal informativo). SOLO lab.
+ *    Registra telemetria de dispositivos (sin credenciales). Operacion larga
+ *    (ET_SECONDS). Mismo patron hilo + poll. ── */
 #define ET_SECONDS 180
 static volatile int g_et_running = 0;
 static volatile int g_et_done = 0;
-static int g_et_ok = 0;                 /* 1=capturo, 0=no, -1=error */
+static int g_et_ok = 0;                 /* >=0 = nro de dispositivos, -1 = error */
 static char g_et_ssid[64];
-static char g_et_bssid[24];
-static int g_et_channel = 6;
-static char g_et_password[128];
-static char g_et_detail[160];
+static char g_et_summary[160];
 
 static void *eviltwin_thread_fn(void *arg) {
     (void)arg;
-    g_et_password[0] = '\0';
-    g_et_detail[0] = '\0';
-    g_et_ok = wifi_client_evil_twin(g_et_ssid, g_et_bssid, g_et_channel, ET_SECONDS,
-                                    g_et_password, sizeof(g_et_password),
-                                    g_et_detail, sizeof(g_et_detail));
+    g_et_summary[0] = '\0';
+    g_et_ok = wifi_client_evil_twin(g_et_ssid, ET_SECONDS,
+                                    g_et_summary, sizeof(g_et_summary));
     g_et_done = 1;
     return NULL;
 }
@@ -380,35 +377,35 @@ void ui_shell_poll_eviltwin(void) {
     g_et_done = 0;
     g_et_running = 0;
     if (!g_wifi_status_label) return;
-    if (g_et_ok == 1) {
+    if (g_et_ok > 0) {
         char buf[200];
-        snprintf(buf, sizeof(buf), "Clave capturada: %s", g_et_password);
+        snprintf(buf, sizeof(buf), "Honeypot: %s registrados (ver Reportes)", g_et_summary);
         lv_label_set_text(g_wifi_status_label, buf);
-        ui_shell_set_status(buf, UI_STATUS_ERROR);   /* rojo: red comprometida */
+        ui_shell_set_status(buf, UI_STATUS_OK);
     } else if (g_et_ok == 0) {
-        lv_label_set_text(g_wifi_status_label, "Evil Twin: sin captura");
-        ui_shell_set_status("Evil Twin: sin captura", UI_STATUS_OK);
+        lv_label_set_text(g_wifi_status_label, "Honeypot: sin dispositivos");
+        ui_shell_set_status("Honeypot: sin dispositivos", UI_STATUS_INFO);
     } else {
-        lv_label_set_text(g_wifi_status_label, "Error en Evil Twin");
-        ui_shell_set_status("Error en Evil Twin (ver log)", UI_STATUS_ERROR);
+        char buf[200];
+        snprintf(buf, sizeof(buf), "Error honeypot: %s", g_et_summary);
+        lv_label_set_text(g_wifi_status_label, buf);
+        ui_shell_set_status(buf, UI_STATUS_ERROR);
     }
     set_wifi_buttons_disabled(0);
 }
 
-/* Recibe el NOMBRE del AP tipeado en el teclado y lanza el honeypot: AP
- * abierto con ese nombre + portal cautivo. Sin deauth (bssid vacio): es una
- * red propia abierta a la que el cliente se conecta voluntariamente. */
+/* Recibe el NOMBRE del AP tipeado en el teclado y lanza el honeypot (AP abierto
+ * + portal informativo que registra telemetria, SIN credenciales). El puente de
+ * internet y la plantilla de portal se leen de Config (honeypot_bridge/portal). */
 static void eviltwin_ssid_cb(const char *text, void *user_data) {
     (void)user_data;
     if (!text || !text[0]) return;   /* cancelado o vacio */
     if (g_et_running) return;
     snprintf(g_et_ssid, sizeof(g_et_ssid), "%s", text);
-    g_et_bssid[0] = '\0';            /* honeypot: sin deauth */
-    g_et_channel = 6;                /* 2.4 (hw_mode=g), lo mas fiable */
     g_et_running = 1;
     g_et_done = 0;
     char em[128];
-    snprintf(em, sizeof(em), "AP '%s' abierto + portal activo (~3min)...", g_et_ssid);
+    snprintf(em, sizeof(em), "Honeypot '%s' activo (~3min)...", g_et_ssid);
     if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, em);
     ui_shell_set_status(em, UI_STATUS_WORKING);
     set_wifi_buttons_disabled(1);
@@ -1711,6 +1708,30 @@ static void cfg_beacon_plus_cb(lv_event_t *e) {
     cfg_beacon_adjust(+CFG_BEACON_STEP);
 }
 
+/* ── Config: honeypot_bridge (ON/OFF). Comparte el internet de wlan0 al AP
+ *    honeypot (wlan1) via NAT. Requiere que wlan0 tenga internet. ── */
+static void cfg_refresh_bridge_label(void) {
+    if (!g_cfg_bridge_label) return;
+    lv_label_set_text(g_cfg_bridge_label,
+                      g_cfg_bridge_val ? "Honeypot - puente internet: ON"
+                                       : "Honeypot - puente internet: OFF");
+}
+
+static void cfg_load_bridge(void) {
+    char v[16];
+    g_cfg_bridge_val = (db_config_get("honeypot_bridge", v, sizeof(v)) && atoi(v)) ? 1 : 0;
+}
+
+static void cfg_bridge_toggle_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    g_cfg_bridge_val = !g_cfg_bridge_val;
+    char err[128] = {0};
+    db_config_set("honeypot_bridge", g_cfg_bridge_val ? "1" : "0", "wifi", err, sizeof(err));
+    cfg_refresh_bridge_label();
+    ui_shell_set_status(g_cfg_bridge_val ? "Puente ON (wlan0 debe tener internet)"
+                                         : "Puente OFF", UI_STATUS_OK);
+}
+
 static void enter_section(const char *id, const char *label) {
     lv_obj_clean(g_body);
     g_wifi_status_label = NULL;
@@ -1725,6 +1746,7 @@ static void enter_section(const char *id, const char *label) {
     g_selected_row = NULL;
     g_cfg_deauth_label = NULL;
     g_cfg_beacon_label = NULL;
+    g_cfg_bridge_label = NULL;
     close_actions_menu();   /* por si quedo un overlay de acciones abierto */
 
     if (strcmp(id, "wifi") == 0) {
@@ -2027,6 +2049,23 @@ static void enter_section(const char *id, const char *label) {
         lv_label_set_text(bpl, "+5s");
         lv_obj_set_style_text_color(bpl, lv_color_hex(0xFF9933), 0);
         lv_obj_center(bpl);
+
+        /* ── honeypot: puente de internet (toggle ON/OFF) ── */
+        cfg_load_bridge();
+        lv_obj_t *brbtn = lv_button_create(g_body);
+        lv_obj_set_size(brbtn, 236, 30);
+        lv_obj_align(brbtn, LV_ALIGN_TOP_LEFT, 12, 240);
+        lv_obj_set_style_bg_color(brbtn, lv_color_hex(0x1a0a2a), 0);
+        lv_obj_set_style_border_color(brbtn, lv_color_hex(0xFF3366), 0);
+        lv_obj_set_style_border_width(brbtn, 2, 0);
+        lv_obj_set_ext_click_area(brbtn, 8);
+        lv_obj_add_event_cb(brbtn, cfg_bridge_toggle_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(brbtn);
+        g_cfg_bridge_label = lv_label_create(brbtn);
+        lv_obj_set_style_text_color(g_cfg_bridge_label, lv_color_hex(0xFF3366), 0);
+        lv_obj_set_style_text_font(g_cfg_bridge_label, &lv_font_montserrat_10, 0);
+        lv_obj_center(g_cfg_bridge_label);
+        cfg_refresh_bridge_label();
 
     } else {
         lv_obj_t *title = lv_label_create(g_body);

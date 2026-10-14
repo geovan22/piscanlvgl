@@ -341,51 +341,48 @@ int wifi_client_beacon(int channel, int seconds,
     return success;
 }
 
-int wifi_client_evil_twin(const char *ssid, const char *bssid, int channel, int seconds,
-                          char *out_password, int pw_size,
-                          char *out_detail, int detail_size) {
+int wifi_client_evil_twin(const char *ssid, int seconds,
+                          char *out_summary, int summary_size) {
     char *argv_path = PISCAN_WIFI_OPS_PATH;
-    char channel_str[8], seconds_str[8];
-    snprintf(channel_str, sizeof(channel_str), "%d", channel);
+    char seconds_str[8];
     snprintf(seconds_str, sizeof(seconds_str), "%d", seconds);
 
-    /* wifi_ops.py evil_twin <ssid> <bssid> <channel> <seconds> <iface> */
+    /* wifi_ops.py evil_twin <ssid> <bssid> <channel> <seconds> <iface>.
+     * El honeypot ignora bssid/channel (AP abierto en 2.4); pasamos vacios. */
     char *argv[] = { "python3", argv_path, "evil_twin", (char *)ssid,
-                     (char *)(bssid ? bssid : ""), channel_str, seconds_str,
-                     "wlan1", NULL };
+                     "", "6", seconds_str, "wlan1", NULL };
 
     char *raw = run_and_capture(argv);
     if (!raw) {
-        if (out_detail) snprintf(out_detail, detail_size, "no se pudo ejecutar wifi_ops.py");
+        if (out_summary) snprintf(out_summary, summary_size, "no se pudo ejecutar wifi_ops.py");
         return -1;
     }
 
     cJSON *root = cJSON_Parse(raw);
     free(raw);
     if (!root) {
-        if (out_detail) snprintf(out_detail, detail_size, "JSON invalido de evil_twin");
+        if (out_summary) snprintf(out_summary, summary_size, "JSON invalido de honeypot");
         return -1;
     }
 
     cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
     if (!cJSON_IsTrue(ok)) {
         cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
-        if (out_detail) snprintf(out_detail, detail_size, "%s",
-                                 cJSON_IsString(err) ? err->valuestring : "error en evil_twin");
+        if (out_summary) snprintf(out_summary, summary_size, "%s",
+                                  cJSON_IsString(err) ? err->valuestring : "error en honeypot");
         cJSON_Delete(root);
         return -1;
     }
 
-    cJSON *captured = cJSON_GetObjectItemCaseSensitive(root, "captured");
-    cJSON *pw = cJSON_GetObjectItemCaseSensitive(root, "password");
-    int got = cJSON_IsTrue(captured) ? 1 : 0;
-    if (got && out_password)
-        snprintf(out_password, pw_size, "%s", cJSON_IsString(pw) ? pw->valuestring : "");
-    if (out_detail && !got)
-        snprintf(out_detail, detail_size, "sin captura (el cliente no ingreso la clave)");
+    cJSON *count = cJSON_GetObjectItemCaseSensitive(root, "count");
+    cJSON *bridge = cJSON_GetObjectItemCaseSensitive(root, "bridge");
+    int n = cJSON_IsNumber(count) ? count->valueint : 0;
+    if (out_summary)
+        snprintf(out_summary, summary_size, "%d dispositivo(s)%s", n,
+                 cJSON_IsTrue(bridge) ? " (con internet)" : "");
 
     cJSON_Delete(root);
-    return got;
+    return n;   /* numero de dispositivos registrados (>=0), -1 error */
 }
 
 int wifi_client_handshake(const char *bssid, int channel, int capture_seconds, int deauth_count,

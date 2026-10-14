@@ -154,13 +154,18 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
   la fila WiFi — acción directa, no depende del listado): **AP abierto con
   nombre a elección** (se tipea con el teclado,
   ej. `Sala_Estar_Lopez`) → `ip 10.0.0.1/24` + dnsmasq (DHCP+DNS wildcard) →
-  redirect :80→:8080 con **nft** (trixie; fallback iptables) → portal cautivo
-  (http.server threading :8080) que CAPTURA la clave que ingrese el cliente →
-  teardown a managed. Log en `data/captures/evil_twin.log`. **Es un honeypot
-  (sin deauth)**: el cliente se conecta voluntariamente a la red abierta. (El
-  código aún soporta clonar un SSID+deauth si se pasa `bssid`, pero la UI usa
-  el modo honeypot con nombre genérico porque clonar una red WPA no sirve: el
-  device no se une al gemelo abierto por el mismatch de seguridad.)
+  (sin deauth) → portal **informativo** (http.server threading :8080) que
+  **NO pide ni guarda contraseñas**: registra TELEMETRIA de cada dispositivo
+  (MAC+fabricante, IP, hostname DHCP, SO por User-Agent, dominios DNS vía
+  dnsmasq log-queries, nro de hits) en la tabla `honeypot_log` para análisis/
+  reportes. Decisión del usuario (2026-10-14): solo datos de análisis, NO
+  credenciales. Plantillas en `data/portals/*.html` ({{SSID}}) elegibles por
+  Config `honeypot_portal`. **Puente de internet opcional** (Config
+  `honeypot_bridge=1`, toggle en pantalla Config): NAT wlan0→wlan1
+  (ip_forward + masquerade nft) para que el cliente navegue y se vea más
+  tráfico/dominios (requiere wlan0 con internet; el SSH por wlan0 no se cae).
+  Sin puente: DNS wildcard + redirect :80 al portal. Teardown a managed; log en
+  `data/captures/evil_twin.log`. La UI muestra "N dispositivos" (no claves).
   - Caveats (no bugs): el **popup captive automático** depende del teléfono
     (DNS cifrado lo evita → el usuario entra por el navegador). Levanta **una
     sola** red conectable (hostapd multi-BSS no va bien en rtw88); la "variedad"
