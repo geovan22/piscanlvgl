@@ -14,13 +14,15 @@ except Exception:
     pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from db.models import get_session, Config, SecurityCredential
+from db.models import get_session, Config, SecurityCredential, HoneypotLog
 
-def ok(data=None):
+def ok(data=None, pretty=False):
     out = {"ok": True}
     if data:
         out.update(data)
-    print(json.dumps(out))
+    # pretty=True: salida indentada para lectura humana (comandos honeypot).
+    # Los comandos que invoca C (config/credential) usan una sola linea (popen).
+    print(json.dumps(out, indent=2, ensure_ascii=False) if pretty else json.dumps(out))
     sys.exit(0)
 
 def err(msg):
@@ -94,6 +96,47 @@ def cmd_credential_exists(args):
     row = s.query(SecurityCredential).filter(SecurityCredential.cred_type == args[0]).first()
     ok({"exists": row is not None})
 
+def _hp_row(r, full=False):
+    """Serializa una fila de honeypot_log a dict JSON-safe."""
+    d = {
+        "id": r.id,
+        "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+        "ssid": r.ssid, "client_mac": r.client_mac, "vendor": r.vendor,
+        "hostname": r.hostname, "os": r.os_guess,
+        "portal_user": r.portal_user, "portal_pass": r.portal_pass,
+        "requests": r.requests,
+    }
+    if full:
+        d.update({"client_ip": r.client_ip, "user_agent": r.user_agent,
+                  "domains": r.domains, "details": r.details})
+    return d
+
+def cmd_honeypot_list(args):
+    """honeypot list [limit] [ssid] — ultimas filas, mas recientes primero."""
+    limit = 20
+    ssid = None
+    for a in args:
+        if a.isdigit():
+            limit = int(a)
+        else:
+            ssid = a
+    s = get_session()
+    q = s.query(HoneypotLog)
+    if ssid:
+        q = q.filter(HoneypotLog.ssid == ssid)
+    rows = q.order_by(HoneypotLog.id.desc()).limit(limit).all()
+    ok({"count": len(rows), "items": [_hp_row(r) for r in rows]}, pretty=True)
+
+def cmd_honeypot_show(args):
+    """honeypot show <id> — detalle completo de una fila (incl. dominios/UA)."""
+    if not args or not args[0].isdigit():
+        err("uso: honeypot show <id>")
+    s = get_session()
+    row = s.get(HoneypotLog, int(args[0]))
+    if row is None:
+        err(f"id no encontrado: {args[0]}")
+    ok(_hp_row(row, full=True), pretty=True)
+
 COMMANDS = {
     ("config", "get"): cmd_config_get,
     ("config", "set"): cmd_config_set,
@@ -101,6 +144,8 @@ COMMANDS = {
     ("credential", "set"): cmd_credential_set,
     ("credential", "verify"): cmd_credential_verify,
     ("credential", "exists"): cmd_credential_exists,
+    ("honeypot", "list"): cmd_honeypot_list,
+    ("honeypot", "show"): cmd_honeypot_show,
 }
 
 def main():

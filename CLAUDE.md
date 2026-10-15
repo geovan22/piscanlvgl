@@ -360,11 +360,15 @@ y modo **BadUSB gadget** (la Pi como teclado HID por el puerto USB OTG).
   - `domains` — dominios DNS que consultó (de `dnsmasq log-queries`), separados
     por `, ` (≤2000). Útil para perfilar apps/servicios del dispositivo.
   - `details` — libre (reservado).
-  Cómo leerla: `python3 app/db_tool.py` no tiene (aún) verbo para esta tabla; se
-  consulta con SQL directo (`sqlite3`) o SQLAlchemy. Interpretación: `portal_*`
-  = credenciales capturadas; `domains`+`os_guess`+`user_agent` = fingerprint del
-  dispositivo; `client_mac`/`vendor`/`hostname` = identidad; `requests` = cuánto
-  interactuó con el portal.
+  Cómo leerla (CLI, salida JSON **indentada** para lectura humana):
+  - `python3 app/db_tool.py honeypot list [limit] [ssid]` — últimas filas (resumen),
+    más recientes primero (default 20; filtra por ssid si se pasa).
+  - `python3 app/db_tool.py honeypot show <id>` — detalle completo de una fila
+    (incluye `client_ip`, `user_agent`, `domains`).
+  (No depende de `sqlite3` CLI — usa SQLAlchemy. A futuro: vista "Reportes" en
+  pantalla, Fase 8.) Interpretación: `portal_*` = credenciales capturadas;
+  `domains`+`os_guess`+`user_agent` = fingerprint del dispositivo;
+  `client_mac`/`vendor`/`hostname` = identidad; `requests` = cuánto interactuó.
 
 ### Tablas propuestas (para el roadmap — crear al implementar cada fase)
 - **LanScanLog** — resultados nmap/arp-scan (host, MAC, puertos, servicios, OS).
