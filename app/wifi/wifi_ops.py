@@ -588,8 +588,20 @@ class _ETPortalHandler(http.server.BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        host = (self.headers.get("Host", "") or "").split(":")[0].strip()
         _hp_record_http(self._ip(), self.headers.get("User-Agent", ""),
                         self.headers.get("Host", ""))
+        # Portal cautivo: los sondeos del SO (connectivitycheck.gstatic.com,
+        # captive.apple.com, msftconnecttest.com, etc.) llegan con Host = dominio
+        # externo. Les devolvemos 302 -> el portal; el movil lo interpreta como
+        # "red con portal" y abre la pagina de login solo. Cuando el navegador
+        # cautivo ya entra directo a 10.0.0.1, servimos el HTML del portal.
+        if host and host != "10.0.0.1":
+            self.send_response(302)
+            self.send_header("Location", "http://10.0.0.1:8080/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         self._send_html(_portal_html(_ET_STATE.get("ssid")))
 
     def do_POST(self):
