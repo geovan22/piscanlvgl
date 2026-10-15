@@ -157,6 +157,33 @@
       gemelo ABIERTO. Limitaciones de todo evil twin.
       - [ ] Validar en pantalla el flujo nuevo (botón Honeypot + toggle puente
         en Config); el backend ya quedó validado en red real.
+  - [~] **Telemetría extendida para auditoría (2026-10-15)** — código listo, a
+        validar en red. Se guarda por dispositivo en `honeypot_log` (ver
+        CLAUDE.md §7) y se lee con `db_tool.py honeypot list/show`:
+    - [x] #1 RSSI + bytes_rx/tx + dwell_s (de `iw station dump` pre-teardown).
+    - [x] #2 timeline/permanencia (dwell_s; connect/disconnect en el log hostapd).
+    - [x] #3 DHCP fingerprint (dnsmasq `log-dhcp` → vendor class + requested opts).
+    - [x] #4 SNI de TLS (sitios HTTPS) — pcap + tshark, pasivo.
+    - [x] #6 mDNS name (nombre `.local`) — pcap + tshark.
+    - [x] #7 PCAP de sesión (`tcpdump`, Config `honeypot_pcap`, default ON).
+    - [x] #5 PNL/probe (Config `honeypot_probe_sniff`, default OFF, experimental:
+          monitor+AP en rtw88 conviven mal; best-effort).
+    - [x] sudoers: + tcpdump/tshark. Migración SQLite (ALTER ADD COLUMN) en
+          `models.py` para las columnas nuevas.
+    - [ ] Validar en la Pi: instalar `tcpdump`/`tshark` si faltan
+          (`apt install tcpdump tshark`), aplicar sudoers, correr una sesión y
+          revisar `honeypot show <id>` (rssi/sni/dhcp_vendor/mdns).
+  - [ ] **Selector de portal en pantalla Config** (C, requiere rebuild): hoy
+        `g_body`=264px ya al límite (toggle puente llega a y=270) → volverla
+        scrollable o compactar filas y agregar botón ciclador que lea
+        `data/portals/*.html` y guarde `honeypot_portal`. Backend ya listo
+        (`portals list` + `config set honeypot_portal`).
+  - [ ] **Portal "juego/test"** (idea futura): si el cliente pasa un mini-reto
+        se lo autoriza en vez de pedir user/pass. El POST del portal pasaría a
+        validar el reto y llamar `_et_authorize(ip)`. Encaja en el walled garden.
+  - [x] **Portales con más diseño**: `data/portals/wifi_gratis.html` y
+        `operador.html` (login, CSS inline — sin recursos externos porque el
+        cliente aún no tiene internet). Elegibles por `honeypot_portal`.
 
 ---
 

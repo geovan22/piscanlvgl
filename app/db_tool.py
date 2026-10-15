@@ -108,7 +108,12 @@ def _hp_row(r, full=False):
     }
     if full:
         d.update({"client_ip": r.client_ip, "user_agent": r.user_agent,
-                  "domains": r.domains, "details": r.details})
+                  "domains": r.domains, "details": r.details,
+                  "rssi": r.rssi, "bytes_rx": r.bytes_rx, "bytes_tx": r.bytes_tx,
+                  "dwell_s": r.dwell_s, "dhcp_vendor": r.dhcp_vendor,
+                  "dhcp_fingerprint": r.dhcp_fingerprint, "sni_hosts": r.sni_hosts,
+                  "mdns_name": r.mdns_name, "probe_ssids": r.probe_ssids,
+                  "pcap_path": r.pcap_path})
     return d
 
 def cmd_honeypot_list(args):
@@ -137,6 +142,21 @@ def cmd_honeypot_show(args):
         err(f"id no encontrado: {args[0]}")
     ok(_hp_row(row, full=True), pretty=True)
 
+def cmd_portals_list(args):
+    """portals list — plantillas disponibles en data/portals/ y cual esta activa
+    (Config honeypot_portal). Para que la UI/Config pueda listarlas y elegir."""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "portals")
+    base = os.path.abspath(base)
+    files = []
+    try:
+        files = sorted(f for f in os.listdir(base) if f.endswith(".html"))
+    except Exception:
+        files = []
+    s = get_session()
+    row = s.get(Config, "honeypot_portal")
+    active = row.value if row else None
+    ok({"active": active, "count": len(files), "items": files}, pretty=True)
+
 COMMANDS = {
     ("config", "get"): cmd_config_get,
     ("config", "set"): cmd_config_set,
@@ -146,6 +166,7 @@ COMMANDS = {
     ("credential", "exists"): cmd_credential_exists,
     ("honeypot", "list"): cmd_honeypot_list,
     ("honeypot", "show"): cmd_honeypot_show,
+    ("portals", "list"): cmd_portals_list,
 }
 
 def main():

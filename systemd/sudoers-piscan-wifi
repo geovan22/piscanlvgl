@@ -17,3 +17,7 @@ geo22 ALL=(ALL) NOPASSWD: /usr/sbin/nft
 geo22 ALL=(ALL) NOPASSWD: /sbin/nft
 geo22 ALL=(ALL) NOPASSWD: /usr/sbin/sysctl
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/pkill
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/tcpdump
+geo22 ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/tshark
+geo22 ALL=(ALL) NOPASSWD: /usr/sbin/tshark

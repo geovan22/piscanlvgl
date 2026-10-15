@@ -91,10 +91,46 @@ class HoneypotLog(Base):
     portal_user: Mapped[str] = mapped_column(String(64), nullable=True)   # usuario ingresado en el portal
     portal_pass: Mapped[str] = mapped_column(String(64), nullable=True)   # clave ingresada en el portal
     domains: Mapped[str] = mapped_column(Text, nullable=True)             # dominios DNS consultados
+    # Telemetria extendida para auditoria (2026-10-15):
+    rssi: Mapped[int] = mapped_column(Integer, nullable=True)             # #1 senal dBm (iw station dump)
+    bytes_rx: Mapped[int] = mapped_column(Integer, nullable=True)         # #1 bytes recibidos por el cliente
+    bytes_tx: Mapped[int] = mapped_column(Integer, nullable=True)         # #1 bytes enviados por el cliente
+    dwell_s: Mapped[int] = mapped_column(Integer, nullable=True)          # #2 tiempo conectado (seg)
+    dhcp_vendor: Mapped[str] = mapped_column(String(64), nullable=True)   # #3 vendor class DHCP (android-dhcp-14, MSFT 5.0)
+    dhcp_fingerprint: Mapped[str] = mapped_column(String(128), nullable=True)  # #3 requested options DHCP
+    sni_hosts: Mapped[str] = mapped_column(Text, nullable=True)           # #4 hosts TLS SNI (sitios HTTPS visitados)
+    mdns_name: Mapped[str] = mapped_column(String(96), nullable=True)     # #6 nombre .local anunciado (mDNS)
+    probe_ssids: Mapped[str] = mapped_column(Text, nullable=True)         # #5 PNL: redes que el equipo recuerda (probe req)
+    pcap_path: Mapped[str] = mapped_column(String(160), nullable=True)    # #7 ruta del .pcap de la sesion
     details: Mapped[str] = mapped_column(Text, nullable=True)
 
 _engine = None
 _SessionLocal = None
+
+def _migrate_sqlite(engine):
+    """Migracion minima para SQLite: create_all() crea TABLAS que faltan pero NO
+    agrega COLUMNAS nuevas a tablas ya existentes. Recorremos cada modelo y
+    hacemos ALTER TABLE ADD COLUMN por cada columna que falte. Best-effort: si
+    algo falla no debe tumbar el arranque."""
+    try:
+        from sqlalchemy import inspect, text
+        insp = inspect(engine)
+        existing_tables = set(insp.get_table_names())
+        type_map = {Integer: "INTEGER", Float: "REAL"}  # el resto -> TEXT
+        with engine.begin() as conn:
+            for table in Base.metadata.sorted_tables:
+                if table.name not in existing_tables:
+                    continue  # tabla nueva: ya la creo create_all
+                have = {c["name"] for c in insp.get_columns(table.name)}
+                for col in table.columns:
+                    if col.name in have:
+                        continue
+                    sqltype = next((v for k, v in type_map.items()
+                                    if isinstance(col.type, k)), "TEXT")
+                    conn.execute(text(
+                        f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {sqltype}'))
+    except Exception:
+        pass
 
 def get_engine():
     global _engine
@@ -102,6 +138,7 @@ def get_engine():
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         _engine = create_engine(DB_URL, future=True)
         Base.metadata.create_all(_engine)
+        _migrate_sqlite(_engine)
     return _engine
 
 def get_session():

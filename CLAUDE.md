@@ -189,8 +189,35 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
       fallar silenciosamente; dejarla como `pre`/`post` (`{ type ... priority N ; }`).
   - **Sin puente** (`honeypot_bridge=0`): DNS wildcard (`address=/#/10.0.0.1`) +
     redirect `:80→:8080` (tabla `piscan_et`). Portal sí, internet no.
-  - Teardown a managed (borra `piscan_nat`/`piscan_et`, `ip_forward=0`, flush);
-    log en `data/captures/evil_twin.log`. La UI muestra "N dispositivos".
+  - Teardown a managed (borra `piscan_nat`/`piscan_et`, `ip_forward=0`, flush,
+    `pkill tcpdump`); log en `data/captures/evil_twin.log`. La UI muestra
+    "N dispositivos".
+  - **Telemetría extendida para auditoría (2026-10-15)** — se guarda por
+    dispositivo en `honeypot_log` (campos en §7). Fuentes:
+    - `iw station dump` **antes del teardown** → `rssi`, `bytes_rx/tx`, `dwell_s`.
+    - dnsmasq con `log-dhcp` → `dhcp_vendor` (vendor class) + `dhcp_fingerprint`.
+    - **pcap de la sesión** (`tcpdump`, Config `honeypot_pcap`, default ON) →
+      se parsea con **tshark** para `sni_hosts` (sitios HTTPS por SNI, pasivo) y
+      `mdns_name` (nombre `.local`). Si falta tcpdump/tshark, se omite sin romper.
+    - `probe_ssids` (PNL) → `_probe_sniff()` pre-AP en monitor, Config
+      `honeypot_probe_sniff` (default **OFF**: en rtw88 monitor+AP conviven mal;
+      es experimental y best-effort, restaura a managed).
+    - Todo el extra va en `try/except` silencioso: nunca tumba el honeypot.
+  - **Portales**: viven en `data/portals/*.html` (`{{SSID}}` se sustituye).
+    Se elige con Config `honeypot_portal` (nombre de archivo). Hoy se cambia por
+    CLI: `python3 app/db_tool.py portals list` (lista + cuál está activa) y
+    `config set honeypot_portal <archivo>`. El portal por defecto (sin archivo)
+    trae el form de login. Incluidos: `wifi_gratis.html` y `operador.html`
+    (login con más diseño), `bienvenida.html`/`terminos.html` (informativos, sin
+    captura). **Los portales no deben usar recursos externos** (fuentes/CDN): el
+    cliente aún no tiene internet → todo CSS inline.
+    - **Pendiente (C, requiere rebuild)**: selector de portal en la pantalla
+      Config. Hoy `g_body`=264px ya está al límite (el toggle del puente llega a
+      y=270) → hace falta volverla scrollable o compactar filas antes de sumarlo.
+    - **Idea futura (roadmap)**: portal tipo **"juego/test"** — si el cliente
+      pasa un mini-reto (quiz/captcha/jueguito) se lo autoriza (`_et_authorize`)
+      en vez de pedir user/pass. Encaja directo en el walled garden (el POST que
+      hoy captura credenciales pasaría a validar el reto y autorizar la IP).
   - Caveats (no bugs): el **popup captive automático** depende del teléfono
     (**DNS cifrado / Private DNS / DoH lo evita** → el usuario entra por el
     navegador; para probar, desactivar DNS privado en el móvil). Las sondas por
@@ -332,7 +359,10 @@ y modo **BadUSB gadget** (la Pi como teclado HID por el puerto USB OTG).
 
 ### Tablas actuales
 - **Config** — `key` (PK), `value`, `category`. Config general clave/valor.
-  (Aquí va `deauth_duration`.)
+  Claves actuales (cat `wifi`): `deauth_duration`, `beacon_duration`,
+  `honeypot_bridge` (0/1 puente internet), `honeypot_portal` (archivo de
+  `data/portals/` a usar), `honeypot_pcap` (0/1, default 1: pcap de sesión),
+  `honeypot_probe_sniff` (0/1, default 0: pre-sniff de PNL, experimental).
 - **SecurityCredential** — `cred_type`, `hash`, `salt`. PIN y otras credenciales.
 - **PinConfig** — configuración del PIN.
 - **Device** — dispositivos conocidos/descubiertos.
@@ -359,6 +389,21 @@ y modo **BadUSB gadget** (la Pi como teclado HID por el puerto USB OTG).
     (texto plano, marco: lab autorizado / datos de prueba). Vacío si no completó.
   - `domains` — dominios DNS que consultó (de `dnsmasq log-queries`), separados
     por `, ` (≤2000). Útil para perfilar apps/servicios del dispositivo.
+  - **Telemetría extendida (2026-10-15)** — por dispositivo, para auditoría:
+    - `rssi` — señal en dBm (de `iw station dump`): proximidad física.
+    - `bytes_rx` / `bytes_tx` — datos transferidos (uso real vs. de paso).
+    - `dwell_s` — segundos conectado (tiempo de permanencia).
+    - `dhcp_vendor` — *vendor class* DHCP (ej. `android-dhcp-14`, `MSFT 5.0`):
+      identifica SO/modelo mejor que el UA, aunque no abran el portal.
+    - `dhcp_fingerprint` — *requested options* DHCP (huella del stack).
+    - `sni_hosts` — **hosts TLS SNI = sitios HTTPS que visitó** (de tshark sobre
+      el pcap; pasivo, sin romper TLS). El dato que más perfila al usuario.
+    - `mdns_name` — nombre `.local` que anunció por mDNS (suele traer el nombre
+      real del equipo/dueño, ej. `iPhone-de-Juan.local`).
+    - `probe_ssids` — **PNL**: redes que el equipo recuerda (probe requests).
+      Solo si `honeypot_probe_sniff=1` (experimental, ver §3).
+    - `pcap_path` — ruta del `.pcap` de la sesión (si `honeypot_pcap≠0`), para
+      análisis forense offline (Wireshark).
   - `details` — libre (reservado).
   Cómo leerla (CLI, salida JSON **indentada** para lectura humana):
   - `python3 app/db_tool.py honeypot list [limit] [ssid]` — últimas filas (resumen),
@@ -483,7 +528,10 @@ sudo systemctl stop piscan      # para desarrollar sin que relance
 `systemd/sudoers-piscan-wifi`)
 NOPASSWD para: `/usr/bin/ip`, `/usr/sbin/iw`, `/usr/sbin/aireplay-ng`,
 `/usr/sbin/modprobe`, `/usr/bin/timeout`, `/usr/bin/stdbuf`,
-`/usr/sbin/airodump-ng`, `/usr/bin/aircrack-ng`, `/usr/bin/nmcli`.
+`/usr/sbin/airodump-ng`, `/usr/bin/aircrack-ng`, `/usr/bin/nmcli`,
+`/usr/bin/hcxdumptool`, `/usr/sbin/mdk4`, `/usr/sbin/hostapd`,
+`/usr/sbin/dnsmasq`, `iptables`, `nft`, `/usr/sbin/sysctl`, `/usr/bin/pkill`,
+`tcpdump`, `tshark` (estos últimos para el pcap/SNI/mDNS del honeypot).
 (piscan-power: `/sbin/poweroff`, `/sbin/reboot`.)
 **Al agregar un módulo nuevo que necesite root, añadir su binario aquí** (ej.
 `nmap`, `arp-scan`, `tcpdump`, `bluetoothctl`, `hcxdumptool`, etc.) con ruta
