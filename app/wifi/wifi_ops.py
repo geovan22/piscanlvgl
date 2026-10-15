@@ -700,7 +700,7 @@ def _et_bridge_add(iface, uplink):
         # ya establecidas OK; el resto que entra por wlan1 se corta. El portal y
         # el DNS siguen (van a 10.0.0.1 = INPUT, no FORWARD).
         _run(['sudo', nft, 'add', 'chain', 'ip', 'piscan_nat', 'fwd',
-              '{ type filter hook forward priority 0 ; policy accept ; }'])
+              '{ type filter hook forward priority 0 ; }'])
         _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'iifname', iface,
               'ip', 'saddr', '@authorized', 'accept'])
         _run(['sudo', nft, 'add', 'rule', 'ip', 'piscan_nat', 'fwd', 'oifname', iface,
