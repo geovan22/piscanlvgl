@@ -134,21 +134,29 @@
       En el menú **Acciones** ("Beacon flood", naranja); usa el canal del AP
       seleccionado, ~20s fijos (BEACON_SECONDS). mdk4 en /usr/sbin (+sudoers).
       - [ ] Validar el botón en pantalla contra el lab.
-- [x] **Evil Twin / AP falso (hostapd+dnsmasq+portal)** — backend VALIDADO
-      directo (capturó `password:"123456"`, `captured:true`) + UI cableada.
-      `evil_twin()`: deauth corto al AP real → hostapd AP abierto con el nombre
-      objetivo (2.4, ch fiable) → ip 10.0.0.1/24 + dnsmasq (DHCP+DNS wildcard)
-      → redirect :80→:8080 con **nft** (trixie; fallback iptables) → portal
-      cautivo (http.server threading en :8080) que CAPTURA la clave → teardown
-      limpio. En **Acciones → Evil Twin** (rojo), usa SSID/BSSID/canal del AP
-      seleccionado, hasta ET_SECONDS=180s. Log en data/captures/evil_twin.log.
-      sudoers: + hostapd/dnsmasq/nft/iptables/pkill.
-      Caveat honesto: el **popup captive automático** depende del teléfono
-      (DNS cifrado lo evita); y un device con la red guardada como WPA puede no
-      auto-unirse al gemelo ABIERTO (mismatch de seguridad). Captura siempre que
-      la víctima entre al portal (auto o por navegador). Limitación de todo
-      evil twin, no bug.
-      - [ ] Validar el botón en pantalla contra el lab.
+- [x] **Evil Twin / Honeypot AP (hostapd+dnsmasq+portal)** — ✅ VALIDADO
+      END-TO-END EN RED REAL (2026-10-15, modo puente con captura de login).
+      `evil_twin()`: hostapd AP abierto con el nombre objetivo (2.4, ch fiable)
+      → ip 10.0.0.1/24 + dnsmasq → portal cautivo (http.server threading :8080)
+      con form usuario+contraseña que se guardan → teardown limpio. Botón
+      **Honeypot** directo en la fila WiFi (sale del menú Acciones). Log en
+      data/captures/evil_twin.log. sudoers: + hostapd/dnsmasq/nft/iptables/
+      sysctl/pkill. Detalle completo del flujo en **CLAUDE.md §3**.
+  - [x] **Puente + portal cautivo "walled garden"** (`honeypot_bridge=1`):
+        DNS real + nft `piscan_nat` (redirect por cliente, masquerade solo a
+        `@authorized`, forward drop a no autorizados). **Sin login = sin internet
+        ni LAN**; tras el login `_et_authorize(ip)` abre internet. `do_GET` manda
+        **302** a los sondeos del SO → el popup del portal salta solo. Volcado de
+        `nft list table piscan_nat` al log para diagnóstico.
+  - [x] Validado: conecta → portal automático → sin internet hasta ingresar
+        user/pass → se guardan en `honeypot_log` → se abre internet. (Samsung
+        Android; con Private DNS desactivado el popup salta solo.)
+      Caveats honestos (no bugs): popup automático depende del teléfono (DNS
+      cifrado/DoH lo evita → entra por navegador); HTTPS no se intercepta (sin
+      TLS MITM); device con la red guardada como WPA puede no auto-unirse al
+      gemelo ABIERTO. Limitaciones de todo evil twin.
+      - [ ] Validar en pantalla el flujo nuevo (botón Honeypot + toggle puente
+        en Config); el backend ya quedó validado en red real.
 
 ---
 

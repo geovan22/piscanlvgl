@@ -161,16 +161,43 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
   User-Agent, dominios DNS vía dnsmasq log-queries, nro de hits). Todo va a la
   tabla `honeypot_log` (incl. `portal_user`/`portal_pass`) para análisis/reporte.
   Plantillas en `data/portals/*.html` ({{SSID}}) elegibles por Config
-  `honeypot_portal`; el portal por defecto trae el form de login. **Puente de
-  internet opcional** (Config `honeypot_bridge=1`, toggle en pantalla Config):
-  NAT wlan0→wlan1 (ip_forward + masquerade + forward-accept, nft) para que el
-  cliente navegue (requiere wlan0 con internet; el SSH por wlan0 no se cae).
-  Sin puente: DNS wildcard + redirect :80 al portal. Teardown a managed; log en
-  `data/captures/evil_twin.log`. La UI muestra "N dispositivos".
+  `honeypot_portal`; el portal por defecto trae el form de login.
+  - **Puente de internet + portal cautivo "walled garden"** (Config
+    `honeypot_bridge=1`, toggle en pantalla Config; requiere wlan0 con internet;
+    el SSH por wlan0 no se cae). Validado end-to-end (2026-10-15). Flujo:
+    1. DNS **real** vía dnsmasq (upstream 8.8.8.8/1.1.1.1), para que los dominios
+       de chequeo resuelvan y el móvil mande tráfico que interceptamos.
+    2. **Redirect por cliente** en `nft` tabla `piscan_nat`: los **no
+       autorizados** → su `tcp:80` se redirige al portal (`:8080`) y su `FORWARD`
+       se corta; los que están en el set `@authorized` pasan de largo.
+    3. **Candado de internet = masquerade condicionado a `@authorized`.** Sin
+       login no hay NAT → el paquete sale con origen privado `10.0.0.x` y el
+       router lo descarta = **sin internet aunque el forward lo dejara pasar**
+       (candado principal). La cadena `fwd` (drop a no autorizados) es el candado
+       secundario: aísla al no-logueado también de la **LAN** (`192.168.1.x`).
+    4. Tras el **login**, `_et_authorize(ip)` mete la IP en `@authorized` →
+       deja de redirigir + masquerade activo → **ahí recién tiene internet**.
+    - **302 para gatillar el popup**: `do_GET` responde **302 →
+      `http://10.0.0.1:8080/`** a los sondeos del SO (Host = dominio externo:
+      connectivitycheck.gstatic.com, captive.apple.com, msftconnecttest.com…);
+      Android lo interpreta como portal cautivo y abre el login solo. Cuando el
+      navegador cautivo ya entra a `10.0.0.1`, sirve el HTML.
+    - **Diagnóstico**: tras montar el puente se vuelca `nft list table ip
+      piscan_nat` a `evil_twin.log` (sección `piscan_nat instalada:`) → ahí se ve
+      si las 3 cadenas (`post`/`pre`/`fwd`) y el set `authorized` quedaron.
+      Lección: `policy accept` en la def. compacta de una cadena nft la hace
+      fallar silenciosamente; dejarla como `pre`/`post` (`{ type ... priority N ; }`).
+  - **Sin puente** (`honeypot_bridge=0`): DNS wildcard (`address=/#/10.0.0.1`) +
+    redirect `:80→:8080` (tabla `piscan_et`). Portal sí, internet no.
+  - Teardown a managed (borra `piscan_nat`/`piscan_et`, `ip_forward=0`, flush);
+    log en `data/captures/evil_twin.log`. La UI muestra "N dispositivos".
   - Caveats (no bugs): el **popup captive automático** depende del teléfono
-    (DNS cifrado lo evita → el usuario entra por el navegador). Levanta **una
-    sola** red conectable (hostapd multi-BSS no va bien en rtw88); la "variedad"
-    de nombres la da el beacon flood (no conectable).
+    (**DNS cifrado / Private DNS / DoH lo evita** → el usuario entra por el
+    navegador; para probar, desactivar DNS privado en el móvil). Las sondas por
+    **HTTPS no se interceptan** (no hay TLS MITM); Android cae al chequeo HTTP,
+    que es el que gatilla el portal. Levanta **una sola** red conectable (hostapd
+    multi-BSS no va bien en rtw88); la "variedad" de nombres la da el beacon
+    flood (no conectable).
   - **wlan1 soporta AP mode** (`iw phy` lista `* AP`). El índice del phy
     **cambia** entre reboots/recargas → derivarlo de
     `/sys/class/net/wlan1/phy80211/index`, no asumir `phy2`.
@@ -313,6 +340,31 @@ y modo **BadUSB gadget** (la Pi como teclado HID por el puerto USB OTG).
 - **WifiScanLog** — historial de scans WiFi.
 - **WifiAttackLog** — `attack_type`, `target_ssid`, `target_bssid`,
   `target_client_mac`, `result`, `details` (≤500 chars). Deauth/handshake.
+  (El honeypot también loguea aquí un resumen por sesión vía `log_attack`:
+  `attack_type="honeypot"`, `result=done/fail`, `details="clientes=N bridge=..."`.)
+- **HoneypotLog** — telemetría **por dispositivo y por sesión** del honeypot (una
+  fila por cliente observado). Llenada por `log_honeypot()` al cerrar la sesión.
+  Campos:
+  - `timestamp` (UTC), `ssid` (nombre del honeypot usado esa vez).
+  - `client_mac` — MAC del cliente (DHCP). Puede ser **aleatoria/privada**
+    (bit `0x02` del 1er octeto) → `vendor="(aleatoria)"`.
+  - `vendor` — fabricante por OUI (de `data/oui.txt`), o `?`/`(aleatoria)`.
+  - `client_ip` — IP asignada (DHCP, `10.0.0.x`).
+  - `hostname` — nombre que el dispositivo mandó en el DHCP (ej. `Geo-22`).
+  - `os_guess` — SO inferido (User-Agent del portal + dominios): Android/iOS/
+    Windows/macOS/Linux/`?`.
+  - `user_agent` — UA del navegador que tocó el portal (≤256).
+  - `requests` — nº de hits HTTP al portal (interés/insistencia del cliente).
+  - `portal_user` / `portal_pass` — **usuario y clave que tipeó en el portal**
+    (texto plano, marco: lab autorizado / datos de prueba). Vacío si no completó.
+  - `domains` — dominios DNS que consultó (de `dnsmasq log-queries`), separados
+    por `, ` (≤2000). Útil para perfilar apps/servicios del dispositivo.
+  - `details` — libre (reservado).
+  Cómo leerla: `python3 app/db_tool.py` no tiene (aún) verbo para esta tabla; se
+  consulta con SQL directo (`sqlite3`) o SQLAlchemy. Interpretación: `portal_*`
+  = credenciales capturadas; `domains`+`os_guess`+`user_agent` = fingerprint del
+  dispositivo; `client_mac`/`vendor`/`hostname` = identidad; `requests` = cuánto
+  interactuó con el portal.
 
 ### Tablas propuestas (para el roadmap — crear al implementar cada fase)
 - **LanScanLog** — resultados nmap/arp-scan (host, MAC, puertos, servicios, OS).
