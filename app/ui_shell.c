@@ -17,6 +17,8 @@
 #include "db_client.h"
 #include "ui_style.h"
 #include <stdlib.h>   /* atoi */
+#include <stdint.h>   /* intptr_t (packing de user_data en los cb de Config) */
+#include <dirent.h>   /* listar data/portals/ para el selector de portal */
 #include <pthread.h>
 #define COLOR_OK    lv_color_hex(0x33FF33)
 static void row_select_event_cb(lv_event_t *e);
@@ -64,15 +66,31 @@ static lv_obj_t *g_battery_pct_label;
 static int g_menu_index = 0;
 static lv_timer_t *g_stats_timer = NULL;
 
-/* ── Config: parametro deauth_duration (segundos) ── */
-static lv_obj_t *g_cfg_deauth_label = NULL;
-static int g_cfg_deauth_val = 0;   /* 0 = rafaga; >0 = sostenido N s */
+/* ── Config: lista data-driven y scrollable (ver bloque de funciones abajo).
+ *    La pantalla escala agregando entradas a CFG_ITEMS; nada de offsets fijos. */
+typedef enum { CFG_INT, CFG_BOOL, CFG_CHOICE } cfg_type_t;
+typedef struct {
+    const char *key;     /* key en la tabla Config */
+    const char *label;   /* texto mostrado */
+    const char *cat;     /* category DB */
+    cfg_type_t  type;
+    int min, max, step;  /* INT */
+    int def;             /* default INT/BOOL */
+    const char *unit;    /* sufijo INT (ej "s"); NULL = sin unidad */
+} cfg_item_t;
 
-/* ── Config: parametro beacon_duration (segundos) ── */
-static lv_obj_t *g_cfg_beacon_label = NULL;
-static lv_obj_t *g_cfg_bridge_label = NULL;   /* honeypot_bridge ON/OFF */
-static int g_cfg_bridge_val = 0;
-static int g_cfg_beacon_val = 20;  /* duracion del beacon flood */
+static const cfg_item_t CFG_ITEMS[] = {
+    {"deauth_duration",      "Deauth sostenido",  "wifi", CFG_INT,    0, 600, 5,  0, "s"},
+    {"beacon_duration",      "Beacon flood",      "wifi", CFG_INT,    5, 300, 5, 20, "s"},
+    {"honeypot_portal",      "Honeypot portal",   "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL},
+    {"honeypot_bridge",      "Honeypot internet", "wifi", CFG_BOOL,   0,   1, 1,  0, NULL},
+    {"honeypot_pcap",        "Honeypot PCAP",     "wifi", CFG_BOOL,   0,   1, 1,  1, NULL},
+    {"honeypot_probe_sniff", "Honeypot probe/PNL","wifi", CFG_BOOL,   0,   1, 1,  0, NULL},
+};
+#define CFG_N ((int)(sizeof(CFG_ITEMS)/sizeof(CFG_ITEMS[0])))
+static int       g_cfg_val[CFG_N];       /* valor actual (INT/BOOL) o indice (CHOICE) */
+static lv_obj_t *g_cfg_vlabel[CFG_N];    /* label del valor por fila (para refrescar) */
+static lv_obj_t *g_cfg_box = NULL;       /* caja scrollable que contiene las filas */
 
 /* ── WiFi: escaneo en hilo aparte (nunca tocar LVGL desde el hilo) ── */
 static lv_obj_t *g_wifi_status_label = NULL;
@@ -1598,138 +1616,191 @@ static void net_saved_btn_cb(lv_event_t *e) {
     net_render_saved();
 }
 
-/* ── Config: deauth_duration ──────────────────────────────────────────
- * Un solo parametro por ahora; la seccion esta pensada para crecer.
- * El valor se guarda en la tabla Config (key=deauth_duration, cat=wifi) y
- * lo consume el deauth sostenido (Patron A). 0 = rafaga. */
-#define CFG_DEAUTH_STEP 5
-#define CFG_DEAUTH_MIN  0
-#define CFG_DEAUTH_MAX  600
+/* ── Config: framework data-driven (lista scrollable de parametros) ────────
+ * Cada parametro es una fila compacta en g_cfg_box (flex-column con scroll por
+ * botones ▲▼). Agregar un ajuste = una entrada en CFG_ITEMS (arriba). El valor
+ * se guarda en la tabla Config apenas se toca. Los ataques siguen leyendo su
+ * key directo de la DB (db_config_get), no de aca. ───────────────────────── */
 
-static void cfg_refresh_deauth_label(void) {
-    if (!g_cfg_deauth_label) return;
-    char buf[64];
-    if (g_cfg_deauth_val <= 0)
-        snprintf(buf, sizeof(buf), "Deauth: %d s  (0 = rafaga)", g_cfg_deauth_val);
-    else
-        snprintf(buf, sizeof(buf), "Deauth: %d s  (sostenido)", g_cfg_deauth_val);
-    lv_label_set_text(g_cfg_deauth_label, buf);
+/* CHOICE (honeypot_portal): lista de plantillas en data/portals/. El indice 0 es
+ * "(login default)" = sin plantilla (value ""); el resto, archivos .html. */
+#define CFG_PORTAL_MAX 24
+static char g_portal_files[CFG_PORTAL_MAX][64];
+static int  g_portal_count = 0;
+
+static void cfg_scan_portals(void) {
+    g_portal_count = 0;
+    snprintf(g_portal_files[g_portal_count++], 64, "%s", "default");
+    const char *home = getenv("HOME");
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s/piscanlvgl/data/portals", home ? home : "/home/geo22");
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *ent;
+    while ((ent = readdir(d)) && g_portal_count < CFG_PORTAL_MAX) {
+        const char *n = ent->d_name;
+        size_t L = strlen(n);
+        if (L > 5 && strcmp(n + L - 5, ".html") == 0)
+            snprintf(g_portal_files[g_portal_count++], 64, "%s", n);
+    }
+    closedir(d);
 }
 
-static void cfg_load_deauth(void) {
-    char val[32];
-    if (db_config_get("deauth_duration", val, sizeof(val)))
-        g_cfg_deauth_val = atoi(val);
-    else
-        g_cfg_deauth_val = 0;   /* no configurado -> rafaga por defecto */
-    if (g_cfg_deauth_val < CFG_DEAUTH_MIN) g_cfg_deauth_val = CFG_DEAUTH_MIN;
-    if (g_cfg_deauth_val > CFG_DEAUTH_MAX) g_cfg_deauth_val = CFG_DEAUTH_MAX;
+static int cfg_portal_index_of(const char *val) {
+    if (!val || !val[0]) return 0;
+    for (int i = 1; i < g_portal_count; i++)
+        if (strcmp(g_portal_files[i], val) == 0) return i;
+    return 0;
 }
 
-static void cfg_save_deauth(void) {
-    char val[16], err[128] = {0};
-    snprintf(val, sizeof(val), "%d", g_cfg_deauth_val);
-    if (db_config_set("deauth_duration", val, "wifi", err, sizeof(err))) {
-        ui_shell_set_status("deauth_duration guardado", UI_STATUS_OK);
+static void cfg_item_refresh(int i) {
+    if (i < 0 || i >= CFG_N || !g_cfg_vlabel[i]) return;
+    const cfg_item_t *it = &CFG_ITEMS[i];
+    char buf[80];
+    if (it->type == CFG_BOOL) {
+        snprintf(buf, sizeof(buf), "%s", g_cfg_val[i] ? "ON" : "OFF");
+    } else if (it->type == CFG_CHOICE) {
+        const char *nm = (g_cfg_val[i] >= 0 && g_cfg_val[i] < g_portal_count)
+                         ? g_portal_files[g_cfg_val[i]] : "?";
+        /* mostrar sin ".html" para que entre en la fila */
+        char tmp[64]; snprintf(tmp, sizeof(tmp), "%s", nm);
+        size_t L = strlen(tmp);
+        if (L > 5 && strcmp(tmp + L - 5, ".html") == 0) tmp[L - 5] = '\0';
+        snprintf(buf, sizeof(buf), "%s", tmp);
     } else {
+        if (it->unit) snprintf(buf, sizeof(buf), "%d%s", g_cfg_val[i], it->unit);
+        else          snprintf(buf, sizeof(buf), "%d", g_cfg_val[i]);
+    }
+    lv_label_set_text(g_cfg_vlabel[i], buf);
+}
+
+static void cfg_item_load(int i) {
+    const cfg_item_t *it = &CFG_ITEMS[i];
+    char v[64];
+    int have = db_config_get(it->key, v, sizeof(v));
+    if (it->type == CFG_CHOICE) {
+        cfg_scan_portals();
+        g_cfg_val[i] = cfg_portal_index_of(have ? v : "");
+    } else {
+        int val = have ? atoi(v) : it->def;
+        if (it->type == CFG_BOOL) val = val ? 1 : 0;
+        else { if (val < it->min) val = it->min; if (val > it->max) val = it->max; }
+        g_cfg_val[i] = val;
+    }
+}
+
+static void cfg_item_save(int i) {
+    const cfg_item_t *it = &CFG_ITEMS[i];
+    char v[80], err[128] = {0};
+    if (it->type == CFG_CHOICE) {
+        int idx = g_cfg_val[i];
+        snprintf(v, sizeof(v), "%s", (idx <= 0) ? "" : g_portal_files[idx]); /* 0 = default */
+    } else {
+        snprintf(v, sizeof(v), "%d", g_cfg_val[i]);
+    }
+    if (db_config_set(it->key, v, it->cat, err, sizeof(err)))
+        ui_shell_set_status("Config guardada", UI_STATUS_OK);
+    else {
         char m[160];
         snprintf(m, sizeof(m), "Error DB: %s", err[0] ? err : "desconocido");
         ui_shell_set_status(m, UI_STATUS_ERROR);
     }
 }
 
-static void cfg_deauth_adjust(int delta) {
-    g_cfg_deauth_val += delta;
-    if (g_cfg_deauth_val < CFG_DEAUTH_MIN) g_cfg_deauth_val = CFG_DEAUTH_MIN;
-    if (g_cfg_deauth_val > CFG_DEAUTH_MAX) g_cfg_deauth_val = CFG_DEAUTH_MAX;
-    cfg_refresh_deauth_label();
-    cfg_save_deauth();
-}
-
-static void cfg_deauth_minus_cb(lv_event_t *e) {
+/* Un unico callback: el indice de la fila y la direccion viajan empacados en
+ * user_data -> (index<<2)|dir  (dir: 0=dec 1=inc 2=toggle). */
+static void cfg_ctl_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
-    cfg_deauth_adjust(-CFG_DEAUTH_STEP);
-}
-
-static void cfg_deauth_plus_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
-    cfg_deauth_adjust(+CFG_DEAUTH_STEP);
-}
-
-/* ── Config: beacon_duration (seg). Lo consume el beacon flood. Min 5s. ── */
-#define CFG_BEACON_STEP 5
-#define CFG_BEACON_MIN  5
-#define CFG_BEACON_MAX  300
-
-static void cfg_refresh_beacon_label(void) {
-    if (!g_cfg_beacon_label) return;
-    char buf[64];
-    snprintf(buf, sizeof(buf), "Beacon flood: %d s", g_cfg_beacon_val);
-    lv_label_set_text(g_cfg_beacon_label, buf);
-}
-
-static void cfg_load_beacon(void) {
-    char val[32];
-    if (db_config_get("beacon_duration", val, sizeof(val)))
-        g_cfg_beacon_val = atoi(val);
-    else
-        g_cfg_beacon_val = 20;   /* default */
-    if (g_cfg_beacon_val < CFG_BEACON_MIN) g_cfg_beacon_val = CFG_BEACON_MIN;
-    if (g_cfg_beacon_val > CFG_BEACON_MAX) g_cfg_beacon_val = CFG_BEACON_MAX;
-}
-
-static void cfg_save_beacon(void) {
-    char val[16], err[128] = {0};
-    snprintf(val, sizeof(val), "%d", g_cfg_beacon_val);
-    if (db_config_set("beacon_duration", val, "wifi", err, sizeof(err))) {
-        ui_shell_set_status("beacon_duration guardado", UI_STATUS_OK);
+    intptr_t packed = (intptr_t)lv_event_get_user_data(e);
+    int i = (int)(packed >> 2), dir = (int)(packed & 3);
+    if (i < 0 || i >= CFG_N) return;
+    const cfg_item_t *it = &CFG_ITEMS[i];
+    if (it->type == CFG_BOOL) {
+        g_cfg_val[i] = !g_cfg_val[i];
+    } else if (it->type == CFG_CHOICE) {
+        if (g_portal_count > 0) {
+            g_cfg_val[i] += (dir == 1) ? 1 : -1;
+            if (g_cfg_val[i] < 0) g_cfg_val[i] = g_portal_count - 1;
+            if (g_cfg_val[i] >= g_portal_count) g_cfg_val[i] = 0;
+        }
     } else {
-        char m[160];
-        snprintf(m, sizeof(m), "Error DB: %s", err[0] ? err : "desconocido");
-        ui_shell_set_status(m, UI_STATUS_ERROR);
+        g_cfg_val[i] += (dir == 1) ? it->step : -it->step;
+        if (g_cfg_val[i] < it->min) g_cfg_val[i] = it->min;
+        if (g_cfg_val[i] > it->max) g_cfg_val[i] = it->max;
     }
+    cfg_item_refresh(i);
+    cfg_item_save(i);
 }
 
-static void cfg_beacon_adjust(int delta) {
-    g_cfg_beacon_val += delta;
-    if (g_cfg_beacon_val < CFG_BEACON_MIN) g_cfg_beacon_val = CFG_BEACON_MIN;
-    if (g_cfg_beacon_val > CFG_BEACON_MAX) g_cfg_beacon_val = CFG_BEACON_MAX;
-    cfg_refresh_beacon_label();
-    cfg_save_beacon();
+/* Botoncito −/+/◀/▶ para una fila (helper para no repetir estilo). */
+static void cfg_make_btn(lv_obj_t *row, int i, int dir, int x_ofs, const char *txt) {
+    lv_obj_t *b = lv_button_create(row);
+    lv_obj_set_size(b, 34, 26);
+    lv_obj_align(b, LV_ALIGN_RIGHT_MID, x_ofs, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x0a2a0a), 0);
+    lv_obj_set_style_border_color(b, COLOR_OK, 0);
+    lv_obj_set_style_border_width(b, 2, 0);
+    lv_obj_set_ext_click_area(b, 8);
+    lv_obj_add_event_cb(b, cfg_ctl_cb, LV_EVENT_PRESSED, (void *)(intptr_t)((i << 2) | dir));
+    ui_apply_press_effect(b);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, txt);
+    lv_obj_set_style_text_color(l, COLOR_OK, 0);
+    lv_obj_center(l);
 }
 
-static void cfg_beacon_minus_cb(lv_event_t *e) {
+/* Crea la fila compacta del parametro i dentro de g_cfg_box. */
+static void cfg_make_row(int i) {
+    const cfg_item_t *it = &CFG_ITEMS[i];
+    lv_obj_t *row = lv_obj_create(g_cfg_box);
+    lv_obj_set_size(row, 384, 30);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    /* OJO: sin ui_apply_press_effect en filas lv_obj_create (CLAUDE.md §2). */
+
+    lv_obj_t *name = lv_label_create(row);
+    lv_label_set_text(name, it->label);
+    lv_obj_set_style_text_color(name, COLOR_OK, 0);
+    lv_obj_set_style_text_font(name, &lv_font_montserrat_10, 0);
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 2, 0);
+
+    lv_obj_t *vlbl = lv_label_create(row);
+    lv_obj_set_style_text_color(vlbl, COLOR_WARN, 0);
+    lv_obj_set_style_text_font(vlbl, &lv_font_montserrat_10, 0);
+    g_cfg_vlabel[i] = vlbl;
+
+    if (it->type == CFG_BOOL) {
+        lv_obj_t *btn = lv_button_create(row);
+        lv_obj_set_size(btn, 58, 26);
+        lv_obj_align(btn, LV_ALIGN_RIGHT_MID, -2, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(btn, COLOR_OK, 0);
+        lv_obj_set_style_border_width(btn, 2, 0);
+        lv_obj_set_ext_click_area(btn, 8);
+        lv_obj_add_event_cb(btn, cfg_ctl_cb, LV_EVENT_PRESSED, (void *)(intptr_t)((i << 2) | 2));
+        ui_apply_press_effect(btn);
+        lv_obj_set_parent(vlbl, btn);   /* el ON/OFF va dentro del boton */
+        lv_obj_center(vlbl);
+    } else {
+        /* INT y CHOICE: [−/◀]  valor  [+/▶] */
+        cfg_make_btn(row, i, 0, -124, (it->type == CFG_CHOICE) ? LV_SYMBOL_LEFT : "-");
+        lv_obj_align(vlbl, LV_ALIGN_RIGHT_MID, -42, 0);
+        lv_obj_set_width(vlbl, 78);
+        lv_obj_set_style_text_align(vlbl, LV_TEXT_ALIGN_CENTER, 0);
+        cfg_make_btn(row, i, 1, -2, (it->type == CFG_CHOICE) ? LV_SYMBOL_RIGHT : "+");
+    }
+    cfg_item_refresh(i);
+}
+
+static void cfg_scroll_up_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
-    cfg_beacon_adjust(-CFG_BEACON_STEP);
+    if (g_cfg_box) lv_obj_scroll_by(g_cfg_box, 0, 40, LV_ANIM_OFF);
 }
-
-static void cfg_beacon_plus_cb(lv_event_t *e) {
+static void cfg_scroll_down_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
-    cfg_beacon_adjust(+CFG_BEACON_STEP);
-}
-
-/* ── Config: honeypot_bridge (ON/OFF). Comparte el internet de wlan0 al AP
- *    honeypot (wlan1) via NAT. Requiere que wlan0 tenga internet. ── */
-static void cfg_refresh_bridge_label(void) {
-    if (!g_cfg_bridge_label) return;
-    lv_label_set_text(g_cfg_bridge_label,
-                      g_cfg_bridge_val ? "Honeypot - puente internet: ON"
-                                       : "Honeypot - puente internet: OFF");
-}
-
-static void cfg_load_bridge(void) {
-    char v[16];
-    g_cfg_bridge_val = (db_config_get("honeypot_bridge", v, sizeof(v)) && atoi(v)) ? 1 : 0;
-}
-
-static void cfg_bridge_toggle_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
-    g_cfg_bridge_val = !g_cfg_bridge_val;
-    char err[128] = {0};
-    db_config_set("honeypot_bridge", g_cfg_bridge_val ? "1" : "0", "wifi", err, sizeof(err));
-    cfg_refresh_bridge_label();
-    ui_shell_set_status(g_cfg_bridge_val ? "Puente ON (wlan0 debe tener internet)"
-                                         : "Puente OFF", UI_STATUS_OK);
+    if (g_cfg_box) lv_obj_scroll_by(g_cfg_box, 0, -40, LV_ANIM_OFF);
 }
 
 static void enter_section(const char *id, const char *label) {
@@ -1744,9 +1815,8 @@ static void enter_section(const char *id, const char *label) {
     g_net_status_label = NULL;
     g_net_selected_row = NULL;
     g_selected_row = NULL;
-    g_cfg_deauth_label = NULL;
-    g_cfg_beacon_label = NULL;
-    g_cfg_bridge_label = NULL;
+    g_cfg_box = NULL;
+    for (int _i = 0; _i < CFG_N; _i++) g_cfg_vlabel[_i] = NULL;
     close_actions_menu();   /* por si quedo un overlay de acciones abierto */
 
     if (strcmp(id, "wifi") == 0) {
@@ -1961,111 +2031,52 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(title, COLOR_OK, 0);
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
 
-        cfg_load_deauth();
+        /* Lista scrollable de parametros. Escala agregando filas a CFG_ITEMS;
+         * nada de offsets fijos que llenen la pantalla (rediseño 2026-10-19). */
+        g_cfg_box = lv_obj_create(g_body);
+        lv_obj_set_size(g_cfg_box, 400, 178);
+        lv_obj_align(g_cfg_box, LV_ALIGN_TOP_LEFT, 8, 28);
+        lv_obj_set_style_bg_opa(g_cfg_box, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(g_cfg_box, 0, 0);
+        lv_obj_set_style_pad_all(g_cfg_box, 0, 0);
+        lv_obj_set_style_pad_row(g_cfg_box, 4, 0);
+        lv_obj_set_flex_flow(g_cfg_box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_scroll_dir(g_cfg_box, LV_DIR_VER);
 
-        /* Valor actual del parametro */
-        g_cfg_deauth_label = lv_label_create(g_body);
-        lv_obj_set_style_text_color(g_cfg_deauth_label, COLOR_OK, 0);
-        lv_obj_set_style_text_font(g_cfg_deauth_label, &lv_font_montserrat_10, 0);
-        lv_obj_align(g_cfg_deauth_label, LV_ALIGN_TOP_LEFT, 12, 38);
-        cfg_refresh_deauth_label();
+        for (int i = 0; i < CFG_N; i++) {
+            cfg_item_load(i);
+            cfg_make_row(i);
+        }
+        lv_obj_scroll_to_y(g_cfg_box, 0, LV_ANIM_OFF);
 
-        /* Descripcion */
-        lv_obj_t *desc = lv_label_create(g_body);
-        lv_label_set_text(desc, "Duracion del deauth sostenido (seg).\n"
-                                "0 = rafaga (envia y para).");
-        lv_obj_set_style_text_color(desc, COLOR_DIM, 0);
-        lv_obj_set_style_text_font(desc, &lv_font_montserrat_10, 0);
-        lv_obj_align(desc, LV_ALIGN_TOP_LEFT, 12, 56);
+        /* Scroll por botones ▲▼ (el touch-scroll del KeDei no es fiable). */
+        lv_obj_t *cup = lv_button_create(g_body);
+        lv_obj_set_size(cup, 40, 44);
+        lv_obj_align(cup, LV_ALIGN_TOP_RIGHT, -8, 28);
+        lv_obj_set_style_bg_color(cup, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(cup, COLOR_OK, 0);
+        lv_obj_set_style_border_width(cup, 2, 0);
+        lv_obj_set_ext_click_area(cup, 10);
+        lv_obj_add_event_cb(cup, cfg_scroll_up_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(cup);
+        lv_obj_t *cupl = lv_label_create(cup);
+        lv_label_set_text(cupl, LV_SYMBOL_UP);
+        lv_obj_set_style_text_color(cupl, COLOR_OK, 0);
+        lv_obj_center(cupl);
 
-        /* Boton -5s */
-        lv_obj_t *minus = lv_button_create(g_body);
-        lv_obj_set_size(minus, 70, 46);
-        lv_obj_align(minus, LV_ALIGN_TOP_LEFT, 12, 95);
-        lv_obj_set_style_bg_color(minus, lv_color_hex(0x0a2a0a), 0);
-        lv_obj_set_style_border_color(minus, COLOR_OK, 0);
-        lv_obj_set_style_border_width(minus, 2, 0);
-        lv_obj_set_ext_click_area(minus, 12);
-        lv_obj_add_event_cb(minus, cfg_deauth_minus_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(minus);
-        lv_obj_t *ml = lv_label_create(minus);
-        lv_label_set_text(ml, "-5s");
-        lv_obj_set_style_text_color(ml, COLOR_OK, 0);
-        lv_obj_center(ml);
-
-        /* Boton +5s */
-        lv_obj_t *plus = lv_button_create(g_body);
-        lv_obj_set_size(plus, 70, 46);
-        lv_obj_align(plus, LV_ALIGN_TOP_LEFT, 92, 95);
-        lv_obj_set_style_bg_color(plus, lv_color_hex(0x0a2a0a), 0);
-        lv_obj_set_style_border_color(plus, COLOR_OK, 0);
-        lv_obj_set_style_border_width(plus, 2, 0);
-        lv_obj_set_ext_click_area(plus, 12);
-        lv_obj_add_event_cb(plus, cfg_deauth_plus_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(plus);
-        lv_obj_t *pl = lv_label_create(plus);
-        lv_label_set_text(pl, "+5s");
-        lv_obj_set_style_text_color(pl, COLOR_OK, 0);
-        lv_obj_center(pl);
-
-        /* ── beacon_duration ── */
-        cfg_load_beacon();
-        g_cfg_beacon_label = lv_label_create(g_body);
-        lv_obj_set_style_text_color(g_cfg_beacon_label, lv_color_hex(0xFF9933), 0);
-        lv_obj_set_style_text_font(g_cfg_beacon_label, &lv_font_montserrat_10, 0);
-        lv_obj_align(g_cfg_beacon_label, LV_ALIGN_TOP_LEFT, 12, 152);
-        cfg_refresh_beacon_label();
-
-        lv_obj_t *bdesc = lv_label_create(g_body);
-        lv_label_set_text(bdesc, "Duracion del beacon flood (seg).");
-        lv_obj_set_style_text_color(bdesc, COLOR_DIM, 0);
-        lv_obj_set_style_text_font(bdesc, &lv_font_montserrat_10, 0);
-        lv_obj_align(bdesc, LV_ALIGN_TOP_LEFT, 12, 170);
-
-        lv_obj_t *bminus = lv_button_create(g_body);
-        lv_obj_set_size(bminus, 70, 44);
-        lv_obj_align(bminus, LV_ALIGN_TOP_LEFT, 12, 192);
-        lv_obj_set_style_bg_color(bminus, lv_color_hex(0x0a2a0a), 0);
-        lv_obj_set_style_border_color(bminus, lv_color_hex(0xFF9933), 0);
-        lv_obj_set_style_border_width(bminus, 2, 0);
-        lv_obj_set_ext_click_area(bminus, 12);
-        lv_obj_add_event_cb(bminus, cfg_beacon_minus_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(bminus);
-        lv_obj_t *bml = lv_label_create(bminus);
-        lv_label_set_text(bml, "-5s");
-        lv_obj_set_style_text_color(bml, lv_color_hex(0xFF9933), 0);
-        lv_obj_center(bml);
-
-        lv_obj_t *bplus = lv_button_create(g_body);
-        lv_obj_set_size(bplus, 70, 44);
-        lv_obj_align(bplus, LV_ALIGN_TOP_LEFT, 92, 192);
-        lv_obj_set_style_bg_color(bplus, lv_color_hex(0x0a2a0a), 0);
-        lv_obj_set_style_border_color(bplus, lv_color_hex(0xFF9933), 0);
-        lv_obj_set_style_border_width(bplus, 2, 0);
-        lv_obj_set_ext_click_area(bplus, 12);
-        lv_obj_add_event_cb(bplus, cfg_beacon_plus_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(bplus);
-        lv_obj_t *bpl = lv_label_create(bplus);
-        lv_label_set_text(bpl, "+5s");
-        lv_obj_set_style_text_color(bpl, lv_color_hex(0xFF9933), 0);
-        lv_obj_center(bpl);
-
-        /* ── honeypot: puente de internet (toggle ON/OFF) ── */
-        cfg_load_bridge();
-        lv_obj_t *brbtn = lv_button_create(g_body);
-        lv_obj_set_size(brbtn, 236, 30);
-        lv_obj_align(brbtn, LV_ALIGN_TOP_LEFT, 12, 240);
-        lv_obj_set_style_bg_color(brbtn, lv_color_hex(0x1a0a2a), 0);
-        lv_obj_set_style_border_color(brbtn, lv_color_hex(0xFF3366), 0);
-        lv_obj_set_style_border_width(brbtn, 2, 0);
-        lv_obj_set_ext_click_area(brbtn, 8);
-        lv_obj_add_event_cb(brbtn, cfg_bridge_toggle_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(brbtn);
-        g_cfg_bridge_label = lv_label_create(brbtn);
-        lv_obj_set_style_text_color(g_cfg_bridge_label, lv_color_hex(0xFF3366), 0);
-        lv_obj_set_style_text_font(g_cfg_bridge_label, &lv_font_montserrat_10, 0);
-        lv_obj_center(g_cfg_bridge_label);
-        cfg_refresh_bridge_label();
+        lv_obj_t *cdn = lv_button_create(g_body);
+        lv_obj_set_size(cdn, 40, 44);
+        lv_obj_align(cdn, LV_ALIGN_TOP_RIGHT, -8, 78);
+        lv_obj_set_style_bg_color(cdn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(cdn, COLOR_OK, 0);
+        lv_obj_set_style_border_width(cdn, 2, 0);
+        lv_obj_set_ext_click_area(cdn, 10);
+        lv_obj_add_event_cb(cdn, cfg_scroll_down_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(cdn);
+        lv_obj_t *cdnl = lv_label_create(cdn);
+        lv_label_set_text(cdnl, LV_SYMBOL_DOWN);
+        lv_obj_set_style_text_color(cdnl, COLOR_OK, 0);
+        lv_obj_center(cdnl);
 
     } else {
         lv_obj_t *title = lv_label_create(g_body);
