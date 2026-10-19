@@ -101,6 +101,14 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
 - **Efecto de presión** en TODOS los botones (`ui_apply_press_effect` /
   `_danger` en `ui_style.h`), incluido keypad del PIN (borrar/confirmar).
 - **PIN lock** con keypad propio.
+- **Sección Config** (rediseñada 2026-10-19, **data-driven**): lista scrollable
+  manejada por la tabla `CFG_ITEMS` en `ui_shell.c` (caja flex-column `g_cfg_box`
+  + botones ▲▼). **Agregar un ajuste nuevo = una línea en `CFG_ITEMS`**, sin
+  tocar layout. Tipos de fila: INT (−/+), BOOL (ON/OFF), CHOICE (◀/▶), con un
+  único callback `cfg_ctl_cb` (índice+dir empacados en user_data). Guarda en la
+  tabla Config al tocar. Items: `deauth_duration`, `beacon_duration`,
+  `honeypot_portal` (CHOICE), `honeypot_bridge`, `honeypot_pcap`,
+  `honeypot_probe_sniff`. (Antes eran offsets fijos que llenaban la pantalla.)
 - **WiFi scan** (`wifi_scan.py` → `iw scan` → JSON), con etiqueta de banda
   **2.4G / 5G** en el listado (5G cyan `0x33CCFF`, 2.4G atenuado).
 - **Monitor mode**: botón Monitor **eliminado**. Se activa solo dentro de
@@ -204,16 +212,15 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
       es experimental y best-effort, restaura a managed).
     - Todo el extra va en `try/except` silencioso: nunca tumba el honeypot.
   - **Portales**: viven en `data/portals/*.html` (`{{SSID}}` se sustituye).
-    Se elige con Config `honeypot_portal` (nombre de archivo). Hoy se cambia por
-    CLI: `python3 app/db_tool.py portals list` (lista + cuál está activa) y
-    `config set honeypot_portal <archivo>`. El portal por defecto (sin archivo)
-    trae el form de login. Incluidos: `wifi_gratis.html` y `operador.html`
-    (login con más diseño), `bienvenida.html`/`terminos.html` (informativos, sin
-    captura). **Los portales no deben usar recursos externos** (fuentes/CDN): el
-    cliente aún no tiene internet → todo CSS inline.
-    - **Pendiente (C, requiere rebuild)**: selector de portal en la pantalla
-      Config. Hoy `g_body`=264px ya está al límite (el toggle del puente llega a
-      y=270) → hace falta volverla scrollable o compactar filas antes de sumarlo.
+    Se elige con Config `honeypot_portal` (nombre de archivo). Se cambia de dos
+    formas: en **la pantalla Config** (fila CHOICE `Honeypot portal`, cicla con
+    ◀/▶ los `.html` de la carpeta; `default` = sin plantilla) o por **CLI**
+    (`python3 app/db_tool.py portals list` + `config set honeypot_portal
+    <archivo>`). El portal por defecto (sin archivo) trae el form de login.
+    Incluidos: `wifi_gratis.html` y `operador.html` (login con más diseño),
+    `bienvenida.html`/`terminos.html` (informativos, sin captura). **Los portales
+    no deben usar recursos externos** (fuentes/CDN): el cliente aún no tiene
+    internet → todo CSS inline.
     - **Idea futura (roadmap)**: portal tipo **"juego/test"** — si el cliente
       pasa un mini-reto (quiz/captcha/jueguito) se lo autoriza (`_et_authorize`)
       en vez de pedir user/pass. Encaja directo en el walled garden (el POST que

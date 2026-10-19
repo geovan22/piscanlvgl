@@ -41,9 +41,10 @@
 - [x] **Validado en pantalla**: carga el valor, -/+ ajustan y persisten.
 - [x] **Validado en red real (2026-10-13)**: el tiempo configurado se respeta
       en el deauth sostenido. (Requirió rebuild del binario C — ver lección abajo.)
-- Nota: guarda en cada tap (fork+exec python ~150ms). Si se siente lento al
-  tap repetido, pasar a guardar-al-salir o con botón "Guardar" (anotar en
-  "Por revisar").
+- Nota: antes guardaba en cada tap (fork+exec python por tap = lento). Resuelto
+  (2026-10-19): la carga trae toda la config en **1 fork** (`db_config_list` ->
+  `config list`) y los cambios se persisten **en batch al salir** de Config en 1
+  fork (`db_config_set_many` -> `config setmany`). Editar ya no forkea por tap.
 
 ### 3. Deauth sostenido en la UI (Patrón A) — ✅ CERRADO (validado en red real)
 - [x] Cableado C→Python del `duration`: `wifi_client_deauth` ahora toma
@@ -173,11 +174,21 @@
     - [ ] Validar en la Pi: instalar `tcpdump`/`tshark` si faltan
           (`apt install tcpdump tshark`), aplicar sudoers, correr una sesión y
           revisar `honeypot show <id>` (rssi/sni/dhcp_vendor/mdns).
-  - [ ] **Selector de portal en pantalla Config** (C, requiere rebuild): hoy
-        `g_body`=264px ya al límite (toggle puente llega a y=270) → volverla
-        scrollable o compactar filas y agregar botón ciclador que lea
-        `data/portals/*.html` y guarde `honeypot_portal`. Backend ya listo
-        (`portals list` + `config set honeypot_portal`).
+  - [~] **Rediseño pantalla Config + selector de portal** (2026-10-19, C,
+        requiere `build_app.sh`, A VALIDAR EN PANTALLA). Config pasó de offsets
+        fijos (llena/al límite) a **lista scrollable data-driven**: tabla
+        `CFG_ITEMS` en `ui_shell.c` + caja flex-column (`g_cfg_box`) con botones
+        ▲▼ (touch-scroll del KeDei no fiable). Agregar un ajuste = 1 línea en
+        `CFG_ITEMS`. Tres tipos de fila: INT (−/+), BOOL (ON/OFF), CHOICE (◀/▶).
+        Items actuales: deauth_duration, beacon_duration, honeypot_portal
+        (CHOICE, lista `data/portals/*.html` por `dirent`; "default"=idx0=""),
+        honeypot_bridge, honeypot_pcap, honeypot_probe_sniff. Un único callback
+        `cfg_ctl_cb` (índice+dir empacados en user_data). Guarda en DB al tocar.
+        - [ ] Validar en pantalla: que las 6 filas rendericen, el scroll ▲▼ ande,
+          cada control guarde (ver footer "Config guardada"), y que el selector
+          de portal cicle los .html. Reemplaza y cierra el viejo toggle suelto.
+        - [ ] De paso valida el toggle del puente (memoria: se había puesto por
+          CLI; ahora es una fila BOOL con el mismo `cfg_ctl_cb`).
   - [ ] **Portal "juego/test"** (idea futura): si el cliente pasa un mini-reto
         se lo autoriza en vez de pedir user/pass. El POST del portal pasaría a
         validar el reto y llamar `_et_authorize(ip)`. Encaja en el walled garden.
