@@ -41,9 +41,10 @@
 - [x] **Validado en pantalla**: carga el valor, -/+ ajustan y persisten.
 - [x] **Validado en red real (2026-10-13)**: el tiempo configurado se respeta
       en el deauth sostenido. (Requirió rebuild del binario C — ver lección abajo.)
-- Nota: guarda en cada tap (fork+exec python ~150ms). Si se siente lento al
-  tap repetido, pasar a guardar-al-salir o con botón "Guardar" (anotar en
-  "Por revisar").
+- Nota: antes guardaba en cada tap (fork+exec python por tap = lento). Resuelto
+  (2026-10-19): la carga trae toda la config en **1 fork** (`db_config_list` ->
+  `config list`) y los cambios se persisten **en batch al salir** de Config en 1
+  fork (`db_config_set_many` -> `config setmany`). Editar ya no forkea por tap.
 
 ### 3. Deauth sostenido en la UI (Patrón A) — ✅ CERRADO (validado en red real)
 - [x] Cableado C→Python del `duration`: `wifi_client_deauth` ahora toma

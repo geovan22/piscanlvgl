@@ -67,6 +67,31 @@ def cmd_config_list(args):
     if args: q = q.filter(Config.category == args[0])
     ok({"items": [{"key": r.key, "value": r.value, "category": r.category} for r in q.all()]})
 
+def cmd_config_setmany(args):
+    """config setmany <category> <key> <value> [<key> <value> ...] — escribe
+    varios parametros en UNA sola invocacion (evita forkear Python por cada tap
+    en la pantalla Config). category="" -> None. value puede ser "" (vacio)."""
+    if len(args) < 3:
+        err("uso: config setmany <category> <key> <value> [<key> <value> ...]")
+    category = args[0] or None
+    pairs = args[1:]
+    if len(pairs) % 2 != 0:
+        err("setmany: numero impar de key/value")
+    s = get_session()
+    n = 0
+    for i in range(0, len(pairs), 2):
+        key, value = pairs[i], pairs[i + 1]
+        row = s.get(Config, key)
+        if row is None:
+            s.add(Config(key=key, value=value, category=category))
+        else:
+            row.value = value
+            if category:
+                row.category = category
+        n += 1
+    s.commit()
+    ok({"saved": n})
+
 def cmd_credential_set(args):
     if len(args) < 2: err("uso: credential set <cred_type> <plaintext>")
     cred_type, plaintext = args[0], args[1]
@@ -161,6 +186,7 @@ COMMANDS = {
     ("config", "get"): cmd_config_get,
     ("config", "set"): cmd_config_set,
     ("config", "list"): cmd_config_list,
+    ("config", "setmany"): cmd_config_setmany,
     ("credential", "set"): cmd_credential_set,
     ("credential", "verify"): cmd_credential_verify,
     ("credential", "exists"): cmd_credential_exists,
