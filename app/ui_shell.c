@@ -91,15 +91,6 @@ static const cfg_item_t CFG_ITEMS[] = {
 static int       g_cfg_val[CFG_N];       /* valor actual (INT/BOOL) o indice (CHOICE) */
 static lv_obj_t *g_cfg_vlabel[CFG_N];    /* label del valor por fila (para refrescar) */
 static lv_obj_t *g_cfg_box = NULL;       /* caja scrollable que contiene las filas */
-static int       g_cfg_dirty[CFG_N];     /* 1 = cambiado, pendiente de guardar */
-static int       g_cfg_active = 0;       /* 1 mientras la pantalla Config esta viva */
-/* Cache de toda la config leida en UN fork (db_config_list) para no arrancar
- * Python por cada key al abrir (SQLAlchemy tarda; forkear 6 veces = pantalla
- * lenta). El guardado tambien se hace en UN fork al salir (ver cfg_flush). */
-#define CFG_CACHE_MAX 32
-static char g_cfg_ckey[CFG_CACHE_MAX][64];
-static char g_cfg_cval[CFG_CACHE_MAX][128];
-static int  g_cfg_cn = 0;
 
 /* ── WiFi: escaneo en hilo aparte (nunca tocar LVGL desde el hilo) ── */
 static lv_obj_t *g_wifi_status_label = NULL;
@@ -1683,26 +1674,10 @@ static void cfg_item_refresh(int i) {
     lv_label_set_text(g_cfg_vlabel[i], buf);
 }
 
-/* Lee del cache (llenado por cfg_load_all en 1 fork). 1 si encontro la key. */
-static int cfg_cache_get(const char *key, char *out, int out_size) {
-    for (int c = 0; c < g_cfg_cn; c++) {
-        if (strcmp(g_cfg_ckey[c], key) == 0) {
-            snprintf(out, out_size, "%s", g_cfg_cval[c]);
-            return 1;
-        }
-    }
-    return 0;
-}
-
-/* Trae TODA la config de la DB en UNA sola invocacion de db_tool.py. */
-static void cfg_load_all(void) {
-    g_cfg_cn = db_config_list("wifi", g_cfg_ckey, g_cfg_cval, CFG_CACHE_MAX);
-}
-
 static void cfg_item_load(int i) {
     const cfg_item_t *it = &CFG_ITEMS[i];
-    char v[128];
-    int have = cfg_cache_get(it->key, v, sizeof(v));
+    char v[64];
+    int have = db_config_get(it->key, v, sizeof(v));
     if (it->type == CFG_CHOICE) {
         cfg_scan_portals();
         g_cfg_val[i] = cfg_portal_index_of(have ? v : "");
@@ -1712,42 +1687,18 @@ static void cfg_item_load(int i) {
         else { if (val < it->min) val = it->min; if (val > it->max) val = it->max; }
         g_cfg_val[i] = val;
     }
-    g_cfg_dirty[i] = 0;
 }
 
-/* Serializa el valor del item i a texto para guardar en la DB. */
-static void cfg_item_value_str(int i, char *out, int out_size) {
+static void cfg_item_save(int i) {
     const cfg_item_t *it = &CFG_ITEMS[i];
+    char v[80], err[128] = {0};
     if (it->type == CFG_CHOICE) {
         int idx = g_cfg_val[i];
-        snprintf(out, out_size, "%s", (idx <= 0) ? "" : g_portal_files[idx]); /* 0 = default */
+        snprintf(v, sizeof(v), "%s", (idx <= 0) ? "" : g_portal_files[idx]); /* 0 = default */
     } else {
-        snprintf(out, out_size, "%d", g_cfg_val[i]);
+        snprintf(v, sizeof(v), "%d", g_cfg_val[i]);
     }
-}
-
-/* Guarda en la DB TODOS los parametros cambiados en UNA sola invocacion
- * (fork+exec de Python). Se llama al salir de la pantalla Config (no por tap),
- * asi editar se siente instantaneo. No-op si no hay cambios. */
-static void cfg_flush(void) {
-    if (!g_cfg_active) return;
-    g_cfg_active = 0;
-    char keys[CFG_N][64];
-    static char vals[CFG_N][80];     /* static: vive mas alla del frame por seguridad */
-    const char *kp[CFG_N], *vp[CFG_N];
-    int n = 0;
-    for (int i = 0; i < CFG_N; i++) {
-        if (!g_cfg_dirty[i]) continue;
-        snprintf(keys[n], sizeof(keys[n]), "%s", CFG_ITEMS[i].key);
-        cfg_item_value_str(i, vals[n], sizeof(vals[n]));
-        kp[n] = keys[n];
-        vp[n] = vals[n];
-        g_cfg_dirty[i] = 0;
-        n++;
-    }
-    if (n == 0) return;
-    char err[128] = {0};
-    if (db_config_set_many("wifi", kp, vp, n, err, sizeof(err)))
+    if (db_config_set(it->key, v, it->cat, err, sizeof(err)))
         ui_shell_set_status("Config guardada", UI_STATUS_OK);
     else {
         char m[160];
@@ -1778,7 +1729,7 @@ static void cfg_ctl_cb(lv_event_t *e) {
         if (g_cfg_val[i] > it->max) g_cfg_val[i] = it->max;
     }
     cfg_item_refresh(i);
-    g_cfg_dirty[i] = 1;   /* se persiste en batch al salir (cfg_flush) */
+    cfg_item_save(i);
 }
 
 /* Botoncito −/+/◀/▶ para una fila (helper para no repetir estilo). */
@@ -1853,7 +1804,6 @@ static void cfg_scroll_down_cb(lv_event_t *e) {
 }
 
 static void enter_section(const char *id, const char *label) {
-    cfg_flush();   /* si venimos de Config con cambios, persistirlos (no-op si no) */
     lv_obj_clean(g_body);
     g_wifi_status_label = NULL;
     g_wifi_results_box = NULL;
@@ -2093,12 +2043,10 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_flex_flow(g_cfg_box, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_scroll_dir(g_cfg_box, LV_DIR_VER);
 
-        cfg_load_all();   /* toda la config en UN fork (no 1 por parametro) */
         for (int i = 0; i < CFG_N; i++) {
             cfg_item_load(i);
             cfg_make_row(i);
         }
-        g_cfg_active = 1;   /* a partir de aca los cambios se juntan y se guardan al salir */
         lv_obj_scroll_to_y(g_cfg_box, 0, LV_ANIM_OFF);
 
         /* Scroll por botones ▲▼ (el touch-scroll del KeDei no es fiable). */
@@ -2181,7 +2129,6 @@ static void draw_menu_current(void) {
 }
 
 static void show_carousel(void) {
-    cfg_flush();   /* guarda en 1 fork lo que se haya cambiado en Config */
     close_actions_menu();   /* por si quedara un overlay de acciones abierto */
     lv_obj_clean(g_body);
     g_net_box = NULL;
