@@ -47,6 +47,28 @@
 - No se forzó un fallo de `wlan0` para proteger la conexión de gestión; las
   respuestas de error y el caso de lista vacía están cubiertos por pruebas.
 
+## Self-check / doctor (`app/diag.py`) — [~] backend listo, falta UI
+- [x] Verifica binarios (core/handshake/deauth/pmkid/beacon/honeypot/wps),
+      entradas sudoers (contra `systemd/sudoers-piscan-wifi`), interfaces
+      wlan0/wlan1 (driver `rtw88_8821cu`, que el phy soporte AP+monitor) y el
+      acceso a la DB. Salida JSON estándar; `ok` global = sin checks en `fail`.
+- [x] 6 pruebas unitarias de la lógica pura (parseo sudoers/`iw phy`,
+      resolución de binarios, decisión global) pasan localmente.
+- [ ] Correr en la Pi: `python3 app/diag.py` y revisar el JSON.
+- [ ] Wire UI: entrada en Herramientas que muestre el resumen (C + `build_app.sh`).
+
+## WiFi ampliado — WPS (reaver/bully) — [~] backend listo, lab-only
+> Marco: SOLO redes propias o con permiso explícito.
+- [x] `wifi_ops.py wps_scan [iface] [seg]` — `wash` en monitor (pasivo) → lista
+      APs con WPS (bssid/canal/locked/essid).
+- [x] `wifi_ops.py wps_attack <bssid> <channel> [iface] [seg] [pixie0|pixie1]`
+      — `reaver` Pixie-Dust por defecto → parsea PIN/PSK; loguea en WifiAttackLog.
+- [x] 5 pruebas unitarias de los parsers (wash/reaver) pasan localmente.
+- [x] sudoers versionado: + wash/reaver/bully (`/usr/bin` y `/usr/sbin`).
+- [ ] En la Pi: `apt install reaver` (trae `wash`) [+ `bully` opcional], aplicar
+      sudoers y probar contra un AP WPS propio.
+- [ ] Wire UI: acción "WPS" en el menú Acciones por AP (C + `build_app.sh`).
+
 ## Fase 0 — WiFi / Config — ✅ CERRADA
 
 ### 1. text_input.c (teclado/entrada reutilizable) — ✅ CERRADO (validado en pantalla)

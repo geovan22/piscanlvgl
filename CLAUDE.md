@@ -311,6 +311,7 @@ rendimiento del internet compartido: pospuesto y de baja prioridad (§3).
 │   app/wifi/net_ops.py     ← wlan0 / NetworkManager │
 │   app/db_tool.py          ← acceso DB (CLI JSON)   │
 │   app/db/models.py        ← modelos SQLAlchemy     │
+│   app/diag.py             ← self-check / doctor    │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -485,6 +486,9 @@ validados (ver `TODO.md`).
 - Captura PMKID (hcxdumptool) además de handshake.
 - Beacon flood / probe spam (demostración).
 - Export de `.cap` / `.hccapx` para crackeo externo.
+- **WPS** (`wash` + `reaver` Pixie-Dust / `bully`) — **solo lab**. Backend listo
+  (`wps_scan`/`wps_attack` en `wifi_ops.py`, parsers con tests); pendiente en la
+  Pi `apt install reaver`, sudoers y wire a la UI.
 
 ### Fase 2 — LAN (sección `lan`)
 - `arp-scan` / `nmap -sn` → descubrimiento de hosts (→ LanScanLog).
@@ -557,6 +561,10 @@ sudo systemctl stop piscan      # para desarrollar sin que relance
 
 - Tras cambiar `lv_conf.h` → **rebuild de liblvgl.a** obligatorio, luego app.
 - Compilar entre pasos. Verificar "SINTAXIS OK" antes de probar en pantalla.
+- **Self-check / doctor:** `python3 app/diag.py` → JSON con binarios, sudoers,
+  wlan0/wlan1 y DB. `exit 0` = todo OK; útil como chequeo antes de salir a campo.
+- **Tests:** `python3 -m unittest discover -s tests` (unitarios puros, corren en
+  PC o Pi; mockean subprocess/DB).
 - Para desarrollar: `systemctl stop piscan` para que no pelee por la pantalla.
 - **⚠️ Cambios en `.c`/`.h` NO toman efecto con solo `git pull` + restart:
   hay que `build_app.sh`.** Solo los `.py` toman efecto con pull+restart (no
@@ -572,7 +580,8 @@ NOPASSWD para: `/usr/bin/ip`, `/usr/sbin/iw`, `/usr/sbin/aireplay-ng`,
 `/usr/sbin/airodump-ng`, `/usr/bin/aircrack-ng`, `/usr/bin/nmcli`,
 `/usr/bin/hcxdumptool`, `/usr/sbin/mdk4`, `/usr/sbin/hostapd`,
 `/usr/sbin/dnsmasq`, `iptables`, `nft`, `/usr/sbin/sysctl`, `/usr/bin/pkill`,
-`tcpdump`, `tshark` (estos últimos para el pcap/SNI/mDNS del honeypot).
+`tcpdump`, `tshark` (estos últimos para el pcap/SNI/mDNS del honeypot),
+`wash`, `reaver`, `bully` (WPS, en `/usr/bin` y `/usr/sbin`).
 (piscan-power: `/sbin/poweroff`, `/sbin/reboot`.)
 **Al agregar un módulo nuevo que necesite root, añadir su binario aquí** (ej.
 `nmap`, `arp-scan`, `tcpdump`, `bluetoothctl`, `hcxdumptool`, etc.) con ruta
