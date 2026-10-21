@@ -1,13 +1,15 @@
 import os
 import sys
+import io
 import unittest
+from contextlib import redirect_stderr
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app"))
 sys.path.insert(0, APP_DIR)
 
-from wifi.wifi_scan import _parse_scan_output
+from wifi.wifi_scan import _parse_scan_output, log_scan_results
 from wifi import wifi_ops
 
 
@@ -88,6 +90,52 @@ BSS 00:00:00:00:00:05(on wlan1)
         self.assertEqual(networks["00:00:00:00:00:03"]["security"], "WPA2")
         self.assertEqual(networks["00:00:00:00:00:04"]["security"], "WPA3")
         self.assertEqual(networks["00:00:00:00:00:05"]["security"], "WPA2/3")
+
+    def test_scan_results_are_committed_and_session_closed(self):
+        session = MagicMock()
+        session.__enter__.return_value = session
+        db_models = SimpleNamespace(
+            get_session=MagicMock(return_value=session),
+            WifiScanLog=MagicMock(),
+        )
+        networks = [{
+            "ssid": "Lab",
+            "bssid": "00:11:22:33:44:55",
+            "channel": 1,
+            "security": "WPA2",
+            "signal": -45.0,
+        }]
+
+        with patch.dict(sys.modules, {"db.models": db_models}):
+            self.assertTrue(log_scan_results(networks))
+
+        db_models.WifiScanLog.assert_called_once_with(
+            ssid="Lab",
+            bssid="00:11:22:33:44:55",
+            channel=1,
+            security="WPA2",
+            signal=-45.0,
+        )
+        session.add.assert_called_once_with(db_models.WifiScanLog.return_value)
+        session.commit.assert_called_once_with()
+        session.__exit__.assert_called_once()
+
+    def test_db_failure_is_reported_without_raising(self):
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.commit.side_effect = RuntimeError("disk unavailable")
+        db_models = SimpleNamespace(
+            get_session=MagicMock(return_value=session),
+            WifiScanLog=MagicMock(),
+        )
+        stderr = io.StringIO()
+
+        with patch.dict(sys.modules, {"db.models": db_models}), redirect_stderr(stderr):
+            self.assertFalse(log_scan_results([{"ssid": "Lab"}]))
+
+        self.assertIn("no se pudieron guardar resultados en la DB", stderr.getvalue())
+        self.assertIn("disk unavailable", stderr.getvalue())
+        session.__exit__.assert_called_once()
 
 
 class HandshakeDetectionTests(unittest.TestCase):

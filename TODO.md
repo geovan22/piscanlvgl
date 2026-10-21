@@ -20,12 +20,14 @@
       `iw scan`; la lista muestra el final del BSSID para identificar cada AP.
 - [x] La detección de handshake exige un conteo positivo; `0 handshake` no
       marca una captura como válida.
-- [x] Se añadieron seis pruebas unitarias focalizadas; pasan localmente con el
-      intérprete seleccionado.
-- [ ] En la Pi: ejecutar `python3 -m unittest discover -s tests -v`, compilar
-      con `scripts/build_app.sh` y confirmar la presentación en pantalla.
-- [ ] Contrastar la clasificación con salidas reales de `iw scan`, incluyendo
-      WPA3 y transición WPA2/3 si están disponibles en el laboratorio.
+- [x] Ocho pruebas unitarias focalizadas pasan localmente. En la Pi pasaron las
+      seis pruebas originales antes de añadir los tests de escritura DB.
+- [x] En la Pi se confirmó que aparecen los sufijos BSSID en pantalla y que
+      `wifi_scan_log` persiste el BSSID completo.
+- [ ] Contrastar la clasificación con WPA3/transición usando una salida real de
+      `iw scan` si hay un AP de laboratorio disponible.
+- [ ] Validar en Pi los cambios recientes del manejo de errores de escritura
+      del historial en DB.
 
 ## Fase 0 — WiFi / Config — ✅ CERRADA
 

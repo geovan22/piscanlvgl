@@ -147,19 +147,20 @@ def scan_networks(iface='wlan1', passes=2):
     return result, None
 
 def log_scan_results(networks):
-    """Guarda cada red vista en wifi_scan_log. No debe bloquear el scan
-    si falla (ej. DB no disponible), por eso el try/except silencioso."""
+    """Guarda cada red vista sin interrumpir el scan si falla la DB."""
     try:
         sys.path.insert(0, os.path.expanduser("~/piscanlvgl/app"))
         from db.models import get_session, WifiScanLog
-        s = get_session()
-        for n in networks:
-            s.add(WifiScanLog(ssid=n.get('ssid'), bssid=n.get('bssid'),
-                               channel=n.get('channel'), security=n.get('security'),
-                               signal=n.get('signal')))
-        s.commit()
-    except Exception:
-        pass
+        with get_session() as session:
+            for n in networks:
+                session.add(WifiScanLog(ssid=n.get('ssid'), bssid=n.get('bssid'),
+                                        channel=n.get('channel'), security=n.get('security'),
+                                        signal=n.get('signal')))
+            session.commit()
+        return True
+    except Exception as exc:
+        print(f"wifi_scan: no se pudieron guardar resultados en la DB: {exc}", file=sys.stderr)
+        return False
 
 
 def main():

@@ -113,7 +113,9 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
   **2.4G / 5G** en el listado (5G cyan `0x33CCFF`, 2.4G atenuado). Los APs se
   acumulan por BSSID (no por SSID), conservando la señal más fuerte del mismo
   BSSID; la fila muestra su terminación para distinguir SSIDs duplicados.
-  Seguridad: OPEN/WEP/WPA/WPA2/WPA3/WPA2/3.
+  Seguridad: OPEN/WEP/WPA/WPA2/WPA3/WPA2/3. Validado en la Pi: sufijos visibles
+  en pantalla y BSSID completo persistido en `wifi_scan_log`; WPA3 real queda
+  pendiente de un AP disponible.
 - **Monitor mode**: botón Monitor **eliminado**. Se activa solo dentro de
   deauth/handshake. (Patrón confiable: reset→monitor→ataque→managed.)
 - **Deauth** (burst y sostenido): `deauth(bssid, channel, count, iface,
@@ -265,10 +267,11 @@ validaciones puntuales en la Pi y en pantalla. La lentitud del internet
 compartido por el honeypot es de **baja prioridad** y no bloquea avanzar.
 
 ### Validaciones inmediatas restantes
-- Mejora de precisión WiFi implementada y con seis pruebas unitarias pasando
-  localmente; falta ejecutar las pruebas/compilación en la Pi, revisar la lista
-  en pantalla y contrastar WPA3/transición con una salida real de `iw scan`
-  (ver `TODO.md`).
+- Mejora de precisión WiFi validada en pantalla y con BSSID completo confirmado
+  en la DB. Ocho pruebas unitarias pasan localmente; seis pasaron en la Pi antes
+  de añadir dos tests para el manejo de errores del logger. Falta ejecutar la
+  suite actualizada en la Pi y contrastar WPA3/transición con una salida real de
+  `iw scan` (ver `TODO.md`).
 - Confirmar en pantalla el menú Acciones, Capturas y los flujos PMKID/beacon.
 - Completar una comprobación controlada de la telemetría extendida del honeypot.
   `probe_ssids` es experimental y está desactivado por defecto.
