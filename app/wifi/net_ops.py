@@ -28,11 +28,23 @@ def _nmcli(args, timeout=30):
 def scan():
     """Redes disponibles en wlan0. Descarta SSID vacios (ocultas) y
     deduplica por SSID quedandose con la senal mas fuerte."""
-    _nmcli(['device', 'wifi', 'rescan', 'ifname', IFACE], timeout=15)
+    rescan = _nmcli(['device', 'wifi', 'rescan', 'ifname', IFACE], timeout=15)
+    if rescan is None:
+        raise RuntimeError("no se pudo ejecutar nmcli para actualizar el escaneo")
+    if rescan.returncode != 0:
+        detail = rescan.stderr.strip() or rescan.stdout.strip() or "sin detalle"
+        raise RuntimeError(f"nmcli no pudo actualizar el escaneo: {detail}")
+
     r = _nmcli(['-t', '-f', 'SSID,SIGNAL,SECURITY,IN-USE',
                 'device', 'wifi', 'list', 'ifname', IFACE], timeout=20)
+    if r is None:
+        raise RuntimeError("no se pudo ejecutar nmcli para listar redes")
+    if r.returncode != 0:
+        detail = r.stderr.strip() or r.stdout.strip() or "sin detalle"
+        raise RuntimeError(f"nmcli no pudo listar redes: {detail}")
+
     nets = {}
-    if r and r.stdout:
+    if r.stdout:
         for line in r.stdout.splitlines():
             # nmcli -t escapa ':' internos como '\:'; separamos con cuidado
             parts = line.replace('\\:', '\x00').split(':')
@@ -140,7 +152,12 @@ def main():
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd == 'scan':
-        print(json.dumps({"ok": True, "networks": scan()}))
+        try:
+            networks = scan()
+        except RuntimeError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            sys.exit(1)
+        print(json.dumps({"ok": True, "networks": networks}))
     elif cmd == 'list_saved':
         print(json.dumps({"ok": True, "saved": list_saved()}))
     elif cmd == 'status':

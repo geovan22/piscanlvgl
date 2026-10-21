@@ -29,6 +29,17 @@
 - [ ] Validar en Pi los cambios recientes del manejo de errores de escritura
       del historial en DB.
 
+## Conectar Red — errores de escaneo explícitos [~]
+- [x] `net_ops.py` distingue un escaneo sin redes de errores de `nmcli` al
+      actualizar o listar redes, y responde el error como JSON.
+- [x] El puente C conserva el detalle del error y la UI lo muestra en el footer
+      en vez de indicar "No se detectaron redes".
+- [x] Tres pruebas unitarias cubren lista vacía válida y fallos de actualización
+      y listado.
+- [ ] Ejecutar las pruebas en la Pi, compilar la app y validar que un escaneo
+      normal sigue mostrando redes; no provocar una falla de wlan0 en la red de
+      gestión para esta prueba.
+
 ## Fase 0 — WiFi / Config — ✅ CERRADA
 
 ### 1. text_input.c (teclado/entrada reutilizable) — ✅ CERRADO (validado en pantalla)

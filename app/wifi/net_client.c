@@ -55,7 +55,13 @@ int net_client_scan(net_network_t *out, int max_count, char *out_error, int erro
     free(raw);
     if (!root) { if (out_error) snprintf(out_error, error_size, "JSON invalido de scan"); return -1; }
     cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
-    if (!cJSON_IsTrue(ok)) { if (out_error) snprintf(out_error, error_size, "scan fallo"); cJSON_Delete(root); return -1; }
+    if (!cJSON_IsTrue(ok)) {
+        cJSON *error = cJSON_GetObjectItemCaseSensitive(root, "error");
+        if (out_error) snprintf(out_error, error_size, "%s",
+                                cJSON_IsString(error) ? error->valuestring : "scan fallo");
+        cJSON_Delete(root);
+        return -1;
+    }
     cJSON *nets = cJSON_GetObjectItemCaseSensitive(root, "networks");
     int count = 0;
     if (cJSON_IsArray(nets)) {

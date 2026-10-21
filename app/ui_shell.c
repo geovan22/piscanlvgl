@@ -1393,10 +1393,12 @@ static int g_net_target_secured = 0;
 /* ── scan de red de gestion en hilo ── */
 static volatile int g_netscan_running = 0;
 static volatile int g_netscan_done = 0;
+static char g_netscan_error[128];
 static void *netscan_thread_fn(void *arg) {
     (void)arg;
-    char err[128];
-    g_net_nets_count = net_client_scan(g_net_nets, NET_MAX_NETWORKS, err, sizeof(err));
+    g_netscan_error[0] = '\0';
+    g_net_nets_count = net_client_scan(g_net_nets, NET_MAX_NETWORKS,
+                                       g_netscan_error, sizeof(g_netscan_error));
     g_netscan_done = 1;
     return NULL;
 }
@@ -1503,6 +1505,12 @@ static void net_render_available(void) {
     lv_obj_clean(g_net_box);
     g_net_selected_row = NULL;
     g_net_view = 0;
+    if (g_net_nets_count < 0) {
+        char status[160];
+        snprintf(status, sizeof(status), "Error al escanear: %.120s", g_netscan_error);
+        ui_shell_set_status(status, UI_STATUS_ERROR);
+        return;
+    }
     if (g_net_nets_count <= 0) {
         ui_shell_set_status("No se detectaron redes", UI_STATUS_INFO);
         return;

@@ -130,7 +130,8 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
   resuelve por alias/filename/path. `list_wordlists` / `list_captures`.
 - **Conectar Red** (wlan0 / NetworkManager, `net_ops.py`): scan + connect +
   listar/activar/olvidar redes guardadas, con teclado de contraseña. Permite
-  SSH desde cualquier red. Borra perfil en connect fallido. IP estática
+  SSH desde cualquier red. Borra perfil en connect fallido. El scan distingue
+  lista vacía de fallos de `nmcli` y pasa el detalle a la UI. IP estática
   configurada (.195).
 - **Adaptador nuevo RTL8821CU** validado y adaptado en todo el tooling WiFi:
   dual-band 2.4/5 GHz + Bluetooth, driver `rtw88_8821cu` (`0bda:c820`),
