@@ -32,6 +32,15 @@ class SudoersTests(unittest.TestCase):
             ["/usr/bin/tcpdump", "/usr/sbin/iw"],
         )
 
+    def test_classify_missing_splits_by_binary_presence(self):
+        # 'hard' = el binario existe (falla real); 'soft' = no instalado (aviso).
+        hard, soft = diag.classify_missing_sudoers(
+            ["/usr/bin/present", "/usr/bin/absent"],
+            exists_fn=lambda p: p.endswith("present"),
+        )
+        self.assertEqual(hard, ["/usr/bin/present"])
+        self.assertEqual(soft, ["/usr/bin/absent"])
+
 
 class PhyModesTests(unittest.TestCase):
     def test_parse_phy_modes_reads_section_and_stops(self):

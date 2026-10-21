@@ -93,6 +93,18 @@ def missing_sudoers(installed_text, required_text):
     return sorted(parse_sudoers(required_text) - parse_sudoers(installed_text))
 
 
+def classify_missing_sudoers(missing, exists_fn=None):
+    """Parte las rutas faltantes segun si el binario existe en disco:
+    'hard' (binario presente -> rompe el uso desatendido, es un fallo real) y
+    'soft' (binario ausente -> feature todavia no instalada, solo aviso)."""
+    if exists_fn is None:
+        exists_fn = lambda p: os.path.isfile(p) or bool(shutil.which(os.path.basename(p)))
+    hard, soft = [], []
+    for path in missing:
+        (hard if exists_fn(path) else soft).append(path)
+    return hard, soft
+
+
 def parse_phy_modes(text):
     """Modos de interfaz soportados por el phy, de `iw phy info`
     (seccion 'Supported interface modes')."""
@@ -202,7 +214,17 @@ def check_interfaces():
     return checks
 
 
-def check_sudoers():
+def installed_sudoers_text():
+    """Privilegios NOPASSWD efectivos de la cuenta via `sudo -n -l`. NO depende
+    de poder LEER /etc/sudoers.d/piscan-wifi (es root:root 0440, ilegible para
+    el usuario) ni pide contrasena (`-n`). Es la forma correcta de verificarlo."""
+    r = _run(['sudo', '-n', '-l'])
+    if r and r.returncode == 0 and r.stdout:
+        return r.stdout
+    return None
+
+
+def check_sudoers(installed_text=None):
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     required_path = os.path.join(repo_root, "systemd", "sudoers-piscan-wifi")
     try:
@@ -211,18 +233,26 @@ def check_sudoers():
     except OSError:
         return [{"category": "sudoers", "name": "canonico", "status": "warn",
                  "detail": "no se encontro %s en el repo" % required_path}]
-    try:
-        with open(SUDOERS_INSTALLED) as f:
-            installed_text = f.read()
-    except OSError:
-        return [{"category": "sudoers", "name": SUDOERS_INSTALLED, "status": "fail",
-                 "detail": "no instalado (copiar desde systemd/sudoers-piscan-wifi)"}]
+    if installed_text is None:
+        installed_text = installed_sudoers_text()
+    if installed_text is None:
+        return [{"category": "sudoers", "name": "privilegios", "status": "fail",
+                 "detail": "no se pudieron leer los privilegios (sudo -n -l fallo)"}]
     missing = missing_sudoers(installed_text, required_text)
-    if missing:
-        return [{"category": "sudoers", "name": "entradas", "status": "fail",
-                 "detail": "faltan: " + ", ".join(missing)}]
-    return [{"category": "sudoers", "name": "entradas", "status": "ok",
-             "detail": "todas las rutas NOPASSWD presentes"}]
+    if not missing:
+        return [{"category": "sudoers", "name": "entradas", "status": "ok",
+                 "detail": "todas las rutas NOPASSWD presentes"}]
+    hard, soft = classify_missing_sudoers(missing)
+    checks = []
+    if hard:
+        checks.append({"category": "sudoers", "name": "entradas", "status": "fail",
+                       "detail": "faltan (binario instalado): " + ", ".join(hard)})
+    if soft:
+        checks.append({"category": "sudoers", "name": "entradas-opcionales",
+                       "status": "warn",
+                       "detail": "faltan, pero el binario tampoco esta instalado: "
+                                 + ", ".join(soft)})
+    return checks
 
 
 def check_db():
