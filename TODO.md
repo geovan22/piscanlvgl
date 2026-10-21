@@ -47,7 +47,7 @@
 - No se forzó un fallo de `wlan0` para proteger la conexión de gestión; las
   respuestas de error y el caso de lista vacía están cubiertos por pruebas.
 
-## Self-check / doctor (`app/diag.py`) — [~] backend validado en Pi, falta UI
+## Self-check / doctor (`app/diag.py`) — ✅ VALIDADO (pantalla + Pi)
 - [x] Verifica binarios (core/handshake/deauth/pmkid/beacon/honeypot/wps),
       privilegios sudoers vía `sudo -n -l` (NO lee el archivo root:root 0440;
       distingue "falta y el binario está" = fail de "falta pero no instalado" =
@@ -58,11 +58,12 @@
       Los 4 warn son WPS (wash/reaver/bully + su sudoers), esperado hasta
       instalarlos. Descubrió y se corrigió un falso negativo del sudoers.
 - [x] Wire UI: sección **Herramientas** con botón "Self-check (doctor)" (hilo+
-      poll, `diag_client_run`); muestra resumen + checks no-ok. Compila en la Pi.
-- [ ] Confirmar en pantalla: entrar a Herramientas, tocar el botón y ver el JSON
-      resumido (requiere reiniciar el servicio para cargar el binario nuevo).
+      poll, `diag_client_run`). Muestra **resumen por área** (bin/iface/sudoers/
+      db) + los checks no-ok (`report` en diag.py; +test de `category_rollup`).
+- [x] Confirmado en pantalla y con reaver/sudoers aplicados: `ok=True`,
+      **25 ok / 0 warn / 0 fail** con el desglose por área.
 
-## WiFi ampliado — WPS (reaver/bully) — [~] backend listo, lab-only
+## WiFi ampliado — WPS (reaver/bully) — ✅ VALIDADO en hardware, lab-only
 > Marco: SOLO redes propias o con permiso explícito.
 - [x] `wifi_ops.py wps_scan [iface] [seg]` — `wash` en monitor (pasivo) → lista
       APs con WPS (bssid/canal/locked/essid).
@@ -70,12 +71,14 @@
       — `reaver` Pixie-Dust por defecto → parsea PIN/PSK; loguea en WifiAttackLog.
 - [x] 5 pruebas unitarias de los parsers (wash/reaver) pasan localmente.
 - [x] sudoers versionado: + wash/reaver/bully (`/usr/bin` y `/usr/sbin`).
-- [ ] En la Pi: `apt install reaver` (trae `wash`) [+ `bully` opcional], aplicar
-      sudoers y probar contra un AP WPS propio.
+- [x] En la Pi: instalados reaver 1.6.6 + bully 1.4 + pixiewps; sudoers aplicado.
 - [x] Wire UI: acción **"WPS (Pixie)"** en el menú Acciones por AP (hilo+poll,
-      `wifi_client_wps_attack`, confirm "solo lab", ~90s). Compila en la Pi.
-- [ ] Confirmar en pantalla contra un AP WPS propio (tras instalar reaver +
-      sudoers y reiniciar el servicio).
+      `wifi_client_wps_attack`, confirm "solo lab", ~90s).
+- [x] Validado en pantalla y por SSH (`wash` vio el AP; reaver asoció, M1/M2):
+      el AP de prueba **no es vulnerable** a Pixie-Dust (NACK 0x03 + deauth),
+      resultado correcto "sin PIN/PSK". La cadena completa funciona.
+- [ ] Pulido menor (opcional): `wps_scan` incluye la columna Vendor de `wash`
+      1.6.x en el `essid` (sale "Unknown <SSID>"); cosmético, no afecta el ataque.
 
 ## Fase 0 — WiFi / Config — ✅ CERRADA
 

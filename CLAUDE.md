@@ -147,12 +147,18 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
   get/set/verify/exists → JSON, invocado desde C por popen).
 - **Sudoers** `/etc/sudoers.d/piscan-wifi` con NOPASSWD para los binarios
   necesarios (ver §7).
+- **Self-check / doctor** (`app/diag.py`, sección **Herramientas**): verifica
+  binarios por feature, privilegios sudoers (`sudo -n -l`, no lee el archivo
+  root:root), interfaces (wlan0/wlan1: driver + AP/monitor) y DB. Salida JSON
+  (`diag_client_run` → UI con resumen por área) y CLI; `exit 0` = todo OK.
+  Validado en la Pi (2026-10-21). Lógica pura con pruebas unitarias.
 
 ### Fase 1 — WiFi avanzado (COMPLETA, 2026-10-13)
 - **Menú "Acciones" (overlay)** por AP en la sección WiFi: fila superior
   Escanear · Acciones · Capturas. Acciones abre un modal (patrón
   `confirm_dialog`) con: Clientes / Deauth red / Handshake / PMKID·EAPOL /
-  Beacon flood / Evil Twin / Cancelar. Escala sin llenar la pantalla.
+  Beacon flood / **WPS (Pixie)** / Cancelar. Escala sin llenar la pantalla.
+  (Evil Twin / Honeypot es un botón directo de la fila, no del menú.)
 - **Clientes por AP** (`scan_clients`, airodump estaciones) + **OUI→fabricante**
   (base IEEE completa `data/oui.txt`) + MAC aleatorias etiquetadas.
 - **Deauth**: selectivo por cliente (`-c`) y **"Deauth red" = dirigido a TODOS
@@ -330,7 +336,9 @@ tiraba traceback).
 
 **Secciones del menú:** WiFi / LAN (`lan`) / Herramientas (`tools`) / Config
 (`config`) / Conectar Red (`net_connect`). (Bluetooth / Reportes se agregan en
-el roadmap.)
+el roadmap.) **Herramientas** ya trae el **Self-check / doctor** (`app/diag.py`
+vía `diag_client_run`): verifica binarios, sudoers (`sudo -n -l`), interfaces y
+DB, y muestra un resumen por área.
 
 ---
 
@@ -486,9 +494,12 @@ validados (ver `TODO.md`).
 - Captura PMKID (hcxdumptool) además de handshake.
 - Beacon flood / probe spam (demostración).
 - Export de `.cap` / `.hccapx` para crackeo externo.
-- **WPS** (`wash` + `reaver` Pixie-Dust / `bully`) — **solo lab**. Backend listo
-  (`wps_scan`/`wps_attack` en `wifi_ops.py`, parsers con tests); pendiente en la
-  Pi `apt install reaver`, sudoers y wire a la UI.
+- **WPS** (`wash` + `reaver` Pixie-Dust / `bully`) — **solo lab**. HECHO y
+  validado en hardware (2026-10-21): `wps_scan`/`wps_attack` en `wifi_ops.py`
+  (parsers con tests), bridge `wifi_client_wps_attack`, acción **"WPS (Pixie)"**
+  en el menú Acciones por AP (hilo+poll). reaver/bully instalados + sudoers.
+  Prueba real contra un AP propio: asoció y corrió M1/M2, el AP **no es
+  vulnerable** a Pixie-Dust y deauthea (resultado esperado; la cadena funciona).
 
 ### Fase 2 — LAN (sección `lan`)
 - `arp-scan` / `nmap -sn` → descubrimiento de hosts (→ LanScanLog).
