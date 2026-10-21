@@ -32,6 +32,18 @@ class SudoersTests(unittest.TestCase):
             ["/usr/bin/tcpdump", "/usr/sbin/iw"],
         )
 
+    def test_category_rollup_groups_by_top_level(self):
+        checks = [
+            {"category": "bin/core", "status": "ok"},
+            {"category": "bin/wps", "status": "warn"},
+            {"category": "iface", "status": "ok"},
+            {"category": "db", "status": "fail"},
+        ]
+        self.assertEqual(
+            diag.category_rollup(checks),
+            ["bin: 1 ok, 1 warn", "iface: 1 ok", "db: 0 ok, 1 fail"],
+        )
+
     def test_classify_missing_splits_by_binary_presence(self):
         # 'hard' = el binario existe (falla real); 'soft' = no instalado (aviso).
         hard, soft = diag.classify_missing_sudoers(

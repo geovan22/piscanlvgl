@@ -424,29 +424,36 @@ int diag_client_run(int *out_ok, int *n_ok, int *n_warn, int *n_fail,
         if (n_fail) *n_fail = cJSON_IsNumber(sf) ? sf->valueint : 0;
     }
 
-    /* Resumen: los checks que NO estan en 'ok', uno por linea. */
+    /* Detalle para la UI: preferimos el 'report' ya formateado por diag.py
+     * (resumen por area + checks no-ok). Si no viene, lo armamos aca listando
+     * los checks que NO estan en 'ok'. */
     if (out_detail && detail_size > 0) {
-        out_detail[0] = '\0';
-        size_t used = 0;
-        cJSON *checks = cJSON_GetObjectItemCaseSensitive(root, "checks");
-        cJSON *c = NULL;
-        cJSON_ArrayForEach(c, checks) {
-            cJSON *st = cJSON_GetObjectItemCaseSensitive(c, "status");
-            if (!cJSON_IsString(st) || strcmp(st->valuestring, "ok") == 0) continue;
-            cJSON *nm = cJSON_GetObjectItemCaseSensitive(c, "name");
-            cJSON *dt = cJSON_GetObjectItemCaseSensitive(c, "detail");
-            char line[200];
-            int m = snprintf(line, sizeof(line), "[%s] %s: %s\n",
-                             st->valuestring,
-                             cJSON_IsString(nm) ? nm->valuestring : "?",
-                             cJSON_IsString(dt) ? dt->valuestring : "");
-            if (m < 0) continue;
-            if (used + (size_t)m >= (size_t)detail_size) break;
-            memcpy(out_detail + used, line, (size_t)m);
-            used += (size_t)m;
-            out_detail[used] = '\0';
+        cJSON *report = cJSON_GetObjectItemCaseSensitive(root, "report");
+        if (cJSON_IsString(report) && report->valuestring[0]) {
+            snprintf(out_detail, detail_size, "%s", report->valuestring);
+        } else {
+            out_detail[0] = '\0';
+            size_t used = 0;
+            cJSON *checks = cJSON_GetObjectItemCaseSensitive(root, "checks");
+            cJSON *c = NULL;
+            cJSON_ArrayForEach(c, checks) {
+                cJSON *st = cJSON_GetObjectItemCaseSensitive(c, "status");
+                if (!cJSON_IsString(st) || strcmp(st->valuestring, "ok") == 0) continue;
+                cJSON *nm = cJSON_GetObjectItemCaseSensitive(c, "name");
+                cJSON *dt = cJSON_GetObjectItemCaseSensitive(c, "detail");
+                char line[200];
+                int m = snprintf(line, sizeof(line), "[%s] %s: %s\n",
+                                 st->valuestring,
+                                 cJSON_IsString(nm) ? nm->valuestring : "?",
+                                 cJSON_IsString(dt) ? dt->valuestring : "");
+                if (m < 0) continue;
+                if (used + (size_t)m >= (size_t)detail_size) break;
+                memcpy(out_detail + used, line, (size_t)m);
+                used += (size_t)m;
+                out_detail[used] = '\0';
+            }
+            if (used == 0) snprintf(out_detail, detail_size, "Todo OK");
         }
-        if (used == 0) snprintf(out_detail, detail_size, "Todo OK");
     }
 
     cJSON_Delete(root);

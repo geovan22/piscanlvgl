@@ -123,6 +123,40 @@ def parse_phy_modes(text):
     return modes
 
 
+def category_rollup(checks):
+    """Resumen por categoria de alto nivel (lo que va antes de '/'):
+    'cat: X ok[, Y warn][, Z fail]'. Para que el doctor muestre QUE reviso
+    aunque todo pase, no solo 'Todo OK'."""
+    order = []
+    cats = {}
+    for c in checks:
+        top = c["category"].split("/", 1)[0]
+        if top not in cats:
+            cats[top] = {"ok": 0, "warn": 0, "fail": 0}
+            order.append(top)
+        cats[top][c["status"]] = cats[top].get(c["status"], 0) + 1
+    lines = []
+    for top in order:
+        d = cats[top]
+        parts = ["%d ok" % d["ok"]]
+        if d["warn"]:
+            parts.append("%d warn" % d["warn"])
+        if d["fail"]:
+            parts.append("%d fail" % d["fail"])
+        lines.append("%s: %s" % (top, ", ".join(parts)))
+    return lines
+
+
+def build_report(checks):
+    """Texto humano para la UI: resumen por area + los checks NO-ok al final."""
+    rollup = category_rollup(checks)
+    nonok = ["[%s] %s: %s" % (c["status"], c["name"], c["detail"])
+             for c in checks if c["status"] != "ok"]
+    if nonok:
+        return "\n".join(rollup + ["", "Revisar:"] + nonok)
+    return "\n".join(rollup)
+
+
 def overall_ok(checks):
     return not any(c["status"] == "fail" for c in checks)
 
@@ -274,7 +308,8 @@ def run_all():
     checks += check_interfaces()
     checks += check_sudoers()
     checks += check_db()
-    return {"ok": overall_ok(checks), "summary": summarize(checks), "checks": checks}
+    return {"ok": overall_ok(checks), "summary": summarize(checks),
+            "checks": checks, "report": build_report(checks)}
 
 
 def main():
