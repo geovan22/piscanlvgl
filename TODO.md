@@ -47,14 +47,16 @@
 - No se forzó un fallo de `wlan0` para proteger la conexión de gestión; las
   respuestas de error y el caso de lista vacía están cubiertos por pruebas.
 
-## Self-check / doctor (`app/diag.py`) — [~] backend listo, falta UI
+## Self-check / doctor (`app/diag.py`) — [~] backend validado en Pi, falta UI
 - [x] Verifica binarios (core/handshake/deauth/pmkid/beacon/honeypot/wps),
-      entradas sudoers (contra `systemd/sudoers-piscan-wifi`), interfaces
-      wlan0/wlan1 (driver `rtw88_8821cu`, que el phy soporte AP+monitor) y el
-      acceso a la DB. Salida JSON estándar; `ok` global = sin checks en `fail`.
-- [x] 6 pruebas unitarias de la lógica pura (parseo sudoers/`iw phy`,
-      resolución de binarios, decisión global) pasan localmente.
-- [ ] Correr en la Pi: `python3 app/diag.py` y revisar el JSON.
+      privilegios sudoers vía `sudo -n -l` (NO lee el archivo root:root 0440;
+      distingue "falta y el binario está" = fail de "falta pero no instalado" =
+      warn), interfaces wlan0/wlan1 (driver `rtw88_8821cu`, phy soporta
+      AP+monitor) y el acceso a la DB. Salida JSON; `ok` = sin checks en `fail`.
+- [x] 7 pruebas unitarias de la lógica pura pasan (local y en la Pi).
+- [x] Corrido en la Pi (HEAD 58f14ce): `ok: true`, 21 ok / 4 warn / 0 fail.
+      Los 4 warn son WPS (wash/reaver/bully + su sudoers), esperado hasta
+      instalarlos. Descubrió y se corrigió un falso negativo del sudoers.
 - [ ] Wire UI: entrada en Herramientas que muestre el resumen (C + `build_app.sh`).
 
 ## WiFi ampliado — WPS (reaver/bully) — [~] backend listo, lab-only
