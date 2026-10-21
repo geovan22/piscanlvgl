@@ -27,20 +27,28 @@ def _nmcli(args, timeout=30):
 
 def scan():
     """Redes disponibles en wlan0. Descarta SSID vacios (ocultas) y
-    deduplica por SSID quedandose con la senal mas fuerte."""
+    deduplica por SSID quedandose con la senal mas fuerte.
+
+    El 'rescan' es best-effort: nmcli lo rechaza si se pidio otro hace <30s
+    ('not allowed immediately following previous scan'), lo cual NO es un
+    fallo real porque la lista cacheada sigue sirviendo. Por eso un rescan
+    fallido solo se reporta como error si ademas la lista sale vacia (ahi si
+    el adaptador esta caido/ocupado). Independiente del idioma del nmcli. El
+    fallo del 'list' si es duro."""
     rescan = _nmcli(['device', 'wifi', 'rescan', 'ifname', IFACE], timeout=15)
     if rescan is None:
-        raise RuntimeError("no se pudo ejecutar nmcli para actualizar el escaneo")
-    if rescan.returncode != 0:
-        detail = rescan.stderr.strip() or rescan.stdout.strip() or "sin detalle"
-        raise RuntimeError(f"nmcli no pudo actualizar el escaneo: {detail}")
+        rescan_err = "no se pudo ejecutar nmcli para actualizar el escaneo"
+    elif rescan.returncode != 0:
+        rescan_err = (rescan.stderr or '').strip() or (rescan.stdout or '').strip() or "rescan fallo"
+    else:
+        rescan_err = None
 
     r = _nmcli(['-t', '-f', 'SSID,SIGNAL,SECURITY,IN-USE',
                 'device', 'wifi', 'list', 'ifname', IFACE], timeout=20)
     if r is None:
         raise RuntimeError("no se pudo ejecutar nmcli para listar redes")
     if r.returncode != 0:
-        detail = r.stderr.strip() or r.stdout.strip() or "sin detalle"
+        detail = (r.stderr or '').strip() or (r.stdout or '').strip() or "sin detalle"
         raise RuntimeError(f"nmcli no pudo listar redes: {detail}")
 
     nets = {}
@@ -67,6 +75,11 @@ def scan():
                     'in_use': in_use.strip() == '*',
                 }
     result = sorted(nets.values(), key=lambda x: x['signal'], reverse=True)
+    # Si no salio ninguna red Y el rescan habia fallado, el rescan es la causa
+    # real (adaptador caido/ocupado), no un area sin redes. Si hubo redes, el
+    # rescan rechazado era solo el limite de <30s -> benigno, se ignora.
+    if not result and rescan_err:
+        raise RuntimeError(f"nmcli no pudo actualizar el escaneo: {rescan_err}")
     return result
 
 def list_saved():

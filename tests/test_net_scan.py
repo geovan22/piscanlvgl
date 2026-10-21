@@ -55,3 +55,23 @@ class NetScanTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "device unavailable"):
                 net_ops.scan()
+
+    def test_rescan_too_soon_is_not_fatal_when_list_has_networks(self):
+        # nmcli rechaza un rescan hecho <30s tras el anterior; si la lista
+        # cacheada igual trae redes, no es un error: devolvemos las redes.
+        with patch.object(
+            net_ops,
+            "_nmcli",
+            side_effect=[
+                SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr=("Error: Scanning not allowed immediately following "
+                            "previous scan (less than 30 seconds)."),
+                ),
+                SimpleNamespace(returncode=0, stdout="Lab:80:WPA2:*\n", stderr=""),
+            ],
+        ):
+            nets = net_ops.scan()
+            self.assertEqual(len(nets), 1)
+            self.assertEqual(nets[0]["ssid"], "Lab")

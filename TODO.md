@@ -13,32 +13,39 @@
 > comprobaciones puntuales en la Pi. El siguiente paso es cerrar esas
 > validaciones y luego elegir el siguiente módulo del roadmap.
 
-## Mejora de precisión WiFi — [~] código listo, pendiente de validar en la Pi
+## Mejora de precisión WiFi — [~] WPA3 real pendiente
 - [x] El parser conserva APs con SSID repetido, diferenciándolos por BSSID, y
       conserva la señal más fuerte observada para el mismo BSSID.
 - [x] Clasifica OPEN, WEP, WPA, WPA2, WPA3 y transición WPA2/3 a partir de
       `iw scan`; la lista muestra el final del BSSID para identificar cada AP.
 - [x] La detección de handshake exige un conteo positivo; `0 handshake` no
       marca una captura como válida.
-- [x] Ocho pruebas unitarias focalizadas pasan localmente. En la Pi pasaron las
-      seis pruebas originales antes de añadir los tests de escritura DB.
+- [x] Ocho pruebas unitarias focalizadas pasan localmente y también se
+      ejecutaron satisfactoriamente en la Pi, incluidos los casos de escritura
+      y error de DB.
 - [x] En la Pi se confirmó que aparecen los sufijos BSSID en pantalla y que
       `wifi_scan_log` persiste el BSSID completo.
 - [ ] Contrastar la clasificación con WPA3/transición usando una salida real de
       `iw scan` si hay un AP de laboratorio disponible.
-- [ ] Validar en Pi los cambios recientes del manejo de errores de escritura
-      del historial en DB.
 
-## Conectar Red — errores de escaneo explícitos [~]
+## Conectar Red — errores de escaneo explícitos — ✅ VALIDADO
 - [x] `net_ops.py` distingue un escaneo sin redes de errores de `nmcli` al
       actualizar o listar redes, y responde el error como JSON.
 - [x] El puente C conserva el detalle del error y la UI lo muestra en el footer
       en vez de indicar "No se detectaron redes".
 - [x] Tres pruebas unitarias cubren lista vacía válida y fallos de actualización
       y listado.
-- [ ] Ejecutar las pruebas en la Pi, compilar la app y validar que un escaneo
-      normal sigue mostrando redes; no provocar una falla de wlan0 en la red de
-      gestión para esta prueba.
+- [x] En la Pi: suite actualizada ejecutada y compilación completada; Conectar
+      Red escanea, conecta a la red seleccionada y muestra la IP en la UI.
+- [x] `rescan` endurecido (2026-10-21): un rescan rechazado por `<30s` ya no
+      aborta el escaneo; solo se reporta error si la lista además sale vacía
+      (adaptador caído/ocupado). Independiente del idioma del nmcli. 12 pruebas
+      unitarias pasan (se añadió el caso benigno). Solo `.py` → toma efecto con
+      pull+restart, sin `build_app.sh`.
+- [ ] Sanity en la Pi: tocar "Escanear" dos veces seguidas (<30s) y confirmar
+      que sigue mostrando redes (ya no "Error al escanear").
+- No se forzó un fallo de `wlan0` para proteger la conexión de gestión; las
+  respuestas de error y el caso de lista vacía están cubiertos por pruebas.
 
 ## Fase 0 — WiFi / Config — ✅ CERRADA
 

@@ -131,8 +131,10 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
 - **Conectar Red** (wlan0 / NetworkManager, `net_ops.py`): scan + connect +
   listar/activar/olvidar redes guardadas, con teclado de contraseña. Permite
   SSH desde cualquier red. Borra perfil en connect fallido. El scan distingue
-  lista vacía de fallos de `nmcli` y pasa el detalle a la UI. IP estática
-  configurada (.195).
+  lista vacía de fallos de `nmcli` y pasa el detalle a la UI; un `rescan`
+  rechazado por `<30s` (límite de nmcli) es best-effort y NO se trata como
+  error si la lista cacheada trae redes (solo falla si además sale vacía). IP
+  estática configurada (.195).
 - **Adaptador nuevo RTL8821CU** validado y adaptado en todo el tooling WiFi:
   dual-band 2.4/5 GHz + Bluetooth, driver `rtw88_8821cu` (`0bda:c820`),
   monitor + inyección OK. `reset_driver()` = no-op.
@@ -268,11 +270,13 @@ validaciones puntuales en la Pi y en pantalla. La lentitud del internet
 compartido por el honeypot es de **baja prioridad** y no bloquea avanzar.
 
 ### Validaciones inmediatas restantes
-- Mejora de precisión WiFi validada en pantalla y con BSSID completo confirmado
-  en la DB. Ocho pruebas unitarias pasan localmente; seis pasaron en la Pi antes
-  de añadir dos tests para el manejo de errores del logger. Falta ejecutar la
-  suite actualizada en la Pi y contrastar WPA3/transición con una salida real de
-  `iw scan` (ver `TODO.md`).
+- Mejora de precisión WiFi validada en pantalla; BSSID completo confirmado en
+  la DB. Ocho pruebas unitarias pasan localmente y en la Pi. Solo falta
+  contrastar WPA3/transición con una salida real de `iw scan` si hay un AP de
+  laboratorio disponible (ver `TODO.md`).
+- Conectar Red validado en la Pi: escanea, conecta y muestra la IP. Errores de
+  `nmcli` y lista vacía están cubiertos por pruebas unitarias; no se forzó un
+  fallo real de `wlan0` para no afectar la red de gestión.
 - Confirmar en pantalla el menú Acciones, Capturas y los flujos PMKID/beacon.
 - Completar una comprobación controlada de la telemetría extendida del honeypot.
   `probe_ssids` es experimental y está desactivado por defecto.
