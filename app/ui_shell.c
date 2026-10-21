@@ -1020,12 +1020,24 @@ void ui_shell_poll_wifi_scan(void) {
         /* ui_apply_press_effect(row);  -- test: descartar loop del dialogo */
 
         char ssid_buf[20];
-        snprintf(ssid_buf, sizeof(ssid_buf), "%.18s", g_wifi_scan_results[i].ssid);
+        snprintf(ssid_buf, sizeof(ssid_buf), "%.16s", g_wifi_scan_results[i].ssid);
         lv_obj_t *ssid_lbl = lv_label_create(row);
         lv_label_set_text(ssid_lbl, ssid_buf);
         lv_obj_set_style_text_color(ssid_lbl, COLOR_OK, 0);
         lv_obj_set_style_text_font(ssid_lbl, &lv_font_montserrat_10, 0);
         lv_obj_set_pos(ssid_lbl, 0, 0);
+
+        char bssid_tail[9] = {0};
+        size_t bssid_len = strlen(g_wifi_scan_results[i].bssid);
+        const char *tail = bssid_len > 8
+                           ? g_wifi_scan_results[i].bssid + bssid_len - 8
+                           : g_wifi_scan_results[i].bssid;
+        snprintf(bssid_tail, sizeof(bssid_tail), "%s", tail);
+        lv_obj_t *bssid_lbl = lv_label_create(row);
+        lv_label_set_text(bssid_lbl, bssid_tail);
+        lv_obj_set_style_text_color(bssid_lbl, COLOR_DIM, 0);
+        lv_obj_set_style_text_font(bssid_lbl, &lv_font_montserrat_10, 0);
+        lv_obj_set_pos(bssid_lbl, 104, 0);
 
         char sig_buf[16];
         snprintf(sig_buf, sizeof(sig_buf), "%.0fdBm ch%d",
@@ -1038,7 +1050,8 @@ void ui_shell_poll_wifi_scan(void) {
 
         const char *sec = g_wifi_scan_results[i].security;
         lv_color_t sec_color = strcmp(sec, "OPEN") == 0 ? COLOR_ERR :
-                                strcmp(sec, "WPA") == 0  ? COLOR_WARN : COLOR_OK;
+                                (strcmp(sec, "WEP") == 0 || strcmp(sec, "WPA") == 0)
+                                ? COLOR_WARN : COLOR_OK;
         lv_obj_t *sec_lbl = lv_label_create(row);
         lv_label_set_text(sec_lbl, sec);
         lv_obj_set_style_text_color(sec_lbl, sec_color, 0);

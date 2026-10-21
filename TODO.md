@@ -3,15 +3,31 @@
 > Lista de trabajo viva para no perder el hilo entre sesiones. Versionada en el
 > repo. Convención: `[x]` hecho, `[ ]` pendiente, `[~]` en progreso/a medias.
 > El roadmap grande y el "por qué" de las decisiones viven en `CLAUDE.md`
-> (§4 PENDIENTE, §8 Roadmap). Acá va el detalle operativo de la fase en curso.
+> (§4 PENDIENTE, §8 Roadmap). Acá va el detalle operativo de lo pendiente.
 
 ---
 
-## Fase 0 — Terminar WiFi / Config (en curso)
+## Estado actual
 
-> Estado: **código de los 3 ítems completo.** Ítem 1 cerrado. Ítems 2 y 3 a
-> validar en red real (tiempo del deauth sostenido). Cuando eso quede OK, se
-> cierra la Fase 0 y se arranca la Fase 1 (CLAUDE.md §8).
+> **Fase 0 completa.** La Fase 1 está funcional; quedan pruebas de UI y
+> comprobaciones puntuales en la Pi. El siguiente paso es cerrar esas
+> validaciones y luego elegir el siguiente módulo del roadmap.
+
+## Mejora de precisión WiFi — [~] código listo, pendiente de validar en la Pi
+- [x] El parser conserva APs con SSID repetido, diferenciándolos por BSSID, y
+      conserva la señal más fuerte observada para el mismo BSSID.
+- [x] Clasifica OPEN, WEP, WPA, WPA2, WPA3 y transición WPA2/3 a partir de
+      `iw scan`; la lista muestra el final del BSSID para identificar cada AP.
+- [x] La detección de handshake exige un conteo positivo; `0 handshake` no
+      marca una captura como válida.
+- [x] Se añadieron seis pruebas unitarias focalizadas; pasan localmente con el
+      intérprete seleccionado.
+- [ ] En la Pi: ejecutar `python3 -m unittest discover -s tests -v`, compilar
+      con `scripts/build_app.sh` y confirmar la presentación en pantalla.
+- [ ] Contrastar la clasificación con salidas reales de `iw scan`, incluyendo
+      WPA3 y transición WPA2/3 si están disponibles en el laboratorio.
+
+## Fase 0 — WiFi / Config — ✅ CERRADA
 
 ### 1. text_input.c (teclado/entrada reutilizable) — ✅ CERRADO (validado en pantalla)
 - [x] Matar el parpadeo del cursor (reenvío de `FOCUSED` tras `anim_duration=0`).
@@ -62,7 +78,9 @@
 
 ## Fase 1 — WiFi avanzado (CLAUDE.md §8)
 
-> Marco: siempre laboratorio controlado / redes propias o con permiso.
+> Backend funcional. Las validaciones pendientes son de UI/telemetría; no
+> bloquean continuar con otros pendientes. Pruebas únicamente con dispositivos
+> propios o con autorización.
 
 ### 1. Escaneo de clientes conectados por AP — ✅ VALIDADO (lista MACs en red real)
 - [x] Python `wifi_ops.py clients <bssid> <channel> [iface] [seg]`: `scan_clients`
@@ -135,31 +153,47 @@
       En el menú **Acciones** ("Beacon flood", naranja); usa el canal del AP
       seleccionado, ~20s fijos (BEACON_SECONDS). mdk4 en /usr/sbin (+sudoers).
       - [ ] Validar el botón en pantalla contra el lab.
-- [x] **Evil Twin / Honeypot AP (hostapd+dnsmasq+portal)** — ✅ VALIDADO
-      END-TO-END EN RED REAL (2026-10-15, modo puente con captura de login).
+- [x] **Evil Twin / Honeypot AP (hostapd+dnsmasq+portal)** — FUNCIONAL y probado
+      end-to-end en red real (2026-10-15, modo puente). El 2026-10-21 también
+      se comprobó que crea `evil_twin.log` y el PCAP, y que persiste telemetría
+      en SQLite. Los cinco registros recientes pasaron comprobaciones de
+      formato/rangos y su referencia PCAP existe.
       `evil_twin()`: hostapd AP abierto con el nombre objetivo (2.4, ch fiable)
       → ip 10.0.0.1/24 + dnsmasq → portal cautivo (http.server threading :8080)
-      con form usuario+contraseña que se guardan → teardown limpio. Botón
-      **Honeypot** directo en la fila WiFi (sale del menú Acciones). Log en
+      → teardown limpio. Botón **Honeypot** directo en la fila WiFi. Log en
       data/captures/evil_twin.log. sudoers: + hostapd/dnsmasq/nft/iptables/
       sysctl/pkill. Detalle completo del flujo en **CLAUDE.md §3**.
+      **Nota de privacidad:** los campos `portal_user`/`portal_pass` se guardan
+      actualmente en texto plano; usar solo valores ficticios durante pruebas.
   - [x] **Puente + portal cautivo "walled garden"** (`honeypot_bridge=1`):
         DNS real + nft `piscan_nat` (redirect por cliente, masquerade solo a
         `@authorized`, forward drop a no autorizados). **Sin login = sin internet
         ni LAN**; tras el login `_et_authorize(ip)` abre internet. `do_GET` manda
         **302** a los sondeos del SO → el popup del portal salta solo. Volcado de
         `nft list table piscan_nat` al log para diagnóstico.
-  - [x] Validado: conecta → portal automático → sin internet hasta ingresar
+  - [x] Validado: conecta → portal automático → sin internet hasta autorizar
         user/pass → se guardan en `honeypot_log` → se abre internet. (Samsung
         Android; con Private DNS desactivado el popup salta solo.)
+  - [x] Persistencia comprobada (2026-10-21): existe `evil_twin.log`, el log
+        registra dnsmasq/portal/cierre, hay un PCAP de ~4.6 MB y su ruta existe
+        en SQLite. Cinco filas recientes pasaron validaciones de formato MAC/IP,
+        contadores, RSSI y referencia al PCAP. Los campos extendidos aparecen
+        cuando la sesión/dispositivo produce esos datos.
+  - [ ] **Baja prioridad — rendimiento del internet compartido:** con puente
+        activo, el cliente puede hacer ping, pero la navegación/carga web es muy
+        lenta o no termina. No bloquea el uso actual del honeypot. Pendiente
+        comparar DNS, HTTPS desde la Pi por `wlan0` y acceso desde el cliente;
+        ejecutar el diagnóstico documentado en la conversación cuando haya
+        tiempo. No modificar reglas de red antes de recoger esa evidencia.
       Caveats honestos (no bugs): popup automático depende del teléfono (DNS
       cifrado/DoH lo evita → entra por navegador); HTTPS no se intercepta (sin
       TLS MITM); device con la red guardada como WPA puede no auto-unirse al
       gemelo ABIERTO. Limitaciones de todo evil twin.
-      - [ ] Validar en pantalla el flujo nuevo (botón Honeypot + toggle puente
-        en Config); el backend ya quedó validado en red real.
-  - [~] **Telemetría extendida para auditoría (2026-10-15)** — código listo, a
-        validar en red. Se guarda por dispositivo en `honeypot_log` (ver
+      - [x] Validado en pantalla: botón Honeypot y toggle del puente en Config
+        funcionan.
+  - [~] **Telemetría extendida para auditoría (2026-10-15)** — código y
+        persistencia comprobados parcialmente en la Pi. Se guarda por dispositivo
+        en `honeypot_log` (ver
         CLAUDE.md §7) y se lee con `db_tool.py honeypot list/show`:
     - [x] #1 RSSI + bytes_rx/tx + dwell_s (de `iw station dump` pre-teardown).
     - [x] #2 timeline/permanencia (dwell_s; connect/disconnect en el log hostapd).
@@ -167,15 +201,19 @@
     - [x] #4 SNI de TLS (sitios HTTPS) — pcap + tshark, pasivo.
     - [x] #6 mDNS name (nombre `.local`) — pcap + tshark.
     - [x] #7 PCAP de sesión (`tcpdump`, Config `honeypot_pcap`, default ON).
-    - [x] #5 PNL/probe (Config `honeypot_probe_sniff`, default OFF, experimental:
-          monitor+AP en rtw88 conviven mal; best-effort).
+    - [x] Código #5 PNL/probe (Config `honeypot_probe_sniff`, default OFF,
+          experimental: monitor+AP en rtw88 conviven mal; best-effort).
     - [x] sudoers: + tcpdump/tshark. Migración SQLite (ALTER ADD COLUMN) en
           `models.py` para las columnas nuevas.
-    - [ ] Validar en la Pi: instalar `tcpdump`/`tshark` si faltan
-          (`apt install tcpdump tshark`), aplicar sudoers, correr una sesión y
-          revisar `honeypot show <id>` (rssi/sni/dhcp_vendor/mdns).
-  - [~] **Rediseño pantalla Config + selector de portal** (2026-10-19, C,
-        requiere `build_app.sh`, A VALIDAR EN PANTALLA). Config pasó de offsets
+    - [x] Validado en la Pi (2026-10-21): PCAP de sesión creado y enlazado desde
+          DB; RSSI/bytes/dwell, DHCP, SNI y mDNS aparecen en al menos un registro
+          reciente. Los campos son dependientes de actividad y no se esperan en
+          todas las filas.
+    - [ ] `probe_ssids`: sigue sin validar; opción experimental desactivada por
+          defecto y no apareció en las filas revisadas. No habilitar salvo que
+          se quiera probar específicamente en laboratorio.
+  - [x] **Rediseño pantalla Config + selector de portal** (2026-10-19, validado
+        en pantalla). Config pasó de offsets
         fijos (llena/al límite) a **lista scrollable data-driven**: tabla
         `CFG_ITEMS` en `ui_shell.c` + caja flex-column (`g_cfg_box`) con botones
         ▲▼ (touch-scroll del KeDei no fiable). Agregar un ajuste = 1 línea en
@@ -184,11 +222,9 @@
         (CHOICE, lista `data/portals/*.html` por `dirent`; "default"=idx0=""),
         honeypot_bridge, honeypot_pcap, honeypot_probe_sniff. Un único callback
         `cfg_ctl_cb` (índice+dir empacados en user_data). Guarda en DB al tocar.
-        - [ ] Validar en pantalla: que las 6 filas rendericen, el scroll ▲▼ ande,
-          cada control guarde (ver footer "Config guardada"), y que el selector
-          de portal cicle los .html. Reemplaza y cierra el viejo toggle suelto.
-        - [ ] De paso valida el toggle del puente (memoria: se había puesto por
-          CLI; ahora es una fila BOOL con el mismo `cfg_ctl_cb`).
+        - [x] Las 6 filas renderizan; el scroll ▲▼, los controles, guardado y
+          selector de portal fueron probados por el usuario.
+        - [x] El toggle del puente en Config fue probado por el usuario.
   - [ ] **Portal "juego/test"** (idea futura): si el cliente pasa un mini-reto
         se lo autoriza en vez de pedir user/pass. El POST del portal pasaría a
         validar el reto y llamar `_et_authorize(ip)`. Encaja en el walled garden.

@@ -110,14 +110,18 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
   `honeypot_portal` (CHOICE), `honeypot_bridge`, `honeypot_pcap`,
   `honeypot_probe_sniff`. (Antes eran offsets fijos que llenaban la pantalla.)
 - **WiFi scan** (`wifi_scan.py` → `iw scan` → JSON), con etiqueta de banda
-  **2.4G / 5G** en el listado (5G cyan `0x33CCFF`, 2.4G atenuado).
+  **2.4G / 5G** en el listado (5G cyan `0x33CCFF`, 2.4G atenuado). Los APs se
+  acumulan por BSSID (no por SSID), conservando la señal más fuerte del mismo
+  BSSID; la fila muestra su terminación para distinguir SSIDs duplicados.
+  Seguridad: OPEN/WEP/WPA/WPA2/WPA3/WPA2/3.
 - **Monitor mode**: botón Monitor **eliminado**. Se activa solo dentro de
   deauth/handshake. (Patrón confiable: reset→monitor→ataque→managed.)
 - **Deauth** (burst y sostenido): `deauth(bssid, channel, count, iface,
   duration)`. `duration>0` → `--deauth 0` bajo `timeout <d>` (sostenido);
   si no, `--deauth <count>` (burst).
 - **Handshake capture** end-to-end: airodump + aireplay, guarda `.cap` en
-  `data/captures/`, detecta handshake por regex.
+  `data/captures/`, detecta handshake por regex que exige conteo positivo
+  (aircrack-ng también imprime `0 handshake`).
 - **Audit de handshake** contra wordlists: `audit_handshake(cap, bssid,
   wordlist_key, timeout)` → aircrack-ng, parsea `KEY FOUND! [ ... ]`.
   Wordlists: `common` (comunes) y `full` (rockyou). `_resolve_wordlist(key)`
@@ -200,6 +204,20 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
   - Teardown a managed (borra `piscan_nat`/`piscan_et`, `ip_forward=0`, flush,
     `pkill tcpdump`); log en `data/captures/evil_twin.log`. La UI muestra
     "N dispositivos".
+  - **Estado validado (2026-10-21):** honeypot funcional; el log de sesión y el
+    PCAP se crean, la ruta del PCAP queda en SQLite y las filas de telemetría se
+    persisten. Cinco filas recientes pasaron controles de formato/rango y la
+    referencia PCAP comprobada existe. Los campos extendidos dependen de la
+    actividad y pueden estar vacíos en sesiones/dispositivos concretos.
+  - **Pendiente de baja prioridad:** con el puente activo, el cliente logra
+    hacer ping, pero la carga de páginas web es muy lenta o no termina. El
+    puente da conectividad básica, pero la experiencia web queda pendiente de
+    diagnóstico (DNS/HTTPS y forwarding desde la Pi y el cliente). No cambiar
+    reglas del puente sin recoger antes esa evidencia. No bloquea continuar con
+    otras tareas.
+  - **Privacidad:** el código actual guarda `portal_user`/`portal_pass` en texto
+    plano en SQLite. Usar solo valores ficticios durante pruebas; no consultar
+    ni compartir salidas que incluyan estos campos.
   - **Telemetría extendida para auditoría (2026-10-15)** — se guarda por
     dispositivo en `honeypot_log` (campos en §7). Fuentes:
     - `iw station dump` **antes del teardown** → `rssi`, `bytes_rx/tx`, `dwell_s`.
@@ -242,19 +260,26 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
 
 ## 4. ⏳ PENDIENTE
 
-Orden acordado: **primero terminar WiFi/Config, luego el roadmap por fases.**
+Estado actualizado 2026-10-21: Fase 0 completa. Fase 1 es funcional; quedan
+validaciones puntuales en la Pi y en pantalla. La lentitud del internet
+compartido por el honeypot es de **baja prioridad** y no bloquea avanzar.
 
-### 4.1 WiFi / Config (fase inmediata)
-1. **`text_input.c`**: agregar botón mostrar/ocultar contraseña (ojo), y matar
-   el lag del cursor del todo (desactivar parpadeo — ya está
-   `anim_duration=0`; ocultar cursor si hace falta). Estaba a medias.
-2. **Sección Config**: UI para editar config guardada en DB. Primer parámetro:
-   `deauth_duration` (segundos) configurable.
-3. **Deauth sostenido en la UI (Patrón A)**: un solo botón Deauth → vuelve a
-   mostrar el listado de redes → seleccionar 1 → usa `deauth_duration` de la DB.
+### Validaciones inmediatas restantes
+- Mejora de precisión WiFi implementada y con seis pruebas unitarias pasando
+  localmente; falta ejecutar las pruebas/compilación en la Pi, revisar la lista
+  en pantalla y contrastar WPA3/transición con una salida real de `iw scan`
+  (ver `TODO.md`).
+- Confirmar en pantalla el menú Acciones, Capturas y los flujos PMKID/beacon.
+- Completar una comprobación controlada de la telemetría extendida del honeypot.
+  `probe_ssids` es experimental y está desactivado por defecto.
+- La lista Config (seis filas, ▲▼, controles, guardado, selector de portal y
+  toggle del puente) ya fue confirmada funcional por el usuario en pantalla;
+  queda registrada como validada en `TODO.md`.
+- Ver el detalle operativo y las demás comprobaciones en `TODO.md`.
 
-### 4.2 Roadmap por fases (documentado ahora, implementado después)
-Ver §8. Terminal queda **para más adelante** (decisión del usuario).
+Después de cerrar las validaciones convenientes, continuar con la siguiente fase
+del roadmap. Terminal sigue diferida por decisión del usuario. Diagnóstico del
+rendimiento del internet compartido: pospuesto y de baja prioridad (§3).
 
 ---
 
@@ -441,10 +466,11 @@ patrón de `log_attack`).
 > **Todo documentado; se implementa por fases.** El marco es siempre
 > laboratorio controlado / pruebas autorizadas. Terminal = más adelante.
 
-### Fase 0 — Terminar WiFi / Config (en curso)
-Ver §4.1. (show/hide password, Config con `deauth_duration`, Deauth Patrón A.)
+### Fase 0 — WiFi / Config (COMPLETA)
+Teclado de contraseña, Config editable y Deauth sostenido en UI implementados y
+validados (ver `TODO.md`).
 
-### Fase 1 — WiFi avanzado
+### Fase 1 — WiFi avanzado (FUNCIONAL; validaciones finales pendientes)
 - Escaneo de clientes conectados por AP (airodump con estaciones).
 - Deauth selectivo a un cliente (`-c <client>`).
 - Evil Twin / AP falso (hostapd + dnsmasq) — **solo lab**.

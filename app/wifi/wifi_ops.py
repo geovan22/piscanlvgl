@@ -248,10 +248,12 @@ def check_handshake(cap_file):
     """Corre aircrack-ng brevemente contra el .cap para ver si detecto
     un handshake completo. Usamos timeout corto porque aircrack-ng se
     queda esperando input interactivo si encuentra varias redes, pero
-    el resumen que necesitamos ya se imprime antes de esa espera."""
+    el resumen que necesitamos ya se imprime antes de esa espera. El conteo
+    debe ser mayor que cero: aircrack tambien imprime "0 handshake"."""
     r = _run(['timeout', '3', 'sudo', '/usr/bin/aircrack-ng', cap_file], timeout=6)
     output = ((r.stdout or '') + (r.stderr or '')) if r else ''
-    return ('handshake' in output.lower()), output
+    counts = re.findall(r'\b(\d+)\s+handshakes?\b', output, re.IGNORECASE)
+    return any(int(count) > 0 for count in counts), output
 
 def capture_handshake(bssid, channel, iface, capture_seconds=20, deauth_count=5, client_mac=None):
     """Estrategia secuencial (no concurrente): primero deauth completo

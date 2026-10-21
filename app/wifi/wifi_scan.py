@@ -5,9 +5,9 @@ ataque). Salida JSON, mismo patron que db_tool.py:
 {"ok": true, "networks": [...]} o {"ok": false, "error": ...}
 
 Solo-wlan1 a proposito: la seccion WiFi escanea y ataca con el MISMO
-adaptador (wlan1), asi lo que se lista es lo que se puede atacar. Si wlan1
-lista pocas, casi siempre es que su phy revirtio a pais 99 (ver CLAUDE.md §6)
--> hay que volver a fijarle GT.
+adaptador (wlan1), asi lo que se lista es lo que se puede atacar. El limite de
+redes observado en este adaptador es de recepcion/antena, no del dominio
+regulatorio (ver CLAUDE.md §2 y §6).
 """
 import sys, os, json, subprocess, time
 
@@ -39,25 +39,44 @@ def _freq_to_channel(freq):
     return 0
 
 def _parse_scan_output(out, networks):
-    """Parsea la salida de `iw scan` y acumula en `networks` (dict por SSID).
-    Al acumular sobre varias pasadas, se queda con la senal mas fuerte vista."""
+    """Parsea `iw scan` y acumula por BSSID, preservando APs con el mismo SSID.
+    Para un mismo BSSID, conserva la observacion con la senal mas fuerte."""
     cur = None
 
     def commit(c):
         if not c or not c.get('ssid'):
             return
-        key = c['ssid']
+        key = c['bssid'].upper() or c['ssid']
+        c['security'] = _security_label(c)
         if key not in networks or c['signal'] > networks[key]['signal']:
             networks[key] = {k: v for k, v in c.items() if not k.startswith('_')}
             ch = networks[key].get('channel', 0)
             networks[key]['band'] = '5G' if ch >= 32 else ('2.4G' if ch >= 1 else '?')
+
+    def _security_label(c):
+        if c['_rsn']:
+            suites = c['_auth_suites']
+            has_sae = 'sae' in suites
+            has_psk = 'psk' in suites
+            if has_sae and has_psk:
+                return 'WPA2/3'
+            if has_sae:
+                return 'WPA3'
+            return 'WPA2'
+        if c['_wpa']:
+            return 'WPA'
+        return 'WEP' if c['_privacy'] else 'OPEN'
 
     for raw in out.splitlines():
         line = raw.strip()
         if raw.startswith('BSS '):
             commit(cur)
             bssid = raw.split('BSS ')[1].split('(')[0].strip()
-            cur = {'ssid': '', 'bssid': bssid, 'signal': -100.0, 'channel': 0, 'security': 'OPEN', '_privacy': False}
+            cur = {
+                'ssid': '', 'bssid': bssid, 'signal': -100.0, 'channel': 0,
+                'security': 'OPEN', '_privacy': False, '_rsn': False,
+                '_wpa': False, '_auth_suites': '',
+            }
             continue
         if cur is None:
             continue
@@ -89,10 +108,11 @@ def _parse_scan_output(out, networks):
             if 'Privacy' in line:
                 cur['_privacy'] = True
         elif line.startswith('RSN:'):
-            cur['security'] = 'WPA2'
+            cur['_rsn'] = True
         elif line.startswith('WPA:'):
-            if cur['security'] == 'OPEN':
-                cur['security'] = 'WPA'
+            cur['_wpa'] = True
+        elif 'authentication suites:' in line.lower():
+            cur['_auth_suites'] += ' ' + line.split(':', 1)[1].lower()
 
     commit(cur)
 
