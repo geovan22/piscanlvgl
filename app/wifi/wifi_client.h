@@ -55,6 +55,16 @@ int wifi_client_pmkid(const char *bssid, int channel, int seconds,
 int wifi_client_beacon(int channel, int seconds,
                        char *out_detail, int detail_size);
 
+/* Ataque WPS (reaver Pixie-Dust) contra el AP `bssid` en `channel`, hasta
+ * `seconds`. SOLO LAB / redes propias. Retorna 1 si obtuvo PIN o PSK, 0 si no
+ * (AP sin WPS o no vulnerable), -1 si error (p.ej. reaver no instalado).
+ * out_pin/out_psk reciben lo hallado (o ""); out_detail el resumen/cola de la
+ * salida de reaver (o el mensaje de error). */
+int wifi_client_wps_attack(const char *bssid, int channel, int seconds,
+                           char *out_pin, int pin_size,
+                           char *out_psk, int psk_size,
+                           char *out_detail, int detail_size);
+
 /* Honeypot de reconocimiento: AP abierto con `ssid` + portal informativo que
  * registra telemetria de los dispositivos (SIN credenciales). Bloquea `seconds`.
  * Retorna el numero de dispositivos registrados (>=0), o -1 si error.
@@ -119,4 +129,11 @@ typedef struct {
  * retorna cuantas hay, o -1 si error. */
 int wifi_client_list_wordlists(wifi_wordlist_t *out, int max_count,
                                char *out_error, int error_size);
+
+/* Self-check / doctor (app/diag.py). out_ok = 1 si todo OK (sin checks
+ * en 'fail'); n_ok/n_warn/n_fail = contadores; out_detail = los checks NO-ok
+ * (uno por linea, "[status] name: detail") o "Todo OK". Retorna 1 si ejecuto,
+ * -1 si no se pudo. */
+int diag_client_run(int *out_ok, int *n_ok, int *n_warn, int *n_fail,
+                    char *out_detail, int detail_size);
 #endif

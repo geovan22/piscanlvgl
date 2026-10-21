@@ -17,6 +17,9 @@
 #ifndef PISCAN_WIFI_OPS_PATH
 #define PISCAN_WIFI_OPS_PATH "/home/geo22/piscanlvgl/app/wifi/wifi_ops.py"
 #endif
+#ifndef PISCAN_DIAG_PATH
+#define PISCAN_DIAG_PATH "/home/geo22/piscanlvgl/app/diag.py"
+#endif
 
 static char *run_and_capture(char *const argv[]) {
     int pipefd[2];
@@ -339,6 +342,115 @@ int wifi_client_beacon(int channel, int seconds,
 
     cJSON_Delete(root);
     return success;
+}
+
+int wifi_client_wps_attack(const char *bssid, int channel, int seconds,
+                           char *out_pin, int pin_size,
+                           char *out_psk, int psk_size,
+                           char *out_detail, int detail_size) {
+    char *argv_path = PISCAN_WIFI_OPS_PATH;
+    char channel_str[8], seconds_str[8];
+    snprintf(channel_str, sizeof(channel_str), "%d", channel);
+    snprintf(seconds_str, sizeof(seconds_str), "%d", seconds);
+
+    /* wifi_ops.py wps_attack <bssid> <channel> <iface> <seconds> <pixie1> */
+    char *argv[] = { "python3", argv_path, "wps_attack", (char *)bssid, channel_str,
+                     "wlan1", seconds_str, "pixie1", NULL };
+
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_detail) snprintf(out_detail, detail_size, "no se pudo ejecutar wifi_ops.py");
+        return -1;
+    }
+
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_detail) snprintf(out_detail, detail_size, "JSON invalido de wps_attack");
+        return -1;
+    }
+
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    if (!cJSON_IsTrue(ok)) {
+        cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+        if (out_detail) snprintf(out_detail, detail_size, "%s",
+                                 cJSON_IsString(err) ? err->valuestring : "error en wps_attack");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    cJSON *found = cJSON_GetObjectItemCaseSensitive(root, "found");
+    cJSON *pin = cJSON_GetObjectItemCaseSensitive(root, "pin");
+    cJSON *psk = cJSON_GetObjectItemCaseSensitive(root, "psk");
+    cJSON *detail = cJSON_GetObjectItemCaseSensitive(root, "detail");
+
+    if (out_pin) snprintf(out_pin, pin_size, "%s", cJSON_IsString(pin) ? pin->valuestring : "");
+    if (out_psk) snprintf(out_psk, psk_size, "%s", cJSON_IsString(psk) ? psk->valuestring : "");
+    if (out_detail) snprintf(out_detail, detail_size, "%s",
+                             cJSON_IsString(detail) ? detail->valuestring : "");
+
+    int got = cJSON_IsTrue(found) ? 1 : 0;
+    cJSON_Delete(root);
+    return got;
+}
+
+int diag_client_run(int *out_ok, int *n_ok, int *n_warn, int *n_fail,
+                    char *out_detail, int detail_size) {
+    char *argv[] = { "python3", PISCAN_DIAG_PATH, NULL };
+
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        if (out_detail) snprintf(out_detail, detail_size, "no se pudo ejecutar diag.py");
+        return -1;
+    }
+
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        if (out_detail) snprintf(out_detail, detail_size, "JSON invalido de diag.py");
+        return -1;
+    }
+
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    if (out_ok) *out_ok = cJSON_IsTrue(ok) ? 1 : 0;
+
+    cJSON *summary = cJSON_GetObjectItemCaseSensitive(root, "summary");
+    if (summary) {
+        cJSON *so = cJSON_GetObjectItemCaseSensitive(summary, "ok");
+        cJSON *sw = cJSON_GetObjectItemCaseSensitive(summary, "warn");
+        cJSON *sf = cJSON_GetObjectItemCaseSensitive(summary, "fail");
+        if (n_ok)   *n_ok   = cJSON_IsNumber(so) ? so->valueint : 0;
+        if (n_warn) *n_warn = cJSON_IsNumber(sw) ? sw->valueint : 0;
+        if (n_fail) *n_fail = cJSON_IsNumber(sf) ? sf->valueint : 0;
+    }
+
+    /* Resumen: los checks que NO estan en 'ok', uno por linea. */
+    if (out_detail && detail_size > 0) {
+        out_detail[0] = '\0';
+        size_t used = 0;
+        cJSON *checks = cJSON_GetObjectItemCaseSensitive(root, "checks");
+        cJSON *c = NULL;
+        cJSON_ArrayForEach(c, checks) {
+            cJSON *st = cJSON_GetObjectItemCaseSensitive(c, "status");
+            if (!cJSON_IsString(st) || strcmp(st->valuestring, "ok") == 0) continue;
+            cJSON *nm = cJSON_GetObjectItemCaseSensitive(c, "name");
+            cJSON *dt = cJSON_GetObjectItemCaseSensitive(c, "detail");
+            char line[200];
+            int m = snprintf(line, sizeof(line), "[%s] %s: %s\n",
+                             st->valuestring,
+                             cJSON_IsString(nm) ? nm->valuestring : "?",
+                             cJSON_IsString(dt) ? dt->valuestring : "");
+            if (m < 0) continue;
+            if (used + (size_t)m >= (size_t)detail_size) break;
+            memcpy(out_detail + used, line, (size_t)m);
+            used += (size_t)m;
+            out_detail[used] = '\0';
+        }
+        if (used == 0) snprintf(out_detail, detail_size, "Todo OK");
+    }
+
+    cJSON_Delete(root);
+    return 1;
 }
 
 int wifi_client_evil_twin(const char *ssid, int seconds,

@@ -57,7 +57,10 @@
 - [x] Corrido en la Pi (HEAD 58f14ce): `ok: true`, 21 ok / 4 warn / 0 fail.
       Los 4 warn son WPS (wash/reaver/bully + su sudoers), esperado hasta
       instalarlos. Descubrió y se corrigió un falso negativo del sudoers.
-- [ ] Wire UI: entrada en Herramientas que muestre el resumen (C + `build_app.sh`).
+- [x] Wire UI: sección **Herramientas** con botón "Self-check (doctor)" (hilo+
+      poll, `diag_client_run`); muestra resumen + checks no-ok. Compila en la Pi.
+- [ ] Confirmar en pantalla: entrar a Herramientas, tocar el botón y ver el JSON
+      resumido (requiere reiniciar el servicio para cargar el binario nuevo).
 
 ## WiFi ampliado — WPS (reaver/bully) — [~] backend listo, lab-only
 > Marco: SOLO redes propias o con permiso explícito.
@@ -69,7 +72,10 @@
 - [x] sudoers versionado: + wash/reaver/bully (`/usr/bin` y `/usr/sbin`).
 - [ ] En la Pi: `apt install reaver` (trae `wash`) [+ `bully` opcional], aplicar
       sudoers y probar contra un AP WPS propio.
-- [ ] Wire UI: acción "WPS" en el menú Acciones por AP (C + `build_app.sh`).
+- [x] Wire UI: acción **"WPS (Pixie)"** en el menú Acciones por AP (hilo+poll,
+      `wifi_client_wps_attack`, confirm "solo lab", ~90s). Compila en la Pi.
+- [ ] Confirmar en pantalla contra un AP WPS propio (tras instalar reaver +
+      sudoers y reiniciar el servicio).
 
 ## Fase 0 — WiFi / Config — ✅ CERRADA
 

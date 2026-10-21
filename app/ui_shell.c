@@ -330,6 +330,72 @@ static void on_pmkid_confirm(bool confirmed, void *user_data) {
     pthread_detach(tid);
 }
 
+/* ── WPS (reaver Pixie-Dust) — SOLO LAB / redes propias. Mismo patron
+ *    hilo + poll que el PMKID. Ataca el WPS del AP seleccionado. ── */
+static volatile int g_wps_running = 0;
+static volatile int g_wps_done = 0;
+static int g_wps_ok = 0;                 /* 1=saco pin/psk, 0=nada, -1=error */
+static char g_wps_pin[32];
+static char g_wps_psk[80];
+static char g_wps_detail[256];
+static int g_wps_seconds = 90;
+
+static void *wps_thread_fn(void *arg) {
+    (void)arg;
+    g_wps_pin[0] = '\0';
+    g_wps_psk[0] = '\0';
+    g_wps_detail[0] = '\0';
+    g_wps_ok = wifi_client_wps_attack(g_wifi_target.bssid, g_wifi_target.channel,
+                                      g_wps_seconds,
+                                      g_wps_pin, sizeof(g_wps_pin),
+                                      g_wps_psk, sizeof(g_wps_psk),
+                                      g_wps_detail, sizeof(g_wps_detail));
+    g_wps_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_wps(void) {
+    if (!g_wps_done) return;
+    g_wps_done = 0;
+    g_wps_running = 0;
+
+    if (!g_wifi_status_label) return; /* salimos de la seccion mientras corria */
+
+    char line[160];
+    if (g_wps_ok == 1) {
+        if (g_wps_psk[0])
+            snprintf(line, sizeof(line), "WPS OK  PIN:%s  PSK:%s", g_wps_pin, g_wps_psk);
+        else
+            snprintf(line, sizeof(line), "WPS OK  PIN:%s", g_wps_pin);
+        lv_label_set_text(g_wifi_status_label, line);
+        ui_shell_set_status(line, UI_STATUS_OK);
+    } else if (g_wps_ok == 0) {
+        lv_label_set_text(g_wifi_status_label, "WPS sin resultado");
+        ui_shell_set_status("WPS: sin PIN/PSK (AP sin WPS o no vulnerable)", UI_STATUS_ERROR);
+    } else {
+        lv_label_set_text(g_wifi_status_label, "Error en WPS");
+        ui_shell_set_status(g_wps_detail[0] ? g_wps_detail : "Error en WPS (ver log)",
+                            UI_STATUS_ERROR);
+    }
+    set_wifi_buttons_disabled(0);
+}
+
+static void on_wps_confirm(bool confirmed, void *user_data) {
+    (void)user_data;
+    if (!confirmed) return;
+    if (g_wps_running) return;
+
+    g_wps_running = 1;
+    g_wps_done = 0;
+    if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "WPS Pixie-Dust (~90s)...");
+    ui_shell_set_status("WPS Pixie-Dust en curso (~90s)...", UI_STATUS_WORKING);
+    set_wifi_buttons_disabled(1);
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, wps_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
 /* ── Beacon flood (mdk4): inunda APs falsos en el canal del AP seleccionado.
  *    Demo/ruido, SOLO lab. Mismo patron hilo + poll. ── */
 static volatile int g_beacon_running = 0;
@@ -826,6 +892,19 @@ static void trigger_pmkid(void) {
     confirm_dialog_show(g_main_screen, msg, on_pmkid_confirm, NULL);
 }
 
+static void trigger_wps(void) {
+    if (!g_wifi_target.has_target) {
+        if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
+        return;
+    }
+    if (g_wps_running) return;
+
+    char msg[120];
+    snprintf(msg, sizeof(msg), "WPS Pixie-Dust a %s (ch%d, ~90s, solo lab)?",
+             g_wifi_target.ssid, g_wifi_target.channel);
+    confirm_dialog_show(g_main_screen, msg, on_wps_confirm, NULL);
+}
+
 static void trigger_beacon(void) {
     if (!g_wifi_target.has_target) {
         if (g_wifi_status_label) lv_label_set_text(g_wifi_status_label, "Selecciona una red de la lista primero");
@@ -873,6 +952,7 @@ static void act_deauth_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT
 static void act_handshake_cb(lv_event_t *e) { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_handshake(); }
 static void act_pmkid_cb(lv_event_t *e)     { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_pmkid(); }
 static void act_beacon_cb(lv_event_t *e)    { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_beacon(); }
+static void act_wps_cb(lv_event_t *e)       { if (lv_event_get_code(e)!=LV_EVENT_PRESSED) return; close_actions_menu(); trigger_wps(); }
 /* El Honeypot es un boton directo de la fila superior (no del menu Acciones). */
 static void honeypot_btn_event_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
@@ -919,7 +999,7 @@ static void wifi_actions_menu_show(void) {
     lv_obj_add_flag(g_actions_overlay, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *box = lv_obj_create(g_actions_overlay);
-    lv_obj_set_size(box, 300, 262);
+    lv_obj_set_size(box, 300, 300);
     lv_obj_center(box);
     lv_obj_set_style_bg_color(box, lv_color_hex(0x071007), 0);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
@@ -942,6 +1022,7 @@ static void wifi_actions_menu_show(void) {
     make_action_btn(box, "Handshake",     0xFFCC33, y, act_handshake_cb); y += 38;
     make_action_btn(box, "PMKID / EAPOL", 0xCC66FF, y, act_pmkid_cb);     y += 38;
     make_action_btn(box, "Beacon flood",  0xFF9933, y, act_beacon_cb);    y += 38;
+    make_action_btn(box, "WPS (Pixie)",   0x66FFCC, y, act_wps_cb);       y += 38;
     make_action_btn(box, "Cancelar",      0x33FF33, y, act_cancel_cb);
 }
 
@@ -1873,9 +1954,60 @@ static void cfg_scroll_down_cb(lv_event_t *e) {
     if (g_cfg_box) lv_obj_scroll_by(g_cfg_box, 0, -40, LV_ANIM_OFF);
 }
 
+/* ── Herramientas: Self-check / doctor (app/diag.py). Hilo + poll. ── */
+static lv_obj_t *g_diag_label = NULL;
+static volatile int g_diag_running = 0;
+static volatile int g_diag_done = 0;
+static int g_diag_ran = 0;    /* 1=ejecuto, -1=no se pudo */
+static int g_diag_ok = 0, g_diag_n_ok = 0, g_diag_n_warn = 0, g_diag_n_fail = 0;
+static char g_diag_detail[1024];
+
+static void *diag_thread_fn(void *arg) {
+    (void)arg;
+    g_diag_detail[0] = '\0';
+    g_diag_ran = diag_client_run(&g_diag_ok, &g_diag_n_ok, &g_diag_n_warn,
+                                 &g_diag_n_fail, g_diag_detail, sizeof(g_diag_detail));
+    g_diag_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_diag(void) {
+    if (!g_diag_done) return;
+    g_diag_done = 0;
+    g_diag_running = 0;
+
+    if (!g_diag_label) return; /* salimos de la seccion mientras corria */
+
+    if (g_diag_ran != 1) {
+        lv_label_set_text(g_diag_label, "No se pudo ejecutar el doctor");
+        ui_shell_set_status("Doctor: no se pudo ejecutar", UI_STATUS_ERROR);
+        return;
+    }
+    char body[1200];
+    snprintf(body, sizeof(body), "%s  -  %d ok / %d warn / %d fail\n\n%s",
+             g_diag_ok ? "OK" : "FALLA",
+             g_diag_n_ok, g_diag_n_warn, g_diag_n_fail, g_diag_detail);
+    lv_label_set_text(g_diag_label, body);
+    ui_shell_set_status(g_diag_ok ? "Doctor: todo OK" : "Doctor: hay fallas (ver detalle)",
+                        g_diag_ok ? UI_STATUS_OK : UI_STATUS_ERROR);
+}
+
+static void diag_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_diag_running) return;
+    g_diag_running = 1;
+    g_diag_done = 0;
+    if (g_diag_label) lv_label_set_text(g_diag_label, "Diagnosticando...");
+    ui_shell_set_status("Doctor en curso...", UI_STATUS_WORKING);
+    pthread_t tid;
+    pthread_create(&tid, NULL, diag_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
 static void enter_section(const char *id, const char *label) {
     cfg_flush();   /* si venimos de Config con cambios, persistirlos (no-op si no) */
     lv_obj_clean(g_body);
+    g_diag_label = NULL;
     g_wifi_status_label = NULL;
     g_wifi_results_box = NULL;
     g_scan_btn = NULL;
@@ -2150,6 +2282,37 @@ static void enter_section(const char *id, const char *label) {
         lv_label_set_text(cdnl, LV_SYMBOL_DOWN);
         lv_obj_set_style_text_color(cdnl, COLOR_OK, 0);
         lv_obj_center(cdnl);
+
+    } else if (strcmp(id, "tools") == 0) {
+        lv_obj_t *title = lv_label_create(g_body);
+        lv_label_set_text(title, "Herramientas");
+        lv_obj_set_style_text_color(title, COLOR_OK, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
+
+        lv_obj_t *db = lv_button_create(g_body);
+        lv_obj_set_size(db, 200, 34);
+        lv_obj_align(db, LV_ALIGN_TOP_LEFT, 10, 32);
+        lv_obj_set_style_bg_color(db, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(db, COLOR_OK, 0);
+        lv_obj_set_style_border_width(db, 2, 0);
+        lv_obj_set_ext_click_area(db, 8);
+        lv_obj_add_event_cb(db, diag_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(db);
+        lv_obj_t *dl = lv_label_create(db);
+        lv_label_set_text(dl, "Self-check (doctor)");
+        lv_obj_set_style_text_color(dl, COLOR_OK, 0);
+        lv_obj_set_style_text_font(dl, &lv_font_montserrat_10, 0);
+        lv_obj_center(dl);
+
+        g_diag_label = lv_label_create(g_body);
+        lv_label_set_long_mode(g_diag_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(g_diag_label, 440);
+        lv_obj_align(g_diag_label, LV_ALIGN_TOP_LEFT, 10, 74);
+        lv_obj_set_style_text_color(g_diag_label, COLOR_DIM, 0);
+        lv_obj_set_style_text_font(g_diag_label, &lv_font_montserrat_10, 0);
+        lv_label_set_text(g_diag_label,
+                          "Toca 'Self-check' para verificar binarios, sudoers,\n"
+                          "interfaces (wlan0/wlan1) y la base de datos.");
 
     } else {
         lv_obj_t *title = lv_label_create(g_body);
