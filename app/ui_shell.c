@@ -77,17 +77,28 @@ typedef struct {
     const char *cat;     /* category DB */
     cfg_type_t  type;
     int min, max, step;  /* INT */
-    int def;             /* default INT/BOOL */
+    int def;             /* default INT/BOOL/CHOICE (indice en choices) */
     const char *unit;    /* sufijo INT (ej "s"); NULL = sin unidad */
+    /* CHOICE estatica: array de opciones; NULL = CHOICE dinamica (ej portal). */
+    const char *const *choices;
+    int n_choices;
 } cfg_item_t;
 
+static const char *const BT_IFACE_CHOICES[] = { "hci1", "hci0" };
+/* hci1 (USB RTL8821CU, BT 4.2) primero por compatibilidad con lo probado;
+ * hci0 (onboard BCM43438, BT 5.0, UART, no comparte USB con wlan1) es la
+ * opcion recomendada para uso intensivo con WiFi en paralelo. */
+
 static const cfg_item_t CFG_ITEMS[] = {
-    {"deauth_duration",      "Deauth sostenido",  "wifi", CFG_INT,    0, 600, 5,  0, "s"},
-    {"beacon_duration",      "Beacon flood",      "wifi", CFG_INT,    5, 300, 5, 20, "s"},
-    {"honeypot_portal",      "Honeypot portal",   "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL},
-    {"honeypot_bridge",      "Honeypot internet", "wifi", CFG_BOOL,   0,   1, 1,  0, NULL},
-    {"honeypot_pcap",        "Honeypot PCAP",     "wifi", CFG_BOOL,   0,   1, 1,  1, NULL},
-    {"honeypot_probe_sniff", "Honeypot probe/PNL","wifi", CFG_BOOL,   0,   1, 1,  0, NULL},
+    {"deauth_duration",      "Deauth sostenido",  "wifi", CFG_INT,    0, 600, 5,  0, "s",  NULL,              0},
+    {"beacon_duration",      "Beacon flood",      "wifi", CFG_INT,    5, 300, 5, 20, "s",  NULL,              0},
+    {"honeypot_portal",      "Honeypot portal",   "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL, NULL,              0},
+    {"honeypot_bridge",      "Honeypot internet", "wifi", CFG_BOOL,   0,   1, 1,  0, NULL, NULL,              0},
+    {"honeypot_pcap",        "Honeypot PCAP",     "wifi", CFG_BOOL,   0,   1, 1,  1, NULL, NULL,              0},
+    {"honeypot_probe_sniff", "Honeypot probe/PNL","wifi", CFG_BOOL,   0,   1, 1,  0, NULL, NULL,              0},
+    /* bt_iface: cat="wifi" por consistencia con las demas keys de Config
+     * (cfg_load_all/set_many filtran por una sola category hoy). */
+    {"bt_iface",             "Bluetooth iface",   "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL, BT_IFACE_CHOICES,  2},
 };
 #define CFG_N ((int)(sizeof(CFG_ITEMS)/sizeof(CFG_ITEMS[0])))
 static int       g_cfg_val[CFG_N];       /* valor actual (INT/BOOL) o indice (CHOICE) */
@@ -1783,13 +1794,20 @@ static void cfg_item_refresh(int i) {
     if (it->type == CFG_BOOL) {
         snprintf(buf, sizeof(buf), "%s", g_cfg_val[i] ? "ON" : "OFF");
     } else if (it->type == CFG_CHOICE) {
-        const char *nm = (g_cfg_val[i] >= 0 && g_cfg_val[i] < g_portal_count)
-                         ? g_portal_files[g_cfg_val[i]] : "?";
-        /* mostrar sin ".html" para que entre en la fila */
-        char tmp[64]; snprintf(tmp, sizeof(tmp), "%s", nm);
-        size_t L = strlen(tmp);
-        if (L > 5 && strcmp(tmp + L - 5, ".html") == 0) tmp[L - 5] = '\0';
-        snprintf(buf, sizeof(buf), "%s", tmp);
+        if (it->choices) {
+            /* CHOICE estatica (ej bt_iface) */
+            int idx = g_cfg_val[i];
+            const char *nm = (idx >= 0 && idx < it->n_choices) ? it->choices[idx] : "?";
+            snprintf(buf, sizeof(buf), "%s", nm);
+        } else {
+            /* CHOICE dinamica (honeypot_portal). Mostrar sin ".html". */
+            const char *nm = (g_cfg_val[i] >= 0 && g_cfg_val[i] < g_portal_count)
+                             ? g_portal_files[g_cfg_val[i]] : "?";
+            char tmp[64]; snprintf(tmp, sizeof(tmp), "%s", nm);
+            size_t L = strlen(tmp);
+            if (L > 5 && strcmp(tmp + L - 5, ".html") == 0) tmp[L - 5] = '\0';
+            snprintf(buf, sizeof(buf), "%s", tmp);
+        }
     } else {
         if (it->unit) snprintf(buf, sizeof(buf), "%d%s", g_cfg_val[i], it->unit);
         else          snprintf(buf, sizeof(buf), "%d", g_cfg_val[i]);
@@ -1818,8 +1836,19 @@ static void cfg_item_load(int i) {
     char v[128];
     int have = cfg_cache_get(it->key, v, sizeof(v));
     if (it->type == CFG_CHOICE) {
-        cfg_scan_portals();
-        g_cfg_val[i] = cfg_portal_index_of(have ? v : "");
+        if (it->choices) {
+            /* CHOICE estatica: resolver el valor string al indice (default = def). */
+            int idx = it->def;
+            if (have) {
+                for (int k = 0; k < it->n_choices; k++) {
+                    if (strcmp(v, it->choices[k]) == 0) { idx = k; break; }
+                }
+            }
+            g_cfg_val[i] = idx;
+        } else {
+            cfg_scan_portals();
+            g_cfg_val[i] = cfg_portal_index_of(have ? v : "");
+        }
     } else {
         int val = have ? atoi(v) : it->def;
         if (it->type == CFG_BOOL) val = val ? 1 : 0;
@@ -1834,7 +1863,12 @@ static void cfg_item_value_str(int i, char *out, int out_size) {
     const cfg_item_t *it = &CFG_ITEMS[i];
     if (it->type == CFG_CHOICE) {
         int idx = g_cfg_val[i];
-        snprintf(out, out_size, "%s", (idx <= 0) ? "" : g_portal_files[idx]); /* 0 = default */
+        if (it->choices) {
+            const char *nm = (idx >= 0 && idx < it->n_choices) ? it->choices[idx] : "";
+            snprintf(out, out_size, "%s", nm);
+        } else {
+            snprintf(out, out_size, "%s", (idx <= 0) ? "" : g_portal_files[idx]); /* 0 = default */
+        }
     } else {
         snprintf(out, out_size, "%d", g_cfg_val[i]);
     }
@@ -1881,10 +1915,11 @@ static void cfg_ctl_cb(lv_event_t *e) {
     if (it->type == CFG_BOOL) {
         g_cfg_val[i] = !g_cfg_val[i];
     } else if (it->type == CFG_CHOICE) {
-        if (g_portal_count > 0) {
+        int n = it->choices ? it->n_choices : g_portal_count;
+        if (n > 0) {
             g_cfg_val[i] += (dir == 1) ? 1 : -1;
-            if (g_cfg_val[i] < 0) g_cfg_val[i] = g_portal_count - 1;
-            if (g_cfg_val[i] >= g_portal_count) g_cfg_val[i] = 0;
+            if (g_cfg_val[i] < 0) g_cfg_val[i] = n - 1;
+            if (g_cfg_val[i] >= n) g_cfg_val[i] = 0;
         }
     } else {
         g_cfg_val[i] += (dir == 1) ? it->step : -it->step;
@@ -2016,6 +2051,62 @@ static void diag_btn_cb(lv_event_t *e) {
     pthread_detach(tid);
 }
 
+/* ── Herramientas: Ver logs (action_log). Hilo + poll, reusa g_diag_label. ── */
+static volatile int g_logs_running = 0;
+static volatile int g_logs_done = 0;
+static int g_logs_ok = 0;
+static int g_logs_errors_only = 0;
+static char g_logs_text[2800];
+
+static void *logs_thread_fn(void *arg) {
+    (void)arg;
+    g_logs_text[0] = '\0';
+    g_logs_ok = db_action_recent(20, g_logs_errors_only, g_logs_text, sizeof(g_logs_text));
+    g_logs_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_logs(void) {
+    if (!g_logs_done) return;
+    g_logs_done = 0;
+    g_logs_running = 0;
+    if (!g_diag_label) return;    /* salimos de la seccion mientras corria */
+    if (!g_logs_ok) {
+        lv_label_set_text(g_diag_label, "No se pudo leer action_log");
+        ui_shell_set_status("Logs: no se pudo leer", UI_STATUS_ERROR);
+        return;
+    }
+    lv_label_set_text(g_diag_label, g_logs_text);
+    ui_shell_set_status(g_logs_errors_only ? "Logs (solo errores)" : "Ultimos 20 logs",
+                        UI_STATUS_OK);
+}
+
+static void logs_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_logs_running) return;
+    g_logs_running = 1;
+    g_logs_done = 0;
+    g_logs_errors_only = 0;
+    if (g_diag_label) lv_label_set_text(g_diag_label, "Leyendo logs...");
+    ui_shell_set_status("Logs: leyendo...", UI_STATUS_WORKING);
+    pthread_t tid;
+    pthread_create(&tid, NULL, logs_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static void logs_err_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_logs_running) return;
+    g_logs_running = 1;
+    g_logs_done = 0;
+    g_logs_errors_only = 1;
+    if (g_diag_label) lv_label_set_text(g_diag_label, "Leyendo errores...");
+    ui_shell_set_status("Logs: errores recientes...", UI_STATUS_WORKING);
+    pthread_t tid;
+    pthread_create(&tid, NULL, logs_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
 /* ═══════════════════════════════════════════════════════
    Bluetooth — scan BR/EDR + LE (Fase 3). Patron hilo+poll,
    igual que el resto; LVGL se toca SOLO desde poll (main loop).
@@ -2025,8 +2116,13 @@ static void render_bt_list(void);
 static void *bt_scan_thread_fn(void *arg) {
     (void)arg;
     g_bt_error[0] = '\0';
-    /* "hci1" = USB RTL8821CU. 10s dual (BR/EDR + LE). */
-    g_bt_count = bt_client_scan("hci1", 10, "dual",
+    /* iface configurable (Config -> bt_iface). Default hci1 (USB RTL8821CU). */
+    char iface[16] = "hci1";
+    char v[32];
+    if (db_config_get("bt_iface", v, sizeof(v)) && v[0]) {
+        snprintf(iface, sizeof(iface), "%s", v);
+    }
+    g_bt_count = bt_client_scan(iface, 10, "dual",
                                 g_bt_devices, BT_MAX_DEVICES,
                                 g_bt_error, sizeof(g_bt_error));
     g_bt_done = 1;
@@ -2487,8 +2583,9 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(title, COLOR_OK, 0);
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
 
+        /* Fila 1: Self-check (doctor) + Ver logs + Solo errores. */
         lv_obj_t *db = lv_button_create(g_body);
-        lv_obj_set_size(db, 200, 34);
+        lv_obj_set_size(db, 158, 34);
         lv_obj_align(db, LV_ALIGN_TOP_LEFT, 10, 32);
         lv_obj_set_style_bg_color(db, lv_color_hex(0x0a2a0a), 0);
         lv_obj_set_style_border_color(db, COLOR_OK, 0);
@@ -2502,15 +2599,46 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_font(dl, &lv_font_montserrat_10, 0);
         lv_obj_center(dl);
 
+        lv_obj_t *lgb = lv_button_create(g_body);
+        lv_obj_set_size(lgb, 118, 34);
+        lv_obj_align(lgb, LV_ALIGN_TOP_LEFT, 174, 32);
+        lv_obj_set_style_bg_color(lgb, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(lgb, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_border_width(lgb, 2, 0);
+        lv_obj_set_ext_click_area(lgb, 8);
+        lv_obj_add_event_cb(lgb, logs_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(lgb);
+        lv_obj_t *lgl = lv_label_create(lgb);
+        lv_label_set_text(lgl, "Ver logs");
+        lv_obj_set_style_text_color(lgl, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_text_font(lgl, &lv_font_montserrat_10, 0);
+        lv_obj_center(lgl);
+
+        lv_obj_t *leb = lv_button_create(g_body);
+        lv_obj_set_size(leb, 128, 34);
+        lv_obj_align(leb, LV_ALIGN_TOP_LEFT, 298, 32);
+        lv_obj_set_style_bg_color(leb, lv_color_hex(0x2a0a14), 0);
+        lv_obj_set_style_border_color(leb, lv_color_hex(0xFF3366), 0);
+        lv_obj_set_style_border_width(leb, 2, 0);
+        lv_obj_set_ext_click_area(leb, 8);
+        lv_obj_add_event_cb(leb, logs_err_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(leb);
+        lv_obj_t *lel = lv_label_create(leb);
+        lv_label_set_text(lel, "Solo errores");
+        lv_obj_set_style_text_color(lel, lv_color_hex(0xFF3366), 0);
+        lv_obj_set_style_text_font(lel, &lv_font_montserrat_10, 0);
+        lv_obj_center(lel);
+
         g_diag_label = lv_label_create(g_body);
         lv_label_set_long_mode(g_diag_label, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(g_diag_label, 440);
+        lv_obj_set_width(g_diag_label, 460);
         lv_obj_align(g_diag_label, LV_ALIGN_TOP_LEFT, 10, 74);
         lv_obj_set_style_text_color(g_diag_label, COLOR_DIM, 0);
         lv_obj_set_style_text_font(g_diag_label, &lv_font_montserrat_10, 0);
         lv_label_set_text(g_diag_label,
-                          "Toca 'Self-check' para verificar binarios, sudoers,\n"
-                          "interfaces (wlan0/wlan1) y la base de datos.");
+                          "Self-check: verifica binarios, sudoers, interfaces, DB.\n"
+                          "Ver logs: ultimas 20 operaciones (ok/error, origen).\n"
+                          "Solo errores: filtra las que fallaron (para debug).");
 
     } else {
         lv_obj_t *title = lv_label_create(g_body);

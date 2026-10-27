@@ -24,4 +24,11 @@ int db_credential_set(const char *cred_type, const char *plaintext);
 int db_credential_verify(const char *cred_type, const char *plaintext); /* 1=valido, 0=invalido o error */
 int db_credential_exists(const char *cred_type);
 
+/* Trae las ultimas N filas de action_log formateadas como texto multilinea
+ * listo para un lv_label. Devuelve 1 si pudo, 0 si no. Cada linea:
+ *   "[ok|ERR] seccion/tool · inputs | error"
+ * `errors_only` != 0 filtra a result != ok. */
+int db_action_recent(int limit, int errors_only,
+                     char *out, int out_size);
+
 #endif

@@ -125,6 +125,25 @@ class BluetoothLog(Base):
     manufacturer_data: Mapped[str] = mapped_column(Text, nullable=True)   # company_id -> hex
     details: Mapped[str] = mapped_column(Text, nullable=True)
 
+class ActionLog(Base):
+    """Registro generico de operaciones del sistema para depuracion:
+    sección (pantalla), herramienta, entradas, salidas y error. Nutre la
+    pantalla 'Logs' (Herramientas) y ayuda a diagnosticar un fallo sin
+    reproducirlo. Cada dispatcher Python logea una fila por invocacion
+    via app/db/action_log.py::run_cli_with_log; funciones especificas
+    (log_attack, log_honeypot, log_bluetooth_batch) siguen existiendo
+    con su propia tabla."""
+    __tablename__ = "action_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    section: Mapped[str] = mapped_column(String(32), nullable=True)   # bluetooth|wifi|net|tools|config
+    tool: Mapped[str] = mapped_column(String(48), nullable=True)      # scan|deauth|wps_attack|...
+    inputs: Mapped[str] = mapped_column(Text, nullable=True)          # argv o params (string)
+    outputs: Mapped[str] = mapped_column(Text, nullable=True)         # salida relevante (truncada)
+    error: Mapped[str] = mapped_column(Text, nullable=True)
+    result: Mapped[str] = mapped_column(String(16), nullable=True)    # ok|error|warn
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=True)
+
 _engine = None
 _SessionLocal = None
 

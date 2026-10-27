@@ -240,3 +240,65 @@ int db_credential_exists(const char *cred_type) {
     free(raw);
     return result;
 }
+
+int db_action_recent(int limit, int errors_only, char *out, int out_size) {
+    char *argv_path = PISCAN_DB_TOOL_PATH;
+    char lim_str[16];
+    snprintf(lim_str, sizeof(lim_str), "%d", limit > 0 ? limit : 20);
+    char *argv_normal[]  = { "python3", argv_path, "action", "list", lim_str, NULL };
+    char *argv_err[]     = { "python3", argv_path, "action", "list", lim_str, "--errors", NULL };
+    char *raw = run_and_capture(errors_only ? argv_err : argv_normal);
+    cJSON *root = NULL;
+    int ok = parse_ok_json(raw, &root);
+    out[0] = '\0';
+    if (!ok) {
+        free(raw);
+        if (root) cJSON_Delete(root);
+        return 0;
+    }
+    cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "items");
+    size_t used = 0;
+    if (cJSON_IsArray(items)) {
+        cJSON *it;
+        cJSON_ArrayForEach(it, items) {
+            cJSON *section = cJSON_GetObjectItemCaseSensitive(it, "section");
+            cJSON *tool    = cJSON_GetObjectItemCaseSensitive(it, "tool");
+            cJSON *result  = cJSON_GetObjectItemCaseSensitive(it, "result");
+            cJSON *inputs  = cJSON_GetObjectItemCaseSensitive(it, "inputs");
+            cJSON *errj    = cJSON_GetObjectItemCaseSensitive(it, "error");
+            cJSON *dur     = cJSON_GetObjectItemCaseSensitive(it, "duration_ms");
+            cJSON *ts      = cJSON_GetObjectItemCaseSensitive(it, "ts");
+            const char *rs = cJSON_IsString(result) ? result->valuestring : "?";
+            const char *tag = (strcmp(rs, "ok") == 0) ? "ok " : "ERR";
+            const char *sec = cJSON_IsString(section) ? section->valuestring : "?";
+            const char *tl  = cJSON_IsString(tool)    ? tool->valuestring    : "?";
+            const char *in  = cJSON_IsString(inputs)  ? inputs->valuestring  : "";
+            const char *er  = cJSON_IsString(errj)    ? errj->valuestring    : NULL;
+            int ms = cJSON_IsNumber(dur) ? dur->valueint : -1;
+            const char *tss = cJSON_IsString(ts) ? ts->valuestring : "";
+            /* HH:MM:SS: cortamos de "YYYY-MM-DDTHH:MM:SS..." -> ultimos 8 chars de la hora */
+            char hhmmss[12] = "--:--:--";
+            if (tss[0]) {
+                const char *tt = strchr(tss, 'T');
+                if (tt && strlen(tt) >= 9) snprintf(hhmmss, sizeof(hhmmss), "%.8s", tt + 1);
+            }
+            char line[320];
+            if (er && er[0]) {
+                snprintf(line, sizeof(line), "[%s %s] %s/%s %dms | %s\n",
+                         tag, hhmmss, sec, tl, ms, er);
+            } else {
+                snprintf(line, sizeof(line), "[%s %s] %s/%s %dms %s%s\n",
+                         tag, hhmmss, sec, tl, ms, in[0] ? "· " : "", in);
+            }
+            size_t ln = strlen(line);
+            if (used + ln + 1 >= (size_t)out_size) break;
+            memcpy(out + used, line, ln);
+            used += ln;
+            out[used] = '\0';
+        }
+    }
+    cJSON_Delete(root);
+    free(raw);
+    if (used == 0) snprintf(out, out_size, "(sin registros)");
+    return 1;
+}

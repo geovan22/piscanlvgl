@@ -14,7 +14,7 @@ except Exception:
     pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from db.models import get_session, Config, SecurityCredential, HoneypotLog
+from db.models import get_session, Config, SecurityCredential, HoneypotLog, ActionLog
 
 def ok(data=None, pretty=False):
     out = {"ok": True}
@@ -167,6 +167,71 @@ def cmd_honeypot_show(args):
         err(f"id no encontrado: {args[0]}")
     ok(_hp_row(row, full=True), pretty=True)
 
+def _al_row(r, full=False):
+    """Serializa una fila de action_log a dict JSON-safe."""
+    d = {
+        "id": r.id,
+        "ts": r.timestamp.isoformat() if r.timestamp else None,
+        "section": r.section, "tool": r.tool,
+        "result": r.result, "duration_ms": r.duration_ms,
+    }
+    if full:
+        d.update({"inputs": r.inputs, "outputs": r.outputs, "error": r.error})
+    else:
+        d.update({
+            "error": (r.error or "")[:160] if r.error else None,
+            "inputs": (r.inputs or "")[:120] if r.inputs else None,
+        })
+    return d
+
+def cmd_action_list(args):
+    """action list [limit] [section] [--errors] — ultimas filas de action_log,
+    mas recientes primero. --errors filtra result != 'ok'."""
+    limit = 20
+    section = None
+    errors_only = False
+    for a in args:
+        if a == "--errors":
+            errors_only = True
+        elif a.isdigit():
+            limit = int(a)
+        else:
+            section = a
+    s = get_session()
+    q = s.query(ActionLog)
+    if section:
+        q = q.filter(ActionLog.section == section)
+    if errors_only:
+        q = q.filter(ActionLog.result != "ok")
+    rows = q.order_by(ActionLog.id.desc()).limit(limit).all()
+    ok({"count": len(rows), "items": [_al_row(r) for r in rows]}, pretty=True)
+
+def cmd_action_show(args):
+    """action show <id> — detalle completo (inputs, outputs, error) de una fila."""
+    if not args or not args[0].isdigit():
+        err("uso: action show <id>")
+    s = get_session()
+    row = s.get(ActionLog, int(args[0]))
+    if row is None:
+        err(f"id no encontrado: {args[0]}")
+    ok(_al_row(row, full=True), pretty=True)
+
+def cmd_action_clear(args):
+    """action clear [--older-than-days N] — borra TODAS las filas o solo las
+    mas viejas que N dias (si se pasa --older-than-days)."""
+    from datetime import datetime, timedelta
+    cutoff = None
+    for i, a in enumerate(args):
+        if a == "--older-than-days" and i + 1 < len(args) and args[i + 1].isdigit():
+            cutoff = datetime.utcnow() - timedelta(days=int(args[i + 1]))
+    s = get_session()
+    q = s.query(ActionLog)
+    if cutoff is not None:
+        q = q.filter(ActionLog.timestamp < cutoff)
+    n = q.delete(synchronize_session=False)
+    s.commit()
+    ok({"deleted": n})
+
 def cmd_portals_list(args):
     """portals list — plantillas disponibles en data/portals/ y cual esta activa
     (Config honeypot_portal). Para que la UI/Config pueda listarlas y elegir."""
@@ -193,6 +258,9 @@ COMMANDS = {
     ("honeypot", "list"): cmd_honeypot_list,
     ("honeypot", "show"): cmd_honeypot_show,
     ("portals", "list"): cmd_portals_list,
+    ("action", "list"): cmd_action_list,
+    ("action", "show"): cmd_action_show,
+    ("action", "clear"): cmd_action_clear,
 }
 
 def main():

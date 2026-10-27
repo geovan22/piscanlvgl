@@ -14,6 +14,36 @@
 > validado en PC/Pi (compila, 41 tests OK). Pendiente de aplicar sudoers +
 > instalar rfkill en la Pi y validar el scan en pantalla.**
 
+## Logging centralizado (ActionLog) — [x] NUEVO, por validar en pantalla
+> Regla general: **toda operación invocada desde la UI debe quedar registrada**
+> en `action_log` para poder depurar sin reproducir. Captura automática en el
+> dispatcher Python; funciones específicas (log_attack, log_honeypot,
+> log_bluetooth_batch) siguen existiendo con su propia tabla.
+- [x] Tabla `ActionLog` (section/tool/inputs/outputs/error/result/duration_ms).
+- [x] Helper `app/db/action_log.py`:
+      - `log_action(section, tool, inputs, outputs, error, result, duration_ms)`
+      - `run_cli_with_log(section, main_fn)` — envoltorio del `if __name__`.
+        Captura stdout + exit code **sin cambiar** el contrato con C.
+        Fallo del log nunca tumba el script.
+- [x] Instrumentados: `bt_ops.py`, `wifi_ops.py`, `net_ops.py`, `diag.py`.
+      `db_tool.py` queda sin envoltorio global (sus llamadas son demasiado
+      frecuentes: `config get` por cada carga), pero añade comandos de lectura.
+- [x] CLI: `python3 app/db_tool.py action list [N] [section] [--errors]`,
+      `action show <id>`, `action clear [--older-than-days N]`.
+- [x] Bridge C `db_action_recent()` en `db_client` → texto multilínea listo
+      para un `lv_label`.
+- [x] Pantalla **Herramientas**: 2 botones nuevos **"Ver logs"** (cyan,
+      últimas 20) y **"Solo errores"** (rojo, filtrado). Comparten el label
+      con Self-check; hilo + poll (`ui_shell_poll_logs`).
+- [x] 9 tests nuevos en `tests/test_action_log.py` (extract tool/error,
+      log_action truncation + swallow, run_cli_with_log paths ok/error).
+- [x] Validado end-to-end en la Pi: `bt_ops scan hci1` registra ok+duration;
+      `bt_ops scan hci9` (iface invalida) registra error con el stderr crudo
+      de btmgmt (`status 0x11 Invalid Index`); `--errors` filtra solo esas.
+- [ ] Validar los botones en pantalla y que el filtrado se lee legible.
+- [ ] Follow-up: instrumentar `db_tool.py` para los comandos NO frecuentes
+      (config set / setmany, credential set, honeypot) con el mismo envoltorio.
+
 ## Fase 3 — Bluetooth (MVP iteración 1) — [~] a validar en Pi
 > Marco: laboratorio controlado / pruebas autorizadas. Controller elegido:
 > hci1 (USB RTL8821CU, mismo chip que wlan1). hci0 (onboard BCM43438, BT 5.0)
@@ -32,14 +62,17 @@
 - [x] diag.py: nuevos checks `bin/bluetooth` (bluetoothctl/btmgmt/hcitool/rfkill).
 - [x] sudoers versionado: + rfkill, btmgmt, hcitool, sdptool, gatttool.
 - [x] Compila en la Pi (HEAD con los nuevos .c/.h), tests 41/41 OK.
-- [ ] **Aplicar en la Pi (requiere el usuario, es sudo con password):**
-      - `sudo apt install -y rfkill`
-      - `sudo cp ~/piscanlvgl/systemd/sudoers-piscan-wifi /etc/sudoers.d/piscan-wifi && sudo chmod 440 /etc/sudoers.d/piscan-wifi`
-      - `sudo systemctl restart piscan`
-- [ ] Validar en pantalla: tocar Escanear en la sección Bluetooth y confirmar
-      que lista dispositivos (teléfono, parlante, reloj…) con MAC/nombre/RSSI.
-- [ ] Validar que `BluetoothLog` persiste filas (`sqlite3 data/piscan.db
-      "SELECT COUNT(*),MIN(timestamp),MAX(timestamp) FROM bluetooth_log"`).
+- [x] **Aplicado en la Pi (2026-10-27):** `sudo apt install -y rfkill` + sudoers
+      copiado y reiniciado el servicio. `btmgmt power on` responde OK con `sudo -n`.
+- [x] **Backend validado end-to-end**: `bt_ops scan hci1 6` listó 5 devices
+      con RSSI y nombres (`LAP-1MJLWG3` entre ellos); `BluetoothLog` persiste
+      (count 11 tras varias corridas); registro en `action_log` también OK.
+- [x] **Toggle hci0/hci1 en Config** (CFG_CHOICE estática `bt_iface`): la UI
+      lee el valor con `db_config_get("bt_iface")` antes de llamar al scan.
+      Default `hci1` por compatibilidad. `cfg_item_t` ahora soporta choices
+      estáticas (`BT_IFACE_CHOICES`) o dinámicas (portal). Compila en la Pi.
+- [ ] Validar en pantalla: tocar Escanear en la sección Bluetooth, cambiar
+      `bt_iface` a hci0 en Config y confirmar que el próximo scan usa el onboard.
 
 ### Pendiente de iteración 2 (sin bloquear)
 - [ ] Tap en una fila → detalle (bluetoothctl info enriquecido, UUIDs con

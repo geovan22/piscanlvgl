@@ -197,4 +197,12 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    try:
+        _here = os.path.dirname(os.path.abspath(__file__))
+        _app  = os.path.abspath(os.path.join(_here, ".."))
+        if _app not in sys.path:
+            sys.path.insert(0, _app)
+        from db.action_log import run_cli_with_log
+        run_cli_with_log("net", main)
+    except Exception:
+        main()
