@@ -37,6 +37,7 @@ void ui_shell_poll_caplist(void);
 void ui_shell_poll_netscan(void);
 void ui_shell_poll_netconn(void);
 void ui_shell_poll_clients(void);
+void ui_shell_poll_bluetooth(void);
 
 
 /* Barra de estado global en el footer. El color permite un vistazo

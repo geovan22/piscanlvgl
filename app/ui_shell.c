@@ -13,6 +13,7 @@
 #include "confirm_dialog.h"
 #include "wifi_client.h"
 #include "net_client.h"
+#include "bt_client.h"
 #include "text_input.h"
 #include "db_client.h"
 #include "ui_style.h"
@@ -39,6 +40,7 @@ typedef struct {
 
 static const menu_item_t MENU_ITEMS[] = {
     { "WiFi",          "wifi" },
+    { "Bluetooth",     "bluetooth" },
     { "LAN",           "lan" },
     { "Herramientas",  "tools" },
     { "Config",        "config" },
@@ -138,6 +140,16 @@ static int g_clients_count = 0;
 static volatile int g_clients_running = 0;
 static volatile int g_clients_done = 0;
 static char g_clients_error[128];
+
+/* ── Fase 3: Bluetooth (scan BR/EDR + LE con bt_ops.py) ── */
+static bt_device_t g_bt_devices[BT_MAX_DEVICES];
+static int g_bt_count = 0;
+static volatile int g_bt_running = 0;
+static volatile int g_bt_done = 0;
+static char g_bt_error[128];
+static lv_obj_t *g_bt_box = NULL;
+static lv_obj_t *g_bt_status_label = NULL;
+static lv_obj_t *g_bt_scan_btn = NULL;
 
 static volatile int g_deauth_running = 0;
 static volatile int g_deauth_done = 0;
@@ -2004,10 +2016,129 @@ static void diag_btn_cb(lv_event_t *e) {
     pthread_detach(tid);
 }
 
+/* ═══════════════════════════════════════════════════════
+   Bluetooth — scan BR/EDR + LE (Fase 3). Patron hilo+poll,
+   igual que el resto; LVGL se toca SOLO desde poll (main loop).
+   ═══════════════════════════════════════════════════════ */
+static void render_bt_list(void);
+
+static void *bt_scan_thread_fn(void *arg) {
+    (void)arg;
+    g_bt_error[0] = '\0';
+    /* "hci1" = USB RTL8821CU. 10s dual (BR/EDR + LE). */
+    g_bt_count = bt_client_scan("hci1", 10, "dual",
+                                g_bt_devices, BT_MAX_DEVICES,
+                                g_bt_error, sizeof(g_bt_error));
+    g_bt_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_bluetooth(void) {
+    if (!g_bt_done) return;
+    g_bt_done = 0;
+    g_bt_running = 0;
+    if (g_bt_scan_btn) lv_obj_clear_state(g_bt_scan_btn, LV_STATE_DISABLED);
+    if (!g_bt_box || !g_bt_status_label) return;   /* salimos de la seccion */
+    render_bt_list();
+}
+
+static void render_bt_list(void) {
+    if (!g_bt_box || !g_bt_status_label) return;
+    lv_obj_clean(g_bt_box);
+    lv_obj_scroll_to_y(g_bt_box, 0, LV_ANIM_OFF);
+
+    if (g_bt_count < 0) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "Error: %s", g_bt_error);
+        lv_label_set_text(g_bt_status_label, buf);
+        ui_shell_set_status(buf, UI_STATUS_ERROR);
+        g_bt_count = 0;
+        return;
+    }
+    if (g_bt_count == 0) {
+        lv_label_set_text(g_bt_status_label, "Sin dispositivos BT visibles");
+        ui_shell_set_status("Sin dispositivos BT", UI_STATUS_INFO);
+        return;
+    }
+    char hdr[80];
+    snprintf(hdr, sizeof(hdr), "%d dispositivo(s) BT", g_bt_count);
+    lv_label_set_text(g_bt_status_label, hdr);
+    ui_shell_set_status(hdr, UI_STATUS_OK);
+
+    for (int i = 0; i < g_bt_count; i++) {
+        bt_device_t *d = &g_bt_devices[i];
+        lv_obj_t *row = lv_obj_create(g_bt_box);
+        lv_obj_set_size(row, 380, 24);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        /* Columna 0: nombre (o MAC si no hay nombre), coloreado por tipo:
+         *   LE = cyan, classic = verde, dual = magenta. */
+        const char *tx = (d->name[0] ? d->name : d->mac);
+        lv_color_t name_col = COLOR_OK;
+        if (strcmp(d->kind, "le") == 0)        name_col = lv_color_hex(0x33CCFF);
+        else if (strcmp(d->kind, "dual") == 0) name_col = lv_color_hex(0xCC66FF);
+        make_row_label(row, tx, name_col, 0);
+
+        /* Columna 1: MAC (si no estuvo ya en nombre) */
+        if (d->name[0]) {
+            char mbuf[20];
+            snprintf(mbuf, sizeof(mbuf), "%s", d->mac + 9);  /* ultimos 2 octetos */
+            make_row_label(row, mbuf, COLOR_DIM, 165);
+        }
+
+        /* Columna 2: fabricante */
+        char vbuf[20];
+        snprintf(vbuf, sizeof(vbuf), "%.14s", d->vendor[0] ? d->vendor : "?");
+        make_row_label(row, vbuf, lv_color_hex(0x33CCFF), 210);
+
+        /* Columna 3: RSSI */
+        char rbuf[16];
+        if (d->rssi != 0) snprintf(rbuf, sizeof(rbuf), "%ddBm", d->rssi);
+        else              snprintf(rbuf, sizeof(rbuf), "---");
+        make_row_label(row, rbuf, COLOR_DIM, 300);
+
+        /* Columna 4: tipo (LE/BR) */
+        const char *kb = "?";
+        if (strcmp(d->kind, "le") == 0)        kb = "LE";
+        else if (strcmp(d->kind, "classic") == 0) kb = "BR";
+        else if (strcmp(d->kind, "dual") == 0) kb = "DUAL";
+        make_row_label(row, kb, COLOR_DIM, 345);
+    }
+}
+
+static void bt_scan_btn_event_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_bt_running) return;
+    g_bt_running = 1;
+    g_bt_done = 0;
+    if (g_bt_box) lv_obj_clean(g_bt_box);
+    if (g_bt_status_label) lv_label_set_text(g_bt_status_label, "Escaneando BT ~10s...");
+    ui_shell_set_status("Escaneando Bluetooth (~10s)...", UI_STATUS_WORKING);
+    if (g_bt_scan_btn) lv_obj_add_state(g_bt_scan_btn, LV_STATE_DISABLED);
+    pthread_t tid;
+    pthread_create(&tid, NULL, bt_scan_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static void bt_scroll_up_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_bt_box) lv_obj_scroll_by(g_bt_box, 0, 60, LV_ANIM_ON);
+}
+static void bt_scroll_down_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_bt_box) lv_obj_scroll_by(g_bt_box, 0, -60, LV_ANIM_ON);
+}
+
 static void enter_section(const char *id, const char *label) {
     cfg_flush();   /* si venimos de Config con cambios, persistirlos (no-op si no) */
     lv_obj_clean(g_body);
     g_diag_label = NULL;
+    g_bt_box = NULL;
+    g_bt_status_label = NULL;
+    g_bt_scan_btn = NULL;
     g_wifi_status_label = NULL;
     g_wifi_results_box = NULL;
     g_scan_btn = NULL;
@@ -2147,6 +2278,73 @@ static void enter_section(const char *id, const char *label) {
 
         /* Las acciones (Deauth/Handshake/PMKID/Clientes/Auditar) ya no son
          * botones sueltos: viven en el overlay que abre el boton "Acciones". */
+    } else if (strcmp(id, "bluetooth") == 0) {
+        /* Fase 3 - MVP: scan BR/EDR + LE con bt_ops.py (hci1 = USB RTL8821CU).
+         * Patron idem WiFi: boton Escanear + box de resultados + ▲▼. */
+        lv_obj_t *title = lv_label_create(g_body);
+        lv_label_set_text(title, "Bluetooth");
+        lv_obj_set_style_text_color(title, COLOR_OK, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
+
+        g_bt_scan_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_bt_scan_btn, 118, 34);
+        lv_obj_align(g_bt_scan_btn, LV_ALIGN_TOP_LEFT, 10, 28);
+        lv_obj_set_style_bg_color(g_bt_scan_btn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(g_bt_scan_btn, COLOR_OK, 0);
+        lv_obj_set_style_border_width(g_bt_scan_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_bt_scan_btn, 10);
+        lv_obj_add_event_cb(g_bt_scan_btn, bt_scan_btn_event_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(g_bt_scan_btn);
+        lv_obj_t *bsl = lv_label_create(g_bt_scan_btn);
+        lv_label_set_text(bsl, "Escanear (10s)");
+        lv_obj_set_style_text_color(bsl, COLOR_OK, 0);
+        lv_obj_set_style_text_font(bsl, &lv_font_montserrat_10, 0);
+        lv_obj_center(bsl);
+
+        g_bt_status_label = lv_label_create(g_body);
+        lv_label_set_text(g_bt_status_label, "Toca Escanear para buscar dispositivos BT");
+        lv_obj_set_style_text_color(g_bt_status_label, COLOR_DIM, 0);
+        lv_obj_set_style_text_font(g_bt_status_label, &lv_font_montserrat_10, 0);
+        lv_obj_align(g_bt_status_label, LV_ALIGN_TOP_MID, 0, 68);
+
+        g_bt_box = lv_obj_create(g_body);
+        lv_obj_set_size(g_bt_box, 390, 100);
+        lv_obj_align(g_bt_box, LV_ALIGN_TOP_LEFT, 10, 92);
+        lv_obj_set_style_bg_opa(g_bt_box, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(g_bt_box, 0, 0);
+        lv_obj_set_style_pad_all(g_bt_box, 0, 0);
+        lv_obj_set_style_pad_top(g_bt_box, 6, 0);
+        lv_obj_set_flex_flow(g_bt_box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(g_bt_box, 4, 0);
+
+        lv_obj_t *bup = lv_button_create(g_body);
+        lv_obj_set_size(bup, 40, 45);
+        lv_obj_align(bup, LV_ALIGN_TOP_RIGHT, -10, 88);
+        lv_obj_set_style_bg_color(bup, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(bup, COLOR_OK, 0);
+        lv_obj_set_style_border_width(bup, 2, 0);
+        lv_obj_set_ext_click_area(bup, 10);
+        lv_obj_add_event_cb(bup, bt_scroll_up_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(bup);
+        lv_obj_t *bupl = lv_label_create(bup);
+        lv_label_set_text(bupl, LV_SYMBOL_UP);
+        lv_obj_set_style_text_color(bupl, COLOR_OK, 0);
+        lv_obj_center(bupl);
+
+        lv_obj_t *bdn = lv_button_create(g_body);
+        lv_obj_set_size(bdn, 40, 45);
+        lv_obj_align(bdn, LV_ALIGN_TOP_RIGHT, -10, 140);
+        lv_obj_set_style_bg_color(bdn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(bdn, COLOR_OK, 0);
+        lv_obj_set_style_border_width(bdn, 2, 0);
+        lv_obj_set_ext_click_area(bdn, 10);
+        lv_obj_add_event_cb(bdn, bt_scroll_down_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(bdn);
+        lv_obj_t *bdnl = lv_label_create(bdn);
+        lv_label_set_text(bdnl, LV_SYMBOL_DOWN);
+        lv_obj_set_style_text_color(bdnl, COLOR_OK, 0);
+        lv_obj_center(bdnl);
+
     } else if (strcmp(id, "net_connect") == 0) {
         lv_obj_t *title = lv_label_create(g_body);
         lv_label_set_text(title, "Conectar Red (gestion / SSH)");

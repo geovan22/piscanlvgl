@@ -27,3 +27,11 @@ geo22 ALL=(ALL) NOPASSWD: /usr/bin/reaver
 geo22 ALL=(ALL) NOPASSWD: /usr/sbin/reaver
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/bully
 geo22 ALL=(ALL) NOPASSWD: /usr/sbin/bully
+# Fase 3 - Bluetooth: encender el controller (rfkill unblock + btmgmt power on)
+# y scan BR/EDR + LE (btmgmt find / hcitool). bluetoothctl habla por D-Bus (sin sudo).
+geo22 ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/rfkill
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/btmgmt
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/hcitool
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/sdptool
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/gatttool

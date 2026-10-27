@@ -104,6 +104,27 @@ class HoneypotLog(Base):
     pcap_path: Mapped[str] = mapped_column(String(160), nullable=True)    # #7 ruta del .pcap de la sesion
     details: Mapped[str] = mapped_column(Text, nullable=True)
 
+class BluetoothLog(Base):
+    """Dispositivos Bluetooth descubiertos (BR/EDR + LE). Una fila por device
+    observado en una sesion de scan. Marco: laboratorio / pruebas autorizadas."""
+    __tablename__ = "bluetooth_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    scan_type: Mapped[str] = mapped_column(String(16), nullable=True)     # classic | le | dual
+    iface: Mapped[str] = mapped_column(String(16), nullable=True)         # hci0 / hci1
+    mac: Mapped[str] = mapped_column(String(24), nullable=True)
+    addr_type: Mapped[str] = mapped_column(String(16), nullable=True)     # public | random
+    name: Mapped[str] = mapped_column(String(96), nullable=True)
+    vendor: Mapped[str] = mapped_column(String(32), nullable=True)        # OUI -> fabricante
+    rssi: Mapped[int] = mapped_column(Integer, nullable=True)             # dBm
+    tx_power: Mapped[int] = mapped_column(Integer, nullable=True)         # dBm (BLE adv)
+    appearance: Mapped[str] = mapped_column(String(48), nullable=True)    # BLE appearance (phone, ...)
+    cls: Mapped[str] = mapped_column(String(16), nullable=True)           # Class of Device (BR/EDR)
+    icon: Mapped[str] = mapped_column(String(32), nullable=True)          # bluez icon string
+    services: Mapped[str] = mapped_column(Text, nullable=True)            # lista de UUIDs (coma)
+    manufacturer_data: Mapped[str] = mapped_column(Text, nullable=True)   # company_id -> hex
+    details: Mapped[str] = mapped_column(Text, nullable=True)
+
 _engine = None
 _SessionLocal = None
 

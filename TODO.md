@@ -10,8 +10,44 @@
 ## Estado actual
 
 > **Fase 0 completa.** La Fase 1 está funcional; quedan pruebas de UI y
-> comprobaciones puntuales en la Pi. El siguiente paso es cerrar esas
-> validaciones y luego elegir el siguiente módulo del roadmap.
+> comprobaciones puntuales en la Pi. **Fase 3 — Bluetooth: MVP escrito y
+> validado en PC/Pi (compila, 41 tests OK). Pendiente de aplicar sudoers +
+> instalar rfkill en la Pi y validar el scan en pantalla.**
+
+## Fase 3 — Bluetooth (MVP iteración 1) — [~] a validar en Pi
+> Marco: laboratorio controlado / pruebas autorizadas. Controller elegido:
+> hci1 (USB RTL8821CU, mismo chip que wlan1). hci0 (onboard BCM43438, BT 5.0)
+> queda de respaldo. Ambos arrancan rfkill soft-blocked; se desbloquean con
+> `rfkill unblock bluetooth` + `btmgmt power on`.
+- [x] Modelo `BluetoothLog` en `app/db/models.py` (tabla nueva, create_all).
+- [x] `app/bluetooth/bt_ops.py` — power on/off, scan dual (BR/EDR + LE) con
+      `btmgmt find` + enriquecido con `bluetoothctl info`. Parsers puros
+      (btmgmt / bluetoothctl) y merge probados con 16 tests unitarios.
+- [x] Vendor por OUI (`data/oui.txt`) y etiqueta `(aleatoria)` para MAC
+      locally-administered (BLE privacy).
+- [x] Bridge C `app/bluetooth/bt_client.c/h` (`bt_client_scan`, `bt_client_power`).
+- [x] UI: sección **Bluetooth** nueva en el menú (entre WiFi y LAN), botón
+      "Escanear (10s)", lista con nombre/MAC/vendor/RSSI/tipo (LE/BR/DUAL),
+      scroll ▲▼. Hilo+poll (`ui_shell_poll_bluetooth`).
+- [x] diag.py: nuevos checks `bin/bluetooth` (bluetoothctl/btmgmt/hcitool/rfkill).
+- [x] sudoers versionado: + rfkill, btmgmt, hcitool, sdptool, gatttool.
+- [x] Compila en la Pi (HEAD con los nuevos .c/.h), tests 41/41 OK.
+- [ ] **Aplicar en la Pi (requiere el usuario, es sudo con password):**
+      - `sudo apt install -y rfkill`
+      - `sudo cp ~/piscanlvgl/systemd/sudoers-piscan-wifi /etc/sudoers.d/piscan-wifi && sudo chmod 440 /etc/sudoers.d/piscan-wifi`
+      - `sudo systemctl restart piscan`
+- [ ] Validar en pantalla: tocar Escanear en la sección Bluetooth y confirmar
+      que lista dispositivos (teléfono, parlante, reloj…) con MAC/nombre/RSSI.
+- [ ] Validar que `BluetoothLog` persiste filas (`sqlite3 data/piscan.db
+      "SELECT COUNT(*),MIN(timestamp),MAX(timestamp) FROM bluetooth_log"`).
+
+### Pendiente de iteración 2 (sin bloquear)
+- [ ] Tap en una fila → detalle (bluetoothctl info enriquecido, UUIDs con
+      etiqueta, Appearance, Class, Icon).
+- [ ] Enumeración GATT para dispositivos LE (`gatttool`/`bluetoothctl connect`).
+- [ ] Filtros por tipo (LE/BR/dual) o por nombre.
+- [ ] Reportes (Fase 8) → export de `bluetooth_log` a markdown/pdf.
+- [ ] `bleak` (apt o pip): opcional, API Python LE más limpia para el futuro.
 
 ## Mejora de precisión WiFi — [~] WPA3 real pendiente
 - [x] El parser conserva APs con SSID repetido, diferenciándolos por BSSID, y
