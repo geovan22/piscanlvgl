@@ -36,10 +36,11 @@ REQUIRED_BINARIES = [
     ("wash",          ["/usr/bin/wash", "/usr/sbin/wash"],      "wps",      False),
     ("reaver",        ["/usr/bin/reaver", "/usr/sbin/reaver"],  "wps",      False),
     ("bully",         ["/usr/bin/bully", "/usr/sbin/bully"],    "wps",      False),
-    # Bluetooth (Fase 3) — bluetoothctl viene con bluez; btmgmt/hcitool opcionales
-    # pero esperados en una instalacion con bluez-tools. rfkill es muy chico
-    # y lo necesitamos para desbloquear el controller.
+    # Bluetooth (Fase 3) — bluetoothctl viene con bluez; hciconfig es el que
+    # usamos para power on (btmgmt se cuelga con stdin=/dev/null). rfkill
+    # desbloquea el soft-block del controller.
     ("bluetoothctl",  ["/usr/bin/bluetoothctl"],                "bluetooth", False),
+    ("hciconfig",     ["/usr/bin/hciconfig", "/bin/hciconfig"], "bluetooth", False),
     ("btmgmt",        ["/usr/bin/btmgmt"],                      "bluetooth", False),
     ("hcitool",       ["/usr/bin/hcitool"],                     "bluetooth", False),
     ("rfkill",        ["/usr/sbin/rfkill", "/usr/bin/rfkill"],  "bluetooth", False),

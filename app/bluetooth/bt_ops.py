@@ -21,6 +21,7 @@ import sys, os, re, json, subprocess, time
 # Rutas absolutas de los binarios usados (coherente con wifi_ops.py / sudoers).
 BTMGMT       = "/usr/bin/btmgmt"
 BLUETOOTHCTL = "/usr/bin/bluetoothctl"
+HCICONFIG    = "/usr/bin/hciconfig"
 TIMEOUT_BIN  = "/usr/bin/timeout"
 STDBUF_BIN   = "/usr/bin/stdbuf"
 RFKILL_BIN   = "/usr/sbin/rfkill"
@@ -30,8 +31,14 @@ DEFAULT_IFACE = "hci1"
 
 
 def _run(cmd, timeout=15):
+    """Importante: pasamos stdin=DEVNULL siempre. Bajo systemd el servicio
+    corre con stdin cerrado y `btmgmt` (bluez 5.82) tiene un bug donde se
+    cuelga indefinidamente si no detecta un stdin TTY o un pipe abierto.
+    Confirmado 2026-10-27 reproduciendo `btmgmt info` con DEVNULL -> timeout.
+    hciconfig no sufre ese bug, por eso power_on/off usan hciconfig."""
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout, stdin=subprocess.DEVNULL)
     except Exception:
         return None
 
@@ -128,58 +135,53 @@ def _vendor_for(mac):
 # ---------------------------------------------------------------------------
 
 def power_on(iface=DEFAULT_IFACE):
-    """Enciende el controller: rfkill unblock (si rfkill esta) + btmgmt power on.
+    """Enciende el controller: rfkill unblock + hciconfig <iface> up.
+    Usamos hciconfig en vez de btmgmt porque btmgmt (bluez 5.82) se cuelga
+    con stdin cerrado (ver _run). hciconfig es idempotente y responde en ms.
     Devuelve (ok, msg)."""
-    idx = _iface_index(iface)
-    # 1) rfkill unblock (soft block). Si no esta instalado, intentamos tocar /sys.
+    _iface_index(iface)  # valida formato
+    # 1) rfkill unblock (soft block). Si no esta instalado, se omite.
     if os.path.exists(RFKILL_BIN):
-        _run([SUDO, '-n', RFKILL_BIN, 'unblock', 'bluetooth'])
-    else:
-        # Fallback best-effort: a veces /sys/class/rfkill/<N>/soft es escribible via sudo tee.
-        pass
-    # 2) power on via btmgmt (requiere sudo con NOPASSWD).
-    r = _run([SUDO, '-n', BTMGMT, '--index', idx, 'power', 'on'], timeout=10)
+        _run([SUDO, '-n', RFKILL_BIN, 'unblock', 'bluetooth'], timeout=5)
+    # 2) up via hciconfig (requiere sudo con NOPASSWD).
+    r = _run([SUDO, '-n', HCICONFIG, iface, 'up'], timeout=5)
     if r is None:
-        return False, "btmgmt power on: sin respuesta"
+        return False, "hciconfig up: sin respuesta (timeout)"
     out = (r.stdout or '') + (r.stderr or '')
-    if r.returncode != 0 or 'Permission Denied' in out or 'failed' in out.lower():
-        return False, f"power on fallo: {out.strip()[:200]}"
+    if r.returncode != 0 or 'Operation not permitted' in out or 'Can\'t' in out:
+        return False, f"hciconfig {iface} up fallo: {out.strip()[:200]}"
     return True, "powered on"
 
 
 def power_off(iface=DEFAULT_IFACE):
-    idx = _iface_index(iface)
-    r = _run([SUDO, '-n', BTMGMT, '--index', idx, 'power', 'off'], timeout=10)
+    _iface_index(iface)
+    r = _run([SUDO, '-n', HCICONFIG, iface, 'down'], timeout=5)
     if r is None:
-        return False, "btmgmt power off: sin respuesta"
+        return False, "hciconfig down: sin respuesta (timeout)"
     return (r.returncode == 0), (r.stdout or r.stderr or '').strip()[:200]
 
 
 def ctl_info(iface=DEFAULT_IFACE):
-    """Datos del controller: version, address, powered, etc."""
-    idx = _iface_index(iface)
-    r = _run([SUDO, '-n', BTMGMT, '--index', idx, 'info'], timeout=5)
+    """Datos del controller: address, UP/DOWN, flags. hciconfig -a es
+    estable con stdin=DEVNULL (btmgmt info se cuelga ahi). Mantiene las
+    mismas claves del return (iface, address, powered, raw) por compat."""
+    _iface_index(iface)
+    r = _run([SUDO, '-n', HCICONFIG, iface, '-a'], timeout=5)
     if r is None or r.returncode != 0:
         return None
     text = r.stdout or ''
     data = {"iface": iface, "raw": text.strip()[:600]}
-    m = re.search(r'addr\s+([0-9A-F:]{17})', text)
+    m = re.search(r'BD Address:\s+([0-9A-Fa-f:]{17})', text)
     if m: data["address"] = m.group(1)
-    m = re.search(r'version\s+(\d+)', text)
-    if m: data["version"] = int(m.group(1))
-    m = re.search(r'manufacturer\s+(\d+)', text)
-    if m: data["manufacturer"] = int(m.group(1))
-    m = re.search(r'name\s+([^\r\n]+)', text)
-    if m: data["name"] = m.group(1).strip()
-    m = re.search(r'current settings:\s*([^\r\n]+)', text)
-    if m: data["settings"] = m.group(1).strip()
-    data["powered"] = bool(data.get("settings") and 'powered' in data["settings"])
+    data["powered"] = ('UP RUNNING' in text) or ('\n\tUP ' in text)
     return data
 
 
 # ---------------------------------------------------------------------------
 # Parsers (pura logica, testeables sin tocar hardware)
 # ---------------------------------------------------------------------------
+
+_RX_ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 
 _RX_DEV_FOUND = re.compile(
     r'^hci\d+\s+dev_found:\s+'
@@ -193,6 +195,14 @@ _RX_AD_TX_POWER    = re.compile(r'\btx\s*power\s+(-?\d+)', re.I)
 _RX_AD_UUID        = re.compile(r'UUID[^0-9A-Fa-f]+([0-9A-Fa-f]{4,8}(?:-[0-9A-Fa-f]{4}){0,3}-?[0-9A-Fa-f]{0,12})')
 _RX_AD_MANUF       = re.compile(r'manufacturer(?:\s+specific)?\s+data\s+([0-9A-Fa-f ]+)', re.I)
 _RX_AD_APPEARANCE  = re.compile(r'\bappearance\s+(?:0x)?([0-9A-Fa-f]+)', re.I)
+
+# Eventos de bluetoothctl interactivo (btmgmt se cuelga con stdin=DEVNULL, por
+# eso scan() usa bluetoothctl en lugar de btmgmt find).
+_RX_BCTL_NEW   = re.compile(r'\[NEW\]\s+Device\s+([0-9A-F:]{17})\s+(.*)$')
+_RX_BCTL_DEL   = re.compile(r'\[DEL\]\s+Device\s+([0-9A-F:]{17})')
+_RX_BCTL_CHG_R = re.compile(r'\[CHG\]\s+Device\s+([0-9A-F:]{17})\s+RSSI(?:\s+is\s+now)?:[^\(]*\((-?\d+)\)')
+_RX_BCTL_CHG_N = re.compile(r'\[CHG\]\s+Device\s+([0-9A-F:]{17})\s+Name:\s+(.+?)\s*$')
+_RX_BCTL_LIST  = re.compile(r'^Device\s+([0-9A-F:]{17})\s+(.*)$')
 
 
 def parse_btmgmt_find(text):
@@ -368,12 +378,93 @@ def merge_bt_devices(base, info):
 # Scan
 # ---------------------------------------------------------------------------
 
+def parse_bluetoothctl_scan(text):
+    """Parsea el stdout de una sesion interactiva de bluetoothctl mientras
+    corre `scan on`. Reconoce eventos `[NEW] Device MAC [name]`, `[CHG] Device
+    MAC RSSI: 0x.. (-N)`, `[CHG] Device MAC Name: X`, `[DEL] Device MAC`, y
+    el listado final del comando `devices` (`Device MAC Name`). Devuelve lista
+    de dicts; nunca lanza."""
+    devs = {}
+    for raw_line in (text or '').splitlines():
+        line = _RX_ANSI.sub('', raw_line).strip()
+
+        m = _RX_BCTL_NEW.match(line)
+        if m:
+            mac = m.group(1).upper()
+            name = (m.group(2) or '').strip()
+            d = devs.setdefault(mac, {
+                "mac": mac, "addr_type": "", "kind": "le",
+                "rssi": None, "name": "", "tx_power": None,
+                "uuids": [], "manufacturer_data": "", "appearance": "",
+            })
+            # Si el "name" viene como MAC con guiones (bluez placeholder), descartar.
+            if name and name.upper() != mac.replace(':', '-') and not re.match(r'^[0-9A-F:-]+$', name):
+                d["name"] = name[:96]
+            continue
+
+        m = _RX_BCTL_CHG_R.match(line)
+        if m:
+            mac = m.group(1).upper()
+            try:
+                rssi = int(m.group(2))
+            except Exception:
+                rssi = None
+            d = devs.setdefault(mac, {"mac": mac, "addr_type": "", "kind": "le",
+                                      "rssi": None, "name": "", "tx_power": None,
+                                      "uuids": [], "manufacturer_data": "",
+                                      "appearance": ""})
+            if rssi is not None:
+                d["rssi"] = rssi
+            continue
+
+        m = _RX_BCTL_CHG_N.match(line)
+        if m:
+            mac = m.group(1).upper()
+            name = m.group(2).strip()
+            d = devs.setdefault(mac, {"mac": mac, "addr_type": "", "kind": "le",
+                                      "rssi": None, "name": "", "tx_power": None,
+                                      "uuids": [], "manufacturer_data": "",
+                                      "appearance": ""})
+            if name and not re.match(r'^[0-9A-F:-]+$', name):
+                d["name"] = name[:96]
+            continue
+
+        m = _RX_BCTL_DEL.match(line)
+        if m:
+            # un peer salio de rango; lo dejamos (ya lo vimos). no-op.
+            continue
+
+        m = _RX_BCTL_LIST.match(line)
+        if m:
+            mac = m.group(1).upper()
+            name = (m.group(2) or '').strip()
+            d = devs.setdefault(mac, {"mac": mac, "addr_type": "", "kind": "le",
+                                      "rssi": None, "name": "", "tx_power": None,
+                                      "uuids": [], "manufacturer_data": "",
+                                      "appearance": ""})
+            if not d["name"] and name and name.upper() != mac.replace(':', '-'):
+                if not re.match(r'^[0-9A-F:-]+$', name):
+                    d["name"] = name[:96]
+            continue
+    return list(devs.values())
+
+
+def _bd_address(iface):
+    """iface -> BD address (ej 'B8:27:EB:B3:66:DB'), o '' si no se puede."""
+    info = ctl_info(iface)
+    return info.get("address", "") if info else ""
+
+
 def scan(iface=DEFAULT_IFACE, seconds=10, mode='dual'):
-    """Barrido de dispositivos BT. Enciende el controller, corre btmgmt find
-    durante `seconds` y enriquece con bluetoothctl info. Devuelve
-    (devices, err)."""
+    """Barrido de dispositivos BT con bluetoothctl interactivo. Devuelve
+    (devices, err).
+
+    Importante: NO usamos `btmgmt find` porque btmgmt 5.82 se cuelga cuando
+    stdin es /dev/null (confirmado el 2026-10-27 bajo systemd). bluetoothctl
+    por D-Bus no sufre ese bug y ademas da RSSI + nombres resueltos cuando
+    el scan sigue activo."""
     try:
-        idx = _iface_index(iface)
+        _iface_index(iface)
     except ValueError as e:
         return None, str(e)
     seconds = max(2, min(int(seconds or 10), 120))
@@ -383,35 +474,46 @@ def scan(iface=DEFAULT_IFACE, seconds=10, mode='dual'):
     if not ok:
         return None, f"No se pudo encender el controller: {msg}"
 
-    args = [SUDO, '-n', TIMEOUT_BIN, str(seconds + 1),
-            STDBUF_BIN, '-oL', '-eL',
-            BTMGMT, '--index', idx, 'find']
-    if mode == 'le':
-        args.append('-l')
-    elif mode == 'classic':
-        args.append('-b')
-    # dual: sin flag (default es BR/EDR + LE)
+    bd = _bd_address(iface)
+    if not bd:
+        return None, f"No se pudo obtener BD address de {iface}"
 
-    r = _run(args, timeout=seconds + 10)
-    raw = ((r.stdout if r else '') or '') + ((r.stderr if r else '') or '')
-    found = parse_btmgmt_find(raw)
+    # bluetoothctl interactivo: select <bd> + scan on + sleep + scan off + devices + quit.
+    proc = subprocess.Popen(
+        [BLUETOOTHCTL],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, bufsize=1,
+    )
+    out = ""
+    try:
+        proc.stdin.write(f"select {bd}\n")
+        proc.stdin.write("scan on\n")
+        proc.stdin.flush()
+        time.sleep(seconds)
+        proc.stdin.write("scan off\n")
+        proc.stdin.write("devices\n")
+        proc.stdin.flush()
+        time.sleep(0.6)
+        proc.stdin.write("quit\n")
+        proc.stdin.flush()
+        try:
+            out, _ = proc.communicate(timeout=seconds + 10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
+    except Exception as e:
+        try: proc.kill()
+        except Exception: pass
+        return None, f"bluetoothctl fallo: {e}"
 
-    # Enriquecer con bluetoothctl info (sin sudo; habla con bluez por D-Bus).
-    enriched = []
+    found = parse_bluetoothctl_scan(out)
+    # Vendor (OUI o '(aleatoria)') por cada MAC.
     for d in found:
-        info_text = ""
-        rr = _run([BLUETOOTHCTL, '--timeout', '2', 'info', d["mac"]], timeout=8)
-        if rr and rr.stdout:
-            info_text = rr.stdout
-        info = parse_bluetoothctl_info(info_text) if info_text else {}
-        merged = merge_bt_devices(d, info)
-        # vendor (OUI o 'aleatoria')
-        merged["vendor"] = _vendor_for(merged["mac"])
-        enriched.append(merged)
+        d["vendor"] = _vendor_for(d["mac"])
 
-    # Log en DB (best-effort; nunca tumba el scan)
-    log_bluetooth_batch(iface, mode, enriched)
-    return enriched, None
+    # Log en DB (best-effort; nunca tumba el scan).
+    log_bluetooth_batch(iface, mode, found)
+    return found, None
 
 
 # ---------------------------------------------------------------------------

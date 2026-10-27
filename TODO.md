@@ -75,12 +75,31 @@
       `bt_iface` a hci0 en Config y confirmar que el próximo scan usa el onboard.
 
 ### Pendiente de iteración 2 (sin bloquear)
-- [ ] Tap en una fila → detalle (bluetoothctl info enriquecido, UUIDs con
-      etiqueta, Appearance, Class, Icon).
+- [ ] **RSSI por device**: hoy el scan deja `rssi=None`. Causa: bluetoothctl
+      en modo no-interactivo NO emite `[CHG] RSSI` eventos; solo `[NEW] Device`.
+      Fix propuesto: durante la sesión interactiva, después de `devices`, lanzar
+      `info <mac>` por cada MAC MIENTRAS el scan sigue activo — ahí la línea
+      `RSSI: 0xff... (-N)` sí aparece. Requiere un reader thread en el Popen
+      (ya el parser `parse_bluetoothctl_info` existe y extrae RSSI).
+- [ ] UUIDs resueltos + Appearance + Class + Icon (vienen del mismo `info`).
+- [ ] Tap en una fila → detalle (bluetoothctl info enriquecido).
 - [ ] Enumeración GATT para dispositivos LE (`gatttool`/`bluetoothctl connect`).
 - [ ] Filtros por tipo (LE/BR/dual) o por nombre.
 - [ ] Reportes (Fase 8) → export de `bluetooth_log` a markdown/pdf.
 - [ ] `bleak` (apt o pip): opcional, API Python LE más limpia para el futuro.
+
+### Lecciones del día (2026-10-27, iteración 1.5)
+- **btmgmt 5.82 se cuelga con stdin=/dev/null**: `btmgmt info` o `btmgmt find`
+  con `stdin=DEVNULL` (igual que bajo systemd) jamás retornan. Con TTY/pipe
+  responden en 0.08s. `_run()` ahora pasa `stdin=DEVNULL` explícito para
+  reproducir el entorno del servicio y detectar estos cuelgues con timeout.
+  Fix: `power_on/off` y `ctl_info` usan **hciconfig** (idempotente, no sufre
+  el bug); `scan` usa **bluetoothctl** interactivo con `select <bd>`.
+- Al parser que uso ahora, el toggle `bt_iface` (Config) sí llega al scan: el
+  wrapper hace `select <BD>` dentro del mismo bluetoothctl antes de `scan on`,
+  así que hci0 vs hci1 se honra end-to-end.
+- Comprobado en vivo: hci0 (BT 5.0 onboard) ve ~11 dispositivos en 6s;
+  hci1 (USB RTL8821CU, BT 4.2) ve ~2. Confirma lo esperado.
 
 ## Mejora de precisión WiFi — [~] WPA3 real pendiente
 - [x] El parser conserva APs con SSID repetido, diferenciándolos por BSSID, y

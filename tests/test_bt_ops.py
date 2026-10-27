@@ -145,71 +145,105 @@ class VendorTests(unittest.TestCase):
 
 
 class PowerOnTests(unittest.TestCase):
-    def test_power_on_calls_sudo_btmgmt_with_iface_index(self):
+    def test_power_on_calls_sudo_hciconfig_up(self):
         calls = []
 
         def fake_run(cmd, timeout=15):
             calls.append(cmd)
-            return SimpleNamespace(returncode=0, stdout="hci1 power on complete",
-                                   stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch.object(bt_ops, "_run", side_effect=fake_run):
             ok, msg = bt_ops.power_on("hci1")
         self.assertTrue(ok)
-        # algun call tiene que ser el btmgmt power on con --index 1
+        # hubo una call con hciconfig hci1 up
         self.assertTrue(any(
-            bt_ops.BTMGMT in c and 'power' in c and 'on' in c and '1' in c
+            bt_ops.HCICONFIG in c and 'hci1' in c and 'up' in c
             for c in calls
         ))
 
-    def test_power_on_reports_failure_when_sudo_denies(self):
+    def test_power_on_reports_failure_when_hciconfig_rejects(self):
         def fake_run(cmd, timeout=15):
-            return SimpleNamespace(returncode=1, stdout="",
-                                   stderr="Permission Denied")
+            if bt_ops.HCICONFIG in cmd:
+                return SimpleNamespace(returncode=1, stdout="",
+                                       stderr="Can't init device hci1: Operation not permitted")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch.object(bt_ops, "_run", side_effect=fake_run):
             ok, msg = bt_ops.power_on("hci1")
         self.assertFalse(ok)
-        self.assertIn("Permission Denied", msg)
+        self.assertIn("Operation not permitted", msg)
 
 
-class ScanIntegrationTests(unittest.TestCase):
-    def test_scan_returns_parsed_devices_without_touching_hardware(self):
-        """Mock del subprocess de btmgmt y bluetoothctl: el scan reconstruye la
-        lista y la enriquece sin apagar nada, y nunca escribe en DB real."""
-        def fake_run(cmd, timeout=15):
-            # power_on -> btmgmt power on
-            if BTMGMT_IN(cmd) and 'power' in cmd:
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
-            if BTMGMT_IN(cmd) and 'find' in cmd:
-                return SimpleNamespace(returncode=0, stdout=BTMGMT_SAMPLE,
-                                       stderr="")
-            if cmd and cmd[0] == bt_ops.BLUETOOTHCTL:
-                mac = cmd[-1]
-                if mac == "7C:D1:C3:AA:BB:CC":
-                    return SimpleNamespace(returncode=0,
-                                           stdout=BTCTL_INFO_SAMPLE, stderr="")
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+BCTL_SCAN_SAMPLE = """\
+Agent registered
+[\x1b[0;93mCHG\x1b[0m] Controller FC:22:1C:50:2F:D4 Pairable: yes
+[bluetooth]# select B8:27:EB:B3:66:DB
+Controller B8:27:EB:B3:66:DB geo22 [default]
+[bluetooth]# scan on
+SetDiscoveryFilter success
+Discovery started
+[\x1b[0;93mCHG\x1b[0m] Controller B8:27:EB:B3:66:DB Discovering: yes
+[\x1b[0;92mNEW\x1b[0m] Device 60:45:C9:BE:F8:D0 LAP-1MJLWG3
+[\x1b[0;93mCHG\x1b[0m] Device 60:45:C9:BE:F8:D0 RSSI: 0xffffffbc (-68)
+[\x1b[0;92mNEW\x1b[0m] Device 38:3B:C5:4A:89:BF 38-3B-C5-4A-89-BF
+[\x1b[0;93mCHG\x1b[0m] Device 38:3B:C5:4A:89:BF RSSI: 0xffffffa8 (-88)
+[\x1b[0;93mCHG\x1b[0m] Device 38:3B:C5:4A:89:BF Name: Mi-Reloj
+[\x1b[0;91mDEL\x1b[0m] Device 11:22:33:44:55:66 11-22-33-44-55-66
+[bluetooth]# scan off
+Discovery stopped
+[bluetooth]# devices
+Device 60:45:C9:BE:F8:D0 LAP-1MJLWG3
+Device 38:3B:C5:4A:89:BF Mi-Reloj
+Device 00:04:EA:10:20:40 TV-Living
+[bluetooth]# quit
+"""
 
-        def BTMGMT_IN(cmd):
-            return bt_ops.BTMGMT in cmd
 
-        with patch.object(bt_ops, "_run", side_effect=fake_run), \
-             patch.object(bt_ops, "log_bluetooth_batch", lambda *a, **kw: None):
+class ParseBluetoothctlScanTests(unittest.TestCase):
+    def test_parses_three_distinct_devices(self):
+        devs = {d["mac"]: d for d in bt_ops.parse_bluetoothctl_scan(BCTL_SCAN_SAMPLE)}
+        self.assertIn("60:45:C9:BE:F8:D0", devs)
+        self.assertIn("38:3B:C5:4A:89:BF", devs)
+        self.assertIn("00:04:EA:10:20:40", devs)
+
+    def test_rssi_captured_from_chg_event(self):
+        devs = {d["mac"]: d for d in bt_ops.parse_bluetoothctl_scan(BCTL_SCAN_SAMPLE)}
+        self.assertEqual(devs["60:45:C9:BE:F8:D0"]["rssi"], -68)
+        self.assertEqual(devs["38:3B:C5:4A:89:BF"]["rssi"], -88)
+
+    def test_name_from_new_or_chg_name_event(self):
+        devs = {d["mac"]: d for d in bt_ops.parse_bluetoothctl_scan(BCTL_SCAN_SAMPLE)}
+        # [NEW] trajo nombre real
+        self.assertEqual(devs["60:45:C9:BE:F8:D0"]["name"], "LAP-1MJLWG3")
+        # [NEW] trajo MAC con guiones (placeholder) -> [CHG] Name la resuelve
+        self.assertEqual(devs["38:3B:C5:4A:89:BF"]["name"], "Mi-Reloj")
+
+    def test_mac_placeholder_name_not_leaked(self):
+        """Un [NEW] con 'name' igual a la MAC con guiones no debe guardarse
+        como name real (bluetoothctl lo usa como placeholder)."""
+        sample = "[NEW] Device AA:BB:CC:DD:EE:FF AA-BB-CC-DD-EE-FF\n"
+        devs = bt_ops.parse_bluetoothctl_scan(sample)
+        self.assertEqual(devs[0]["name"], "")
+
+    def test_empty_input_returns_empty_list(self):
+        self.assertEqual(bt_ops.parse_bluetoothctl_scan(""), [])
+        self.assertEqual(bt_ops.parse_bluetoothctl_scan(None), [])
+
+
+class ScanDispatchTests(unittest.TestCase):
+    def test_scan_fails_fast_when_power_on_fails(self):
+        """Si hciconfig up falla, scan devuelve error sin tocar bluetoothctl."""
+        with patch.object(bt_ops, "power_on", return_value=(False, "no sudo")):
             devs, err = bt_ops.scan("hci1", 3, "dual")
+        self.assertIsNone(devs)
+        self.assertIn("no sudo", err)
 
-        self.assertIsNone(err)
-        self.assertEqual(len(devs), 3)
-        watch = next(d for d in devs if d["mac"] == "7C:D1:C3:AA:BB:CC")
-        self.assertEqual(watch["name"], "Mi-Reloj")
-        self.assertTrue(any("Battery Service" in u for u in watch["uuids"]))
-        # vendor depende del OUI local: en Windows (sin ieee-data) queda vacio,
-        # en la Pi (con data/oui.txt) resuelve "Apple, Inc." para 7C:D1:C3. Lo
-        # importante es que la clave existe y es un string.
-        self.assertIsInstance(watch.get("vendor"), str)
-        parlante = next(d for d in devs if d["mac"] == "00:1A:7D:12:34:56")
-        self.assertEqual(parlante["kind"], "classic")
+    def test_scan_fails_when_bd_address_unknown(self):
+        with patch.object(bt_ops, "power_on", return_value=(True, "")), \
+             patch.object(bt_ops, "_bd_address", return_value=""):
+            devs, err = bt_ops.scan("hci1", 3, "dual")
+        self.assertIsNone(devs)
+        self.assertIn("BD address", err)
 
 
 if __name__ == "__main__":
