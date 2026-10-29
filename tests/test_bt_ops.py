@@ -473,6 +473,24 @@ class DeviceTypeTests(unittest.TestCase):
 
 
 class BlePayloadTests(unittest.TestCase):
+    def test_hci_command_uses_absolute_hcitool_path(self):
+        calls = []
+
+        def fake_run(cmd, timeout=15):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(bt_ops, "_run", side_effect=fake_run):
+            bt_ops._hci("hci0", 0x000A, [0x00])
+
+        self.assertTrue(calls)
+        self.assertEqual(calls[0][0:4],
+                         ["/usr/bin/sudo", "-n", "/usr/bin/hcitool", "-i"])
+        self.assertEqual(calls[0][4], "hci0")
+        self.assertIn("0x08", calls[0])
+        self.assertIn("0x000a", calls[0])
+        self.assertIn("00", calls[0])
+
     def test_loads_target_payload_files(self):
         for mode in ("apple", "google", "microsoft", "samsung"):
             payloads = bt_ops._load_payloads(mode)

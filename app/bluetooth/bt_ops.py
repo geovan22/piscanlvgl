@@ -22,6 +22,7 @@ import sys, os, re, json, subprocess, time, threading, random, datetime
 BTMGMT       = "/usr/bin/btmgmt"
 BLUETOOTHCTL = "/usr/bin/bluetoothctl"
 HCICONFIG    = "/usr/bin/hciconfig"
+HCITOOL      = "/usr/bin/hcitool"
 SDPTOOL      = "/usr/bin/sdptool"
 L2PING       = "/usr/bin/l2ping"
 BTMON        = "/usr/bin/btmon"
