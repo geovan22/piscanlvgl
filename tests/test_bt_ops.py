@@ -491,13 +491,66 @@ class BlePayloadTests(unittest.TestCase):
         self.assertIn("0x000a", calls[0])
         self.assertIn("00", calls[0])
 
+    def test_hci_status_parses_command_complete(self):
+        ok = ("< HCI Command: ogf 0x08, ocf 0x000a, plen 1\n"
+              "  01 \n"
+              "> HCI Event: 0x0e plen 4\n"
+              "  01 0A 20 00 \n")
+        self.assertEqual(bt_ops._hci_status(ok), 0x00)
+        disallowed = ("> HCI Event: 0x0e plen 4\n"
+                      "  01 0A 20 0C \n")
+        self.assertEqual(bt_ops._hci_status(disallowed), 0x0C)
+        # Command Status (0x0f): el status es el 1er byte.
+        cmd_status = ("> HCI Event: 0x0f plen 4\n"
+                      "  0C 01 06 20 \n")
+        self.assertEqual(bt_ops._hci_status(cmd_status), 0x0C)
+        self.assertIsNone(bt_ops._hci_status(""))
+
+    def test_hci_ok_fails_on_nonzero_status_despite_returncode_zero(self):
+        # hcitool sale con returncode 0 aunque el controller rechace: _hci_ok
+        # debe detectar el status 0x0C y devolver ok=False.
+        rejected = SimpleNamespace(returncode=0, stdout=(
+            "> HCI Event: 0x0e plen 4\n  01 0A 20 0C \n"), stderr="")
+        ok, st = bt_ops._hci_ok(rejected)
+        self.assertFalse(ok)
+        self.assertEqual(st, 0x0C)
+        # Sin stdout legible caemos al returncode (compat tests existentes).
+        ok2, st2 = bt_ops._hci_ok(SimpleNamespace(returncode=0, stdout="", stderr=""))
+        self.assertTrue(ok2)
+        self.assertIsNone(st2)
+
+    def test_ble_spam_surfaces_hci_disallowed_status(self):
+        # Todos los comandos salen con returncode 0 PERO el enable responde
+        # 0x0C: el spam debe reportar 0 cycles y el status real en el error.
+        def fake_hci(iface, ocf, data, timeout=3):
+            if ocf == 0x000A and list(data) == [0x01]:
+                return SimpleNamespace(returncode=0, stdout=(
+                    "> HCI Event: 0x0e plen 4\n  01 0A 20 0C \n"), stderr="")
+            return SimpleNamespace(returncode=0, stdout=(
+                "> HCI Event: 0x0e plen 4\n  01 00 00 00 \n"), stderr="")
+
+        with patch.object(bt_ops, "power_on", return_value=(True, "")), \
+             patch.object(bt_ops, "_hci", side_effect=fake_hci), \
+             patch.object(bt_ops.time, "sleep", return_value=None), \
+             patch.object(bt_ops.time, "time", side_effect=[0, 1, 3]), \
+             patch.object(bt_ops, "log_bt_attack", lambda *a, **kw: None):
+            data, err = bt_ops.ble_spam("hci0", 2, "random")
+
+        self.assertEqual(data["cycles"], 0)
+        self.assertEqual(data["hci_status"], 0x0C)
+        self.assertEqual(data["hci_status_name"], "command disallowed")
+        self.assertIn("command disallowed", err)
+
     def test_ble_spam_reports_rejected_advertising_commands(self):
+        # Orden de llamadas a _hci en modo random (1 ciclo): setup disable,
+        # setup params, [ciclo] disable, data, enable, [teardown] disable.
         replies = iter([
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
-            SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),
-            SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # setup disable
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # setup params
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # ciclo disable
+            SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),  # data
+            SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),  # enable
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # teardown disable
         ])
 
         with patch.object(bt_ops, "power_on", return_value=(True, "")), \

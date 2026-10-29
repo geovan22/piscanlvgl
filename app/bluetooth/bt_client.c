@@ -417,6 +417,7 @@ int bt_client_ble_spam(const char *iface, int seconds, const char *mode,
     cJSON *last = cJSON_GetObjectItemCaseSensitive(root, "last_name");
     cJSON *modej = cJSON_GetObjectItemCaseSensitive(root, "mode");
     cJSON *secj = cJSON_GetObjectItemCaseSensitive(root, "seconds");
+    cJSON *warn = cJSON_GetObjectItemCaseSensitive(root, "warn");
     int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
     int used = 0;
     out_text[0] = '\0';
@@ -437,6 +438,12 @@ int bt_client_ble_spam(const char *iface, int seconds, const char *mode,
             cJSON_IsString(modej) ? modej->valuestring : "?",
             sc, cy, un,
             (cJSON_IsString(last) && last->valuestring[0]) ? last->valuestring : "-");
+    /* Si no salio ningun advert al aire (cy==0) y el backend adjunto un
+       diagnostico (p.ej. HCI status 0x0C command disallowed), lo mostramos:
+       sin esto la UI solo decia "ciclos=0" sin causa. */
+    if (cy == 0 && cJSON_IsString(warn) && warn->valuestring[0]) {
+        _append(out_text, out_size, &used, "\n%s", warn->valuestring);
+    }
     cJSON_Delete(root);
     return cy > 0 ? 1 : 0;
 }
