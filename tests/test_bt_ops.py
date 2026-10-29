@@ -528,6 +528,20 @@ class BlePayloadTests(unittest.TestCase):
         self.assertGreaterEqual(len(payload), 3)
         self.assertEqual(payload[:3], b"\x02\x01\x06")
 
+    def test_samsung_buds_payload_matches_bruce_format(self):
+        payload = bt_ops._build_samsung_buds_payload()
+        self.assertEqual(len(payload), 31)
+        self.assertEqual(payload[:7],
+                         b"\x1b\xff\x75\x00\x42\x09\x81")
+        self.assertEqual(payload[28:], b"\x10\xff\x75")
+
+    def test_random_static_address_has_random_static_bits(self):
+        address = bt_ops._random_static_address()
+        self.assertEqual(len(address), 6)
+        # HCI recibe el address little-endian; el octeto mas significativo
+        # contiene los bits 11 de una random static address.
+        self.assertGreaterEqual(address[0], 0xC0)
+
 
 class BtsnoopPacketCountTests(unittest.TestCase):
     def test_counts_complete_records_and_rejects_bad_header(self):

