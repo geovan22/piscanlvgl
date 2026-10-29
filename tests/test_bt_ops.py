@@ -491,6 +491,27 @@ class BlePayloadTests(unittest.TestCase):
         self.assertIn("0x000a", calls[0])
         self.assertIn("00", calls[0])
 
+    def test_ble_spam_reports_rejected_advertising_commands(self):
+        replies = iter([
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),
+            SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ])
+
+        with patch.object(bt_ops, "power_on", return_value=(True, "")), \
+             patch.object(bt_ops, "_hci", side_effect=lambda *a, **kw: next(replies)), \
+             patch.object(bt_ops.time, "sleep", return_value=None), \
+             patch.object(bt_ops.time, "time", side_effect=[0, 1, 3]), \
+             patch.object(bt_ops, "log_bt_attack", lambda *a, **kw: None):
+            data, err = bt_ops.ble_spam("hci0", 2, "random")
+
+        self.assertIsNotNone(data)
+        self.assertEqual(data["cycles"], 0)
+        self.assertGreater(data["failed_commands"], 0)
+        self.assertIn("rechazadas", err)
+
     def test_loads_target_payload_files(self):
         for mode in ("apple", "google", "microsoft", "samsung"):
             payloads = bt_ops._load_payloads(mode)
