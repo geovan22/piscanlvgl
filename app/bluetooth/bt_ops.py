@@ -1615,6 +1615,96 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
 
 
 # ---------------------------------------------------------------------------
+# BLE beacon (iBeacon / Eddystone-URL) — advertising ESTATICO no-conectable.
+# A diferencia del spam (rota + conectable para popups), un beacon emite UNA
+# trama fija no-conectable (ADV_NONCONN_IND) por `seconds`. SOLO lab.
+# ---------------------------------------------------------------------------
+
+# UUID iBeacon por defecto de PiScan (identificable: "PISCAN" en los 1ros bytes).
+_IBEACON_UUID = bytes([0x50, 0x49, 0x53, 0x43, 0x41, 0x4E, 0x00, 0x00,
+                       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01])
+
+
+def _build_ibeacon_payload(major, minor, uuid=_IBEACON_UUID, txpow=0xC5):
+    """Apple iBeacon (30 bytes con flags). Lo leen las apps 'beacon scanner'.
+    Estructura: Flags | len FF 4C00 0215 <UUID 16> <major 2> <minor 2> <tx 1>."""
+    maj = [(int(major) >> 8) & 0xFF, int(major) & 0xFF]
+    mnr = [(int(minor) >> 8) & 0xFF, int(minor) & 0xFF]
+    body = (bytes([0x4C, 0x00, 0x02, 0x15]) + bytes(uuid)
+            + bytes(maj) + bytes(mnr) + bytes([txpow & 0xFF]))
+    return bytes([0x02, 0x01, 0x06, len(body) + 1, 0xFF]) + body
+
+
+def _build_eddystone_url_payload(url=b"piscan.lab", scheme=0x03, txpow=0x00):
+    """Eddystone-URL (Google). scheme 0x03 = 'https://'. `url` sin el prefijo.
+    Estructura: Flags | 0303 AAFE | <len> 16 AAFE 10 <tx> <scheme> <url>."""
+    if isinstance(url, str):
+        url = url.encode('ascii', errors='ignore')
+    frame = bytes([0x10, txpow & 0xFF, scheme & 0xFF]) + bytes(url[:17])
+    sd = bytes([len(frame) + 3, 0x16, 0xAA, 0xFE]) + frame
+    uuidlist = bytes([0x03, 0x03, 0xAA, 0xFE])
+    return bytes([0x02, 0x01, 0x06]) + uuidlist + sd
+
+
+def ble_beacon(iface=DEFAULT_IFACE, seconds=30, btype="ibeacon",
+               major=0, minor=0):
+    """Emite un beacon BLE fijo (iBeacon o Eddystone-URL) por `seconds`.
+    No-conectable, MAC publica, sin rotacion. Verificable con cualquier app de
+    beacon scanner (o lescan desde el otro radio). SOLO lab."""
+    try:
+        _iface_index(iface)
+    except ValueError as e:
+        return None, str(e)
+    seconds = max(2, min(int(seconds or 30), 600))
+    btype = (btype or "ibeacon").lower()
+    major = max(0, min(int(major or 0), 0xFFFF))
+    minor = max(0, min(int(minor or 0), 0xFFFF))
+
+    ok, msg = power_on(iface)
+    if not ok:
+        return None, f"No se pudo encender {iface}: {msg}"
+
+    if btype.startswith("edd"):
+        payload = _build_eddystone_url_payload()
+        btype = "eddystone"
+        label = "eddystone-url=https://piscan.lab"
+    else:
+        payload = _build_ibeacon_payload(major, minor)
+        btype = "ibeacon"
+        label = f"ibeacon major={major} minor={minor}"
+
+    # disable -> params (ADV_NONCONN_IND 0x03, MAC publica) -> data -> enable.
+    _hci(iface, 0x000A, [0x00])
+    ok_par, st_par = _hci_ok(_hci(iface, 0x0006, [
+        0xA0, 0x00, 0xA0, 0x00, 0x03, 0x00,   # adv_type=0x03 no-conectable
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00]))
+    padded = payload + bytes(31 - len(payload))
+    ok_data, st_data = _hci_ok(_hci(iface, 0x0008, [len(payload)] + list(padded)))
+    ok_en, st_en = _hci_ok(_hci(iface, 0x000A, [0x01]))
+
+    bad = None
+    for st in (st_en, st_data, st_par):
+        if st not in (None, 0x00):
+            bad = st
+            break
+    if not (ok_par and ok_data and ok_en):
+        _hci(iface, 0x000A, [0x00])
+        err = f"hcitool: el controller rechazo el beacon{_hci_describe(bad)}"
+        log_bt_attack("ble_beacon", "", "fail",
+                      details=f"iface={iface} type={btype} {label} {err}")
+        return {"iface": iface, "type": btype, "seconds": seconds,
+                "label": label, "on_air": False, "hci_status": bad}, err
+
+    # En el aire: mantener la trama por `seconds`, luego apagar.
+    time.sleep(seconds)
+    _hci(iface, 0x000A, [0x00])
+    log_bt_attack("ble_beacon", "", "ok",
+                  details=f"iface={iface} type={btype} {label} secs={seconds}")
+    return {"iface": iface, "type": btype, "seconds": seconds,
+            "label": label, "on_air": True, "hci_status": None}, None
+
+
+# ---------------------------------------------------------------------------
 # btmon capture (sniffer HCI; genera archivo .btsnoop compatible Wireshark)
 # ---------------------------------------------------------------------------
 
@@ -1730,7 +1820,7 @@ def _emit(obj):
 
 def main():
     if len(sys.argv) < 2:
-        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|show|sdp|gatt|l2ping|spam|capture> [args]"})
+        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|show|sdp|gatt|l2ping|spam|beacon|capture> [args]"})
         sys.exit(1)
     cmd = sys.argv[1]
     iface = DEFAULT_IFACE
@@ -1825,6 +1915,21 @@ def main():
             # eso el err va como "warn": asi el diagnostico HCI llega a la UI en
             # vez de perderse (si no, solo se veria "ciclos=0" sin causa).
             _emit({"ok": True, "warn": err, **(data or {})})
+        elif cmd == 'beacon':
+            # bt_ops.py beacon [iface] [seconds] [type] [major] [minor]
+            args = sys.argv[2:]
+            if args and re.match(r'^hci\d+$', args[0]):
+                args = args[1:]
+            secs  = int(args[0]) if args and args[0].isdigit() else 30
+            btype = args[1] if len(args) > 1 else "ibeacon"
+            major = int(args[2]) if len(args) > 2 and args[2].isdigit() else 0
+            minor = int(args[3]) if len(args) > 3 and args[3].isdigit() else 0
+            data, err = ble_beacon(iface, secs, btype, major, minor)
+            if err and not data:
+                _emit({"ok": False, "error": err})
+                sys.exit(1)
+            _emit({"ok": bool(data and data.get("on_air")),
+                   "warn": err, **(data or {})})
         elif cmd == 'capture':
             # bt_ops.py capture [iface] [seconds]
             args = sys.argv[2:]

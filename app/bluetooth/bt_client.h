@@ -69,4 +69,11 @@ int bt_client_ble_spam(const char *iface, int seconds, const char *mode,
 int bt_client_capture(const char *iface, int seconds,
                       char *out_text, int out_size);
 
+/* BLE beacon estatico (no-conectable) por `seconds`. btype: "ibeacon" o
+ * "eddystone". Para iBeacon usa major/minor (0..65535); Eddystone los ignora.
+ * Devuelve 1 si quedo en el aire. SOLO lab. */
+int bt_client_ble_beacon(const char *iface, int seconds, const char *btype,
+                         int major, int minor,
+                         char *out_text, int out_size);
+
 #endif

@@ -520,6 +520,60 @@ int bt_client_capture(const char *iface, int seconds,
     return sz > 0 ? 1 : 0;
 }
 
+int bt_client_ble_beacon(const char *iface, int seconds, const char *btype,
+                         int major, int minor,
+                         char *out_text, int out_size) {
+    if (!out_text || out_size < 32) return 0;
+    const char *ifs = (iface && iface[0]) ? iface : BT_DEFAULT_IFACE;
+    const char *bt  = (btype && btype[0]) ? btype : "ibeacon";
+    char ss[8], mj[8], mn[8];
+    snprintf(ss, sizeof(ss), "%d", seconds > 0 ? seconds : 30);
+    snprintf(mj, sizeof(mj), "%d", major < 0 ? 0 : (major > 65535 ? 65535 : major));
+    snprintf(mn, sizeof(mn), "%d", minor < 0 ? 0 : (minor > 65535 ? 65535 : minor));
+    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "beacon",
+                     (char *)ifs, ss, (char *)bt, mj, mn, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        snprintf(out_text, out_size, "Beacon: no se pudo ejecutar bt_ops.py");
+        return 0;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        snprintf(out_text, out_size, "Beacon: JSON invalido");
+        return 0;
+    }
+    cJSON *ok    = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    cJSON *err   = cJSON_GetObjectItemCaseSensitive(root, "error");
+    cJSON *warn  = cJSON_GetObjectItemCaseSensitive(root, "warn");
+    cJSON *typej = cJSON_GetObjectItemCaseSensitive(root, "type");
+    cJSON *secj  = cJSON_GetObjectItemCaseSensitive(root, "seconds");
+    cJSON *labj  = cJSON_GetObjectItemCaseSensitive(root, "label");
+    cJSON *airj  = cJSON_GetObjectItemCaseSensitive(root, "on_air");
+    int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
+    int used = 0;
+    out_text[0] = '\0';
+    if (cJSON_IsString(err) && !cJSON_IsTrue(airj)) {
+        _append(out_text, out_size, &used, "Beacon FALLO:\n%s",
+                err->valuestring);
+        cJSON_Delete(root);
+        return 0;
+    }
+    int sc = cJSON_IsNumber(secj) ? secj->valueint : 0;
+    _append(out_text, out_size, &used,
+            "Beacon %s  tipo=%s  %ds\n%s\n%s",
+            (iface && iface[0]) ? iface : "hci1",
+            cJSON_IsString(typej) ? typej->valuestring : "?",
+            sc,
+            cJSON_IsString(labj) ? labj->valuestring : "",
+            ok_b ? "en el aire (no-conectable)" : "no salio al aire");
+    if (cJSON_IsString(warn) && warn->valuestring[0]) {
+        _append(out_text, out_size, &used, "\nAviso: %s", warn->valuestring);
+    }
+    cJSON_Delete(root);
+    return ok_b;
+}
+
 int bt_client_power(int on, const char *iface,
                     char *out_detail, int detail_size) {
     const char *iface_s = (iface && iface[0]) ? iface : BT_DEFAULT_IFACE;

@@ -662,6 +662,26 @@ class OsPayloadBuilderTests(unittest.TestCase):
         self.assertEqual(p[1], 0xFF)
         self.assertEqual(p[2:4], bytes([0x75, 0x00]))   # Samsung CID LE
 
+    def test_ibeacon_payload_structure_and_fields(self):
+        p = bt_ops._build_ibeacon_payload(0x1234, 0xABCD)
+        self.assertLessEqual(len(p), 31)
+        self.assertEqual(p[0:3], bytes([0x02, 0x01, 0x06]))   # Flags
+        # len 0x1A, type 0xFF, Apple 4C00, iBeacon 0215
+        self.assertEqual(p[3:9], bytes([0x1A, 0xFF, 0x4C, 0x00, 0x02, 0x15]))
+        self.assertEqual(p[9:25], bt_ops._IBEACON_UUID)       # UUID 16B
+        self.assertEqual(p[25:27], bytes([0x12, 0x34]))       # major BE
+        self.assertEqual(p[27:29], bytes([0xAB, 0xCD]))       # minor BE
+
+    def test_eddystone_url_payload_structure(self):
+        p = bt_ops._build_eddystone_url_payload(b"piscan.lab")
+        self.assertLessEqual(len(p), 31)
+        self.assertEqual(p[0:3], bytes([0x02, 0x01, 0x06]))         # Flags
+        self.assertEqual(p[3:7], bytes([0x03, 0x03, 0xAA, 0xFE]))   # UUID list FEAA
+        # Service Data: len 16 AAFE, frame 10 (URL) tx scheme...
+        self.assertEqual(p[8:11], bytes([0x16, 0xAA, 0xFE]))
+        self.assertEqual(p[11], 0x10)                               # frame type URL
+        self.assertEqual(p[13], 0x03)                              # scheme https://
+
 
 class AddrTypeHintTests(unittest.TestCase):
     def test_sdp_blocks_immediately_when_hint_random(self):

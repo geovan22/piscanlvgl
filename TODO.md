@@ -44,6 +44,60 @@
 - [ ] Follow-up: instrumentar `db_tool.py` para los comandos NO frecuentes
       (config set / setmany, credential set, honeypot) con el mismo envoltorio.
 
+## Fase 3 — Bluetooth (iteración 6): Expansión de herramientas — [~] EN CURSO
+> Objetivo del proyecto: **superar a Bruce/Flipper** aprovechando que debajo hay
+> Linux/BlueZ completo + **2 radios** (hci0 onboard BCM43438, hci1 USB RTL8821CU,
+> seleccionables). Ellos son solo-BLE y enlatados (spam, scan, beacon, BadBLE).
+> Nosotros sumamos BR/EDR clásico, GATT interactivo, sniffing pcap y MITM.
+> **Regla:** lo configurable va a Config (tabla `CFG_ITEMS`), y **todo resultado
+> se persiste a DB** (para estadísticas/análisis). Marco: SOLO lab/autorizado.
+>
+> Diagnóstico base (2026-10-29, commits 89bc9c4/ae98be9): SDP/GATT/L2ping no
+> estaban rotas — apuntan a capas que el equipo moderno no expone sin emparejar;
+> ahora reportan el motivo. BLE spam verificado irradiando; popup = límite del
+> receptor (ver memoria del proyecto).
+
+### Orden de prioridad
+**Single-change (se construyen en esta/próxima iteración, autocontenidas):**
+- [~] **1. GATT read/write/subscribe** (diferenciador Linux #1). Extiende
+      `gatt_enum`: leer valor de característica, escribir hex, y suscribir
+      notificaciones logueándolas. Ops+CLI+bridge+DB+tests; UI reusa
+      `text_input` para UUID/handle y valor. Config: `gatt_timeout` (s).
+      DB: reusar `BluetoothAttackLog` (action=`gatt_read`/`gatt_write`/
+      `gatt_notify`, details=uuid+valor) → base para análisis de dispositivos.
+- [ ] **2. BLE beacon (iBeacon/Eddystone)** (paridad). `ble_beacon()` reusa el
+      motor HCI adv del spam; botón global. Config: `beacon_ble_type`
+      (CHOICE ibeacon/eddystone), `beacon_ble_uuid`, `beacon_ble_major`,
+      `beacon_ble_minor`, `beacon_ble_secs`. DB: `log_bt_attack` action=`ble_beacon`.
+- [ ] **3. L2ping flood / BlueSmack** (diferenciador, lab). Hacer `count`/`size`
+      del L2ping configurables → permite flood/paquete grande. Config:
+      `l2ping_count`, `l2ping_size`. DB: ya loguea (sent/recv/loss).
+- [ ] **4. Sniffer pcap en UI + export** (diferenciador). `btmon_capture` ya
+      existe y loguea; exponer duración en Config (`bt_capture_secs`) y añadir
+      decode con tshark (GATT/SNI) al leer. DB: ya loguea path/size/packets.
+
+**Multi-iteración (más grandes, su propia tanda):**
+- [ ] **5. Tracking/presencia + wardriving BT**. Modo `track`: scans repetidos
+      logueando cada avistamiento (mac/rssi/ts) → análisis de presencia y
+      proximidad. Config: `bt_track_rounds`, `bt_track_window`. DB: **nueva
+      tabla `BluetoothSighting`** (o reusar `BluetoothLog` con timestamp).
+- [ ] **6. Bad BLE / BadBT (HID injection)** (paridad con su buque insignia).
+      La Pi se anuncia como teclado BLE (HID/HOGP vía BlueZ) e inyecta scripts
+      estilo Ducky a un host que acepte. Config: `badble_layout`. DB:
+      `BluetoothAttackLog` action=`badble` (script + resultado). Esfuerzo:
+      HID peripheral en BlueZ es quisquilloso.
+- [ ] **7. OBEX push/pull (clásico)**. Enviar/recibir archivos a equipos viejos
+      (OPP/FTP, `obexftp`/`ussp-push`). Solo Linux. DB: `BluetoothAttackLog`
+      action=`obex_push`. Sudoers: + `obexftp`.
+- [ ] **8. A2DP: conectar a parlante propio** (play/capture audio). BlueZ/Pulse.
+- [ ] **9. BLE MITM / relay con los 2 radios** 🏆 (ningún Flipper/Bruce puede).
+      Radio A conecta al periférico real, radio B anuncia un clon al teléfono;
+      proxea/loguea/modifica GATT. DB: **nueva tabla** para el tráfico MITM.
+      Lab. Esfuerzo alto; depende de #1 (GATT r/w).
+
+> Al implementar cada una: binario nuevo en sudoers si usa root (ruta absoluta),
+> Config si tiene parámetros, y `log_*` a DB siempre. Tests de parsers puros.
+
 ## Fase 3 — Bluetooth (MVP iteración 1) — [~] a validar en Pi
 > Marco: laboratorio controlado / pruebas autorizadas. Controller elegido:
 > hci1 (USB RTL8821CU, mismo chip que wlan1). hci0 (onboard BCM43438, BT 5.0)

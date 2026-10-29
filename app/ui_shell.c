@@ -95,6 +95,8 @@ static const char *const BT_SPAM_MODES[] = {
     "names", "random", "apple", "google", "microsoft", "samsung",
 };
 
+static const char *const BT_BEACON_TYPES[] = { "ibeacon", "eddystone" };
+
 static const cfg_item_t CFG_ITEMS[] = {
     /* -- WiFi -- */
     {"deauth_duration",      "Deauth sostenido",  "wifi", CFG_INT,    0, 600, 5,  0, "s",  NULL,              0,                        "WiFi"},
@@ -112,6 +114,11 @@ static const cfg_item_t CFG_ITEMS[] = {
                                                                                               sizeof(BT_SPAM_MODES)/sizeof(BT_SPAM_MODES[0]),"Bluetooth"},
     {"bt_spam_duration",     "Spam duracion",     "wifi", CFG_INT,    5, 180, 5, 20, "s",  NULL,              0,                        "Bluetooth"},
     {"bt_capture_duration",  "Captura HCI",       "wifi", CFG_INT,    5, 300, 5, 30, "s",  NULL,              0,                        "Bluetooth"},
+    {"bt_beacon_type",       "Beacon tipo",       "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL, BT_BEACON_TYPES,
+                                                                                              sizeof(BT_BEACON_TYPES)/sizeof(BT_BEACON_TYPES[0]),"Bluetooth"},
+    {"bt_beacon_major",      "Beacon major",      "wifi", CFG_INT,    0, 65535, 1, 1, NULL, NULL,              0,                        "Bluetooth"},
+    {"bt_beacon_minor",      "Beacon minor",      "wifi", CFG_INT,    0, 65535, 1, 0, NULL, NULL,              0,                        "Bluetooth"},
+    {"bt_beacon_duration",   "Beacon duracion",   "wifi", CFG_INT,    5, 300, 5, 30, "s",  NULL,              0,                        "Bluetooth"},
 };
 #define CFG_N ((int)(sizeof(CFG_ITEMS)/sizeof(CFG_ITEMS[0])))
 static int       g_cfg_val[CFG_N];       /* valor actual (INT/BOOL) o indice (CHOICE) */
@@ -180,6 +187,7 @@ static lv_obj_t *g_bt_status_label = NULL;
 static lv_obj_t *g_bt_scan_btn = NULL;
 static lv_obj_t *g_bt_spam_btn = NULL;
 static lv_obj_t *g_bt_capture_btn = NULL;
+static lv_obj_t *g_bt_beacon_btn = NULL;
 
 /* Fase 3 iter 4 - acciones globales del controller (spam / capture). Hilo+poll. */
 static volatile int g_btg_running = 0;
@@ -2521,8 +2529,9 @@ static void bt_scroll_down_cb(lv_event_t *e) {
 
 /* ── Acciones globales del controller: BLE spam + btmon capture ──────── */
 static void bt_global_set_buttons_disabled(int disabled) {
-    lv_obj_t *btns[] = { g_bt_scan_btn, g_bt_spam_btn, g_bt_capture_btn };
-    for (int i = 0; i < 3; i++) {
+    lv_obj_t *btns[] = { g_bt_scan_btn, g_bt_spam_btn, g_bt_capture_btn,
+                         g_bt_beacon_btn };
+    for (int i = 0; i < 4; i++) {
         if (!btns[i]) continue;
         if (disabled) lv_obj_add_state(btns[i], LV_STATE_DISABLED);
         else          lv_obj_clear_state(btns[i], LV_STATE_DISABLED);
@@ -2557,6 +2566,21 @@ static void *bt_global_thread_fn(void *arg) {
         if (secs < 2) secs = 2;
         g_btg_ok = bt_client_capture(iface, secs,
                                      g_btg_text, sizeof(g_btg_text));
+    } else if (strcmp(g_btg_kind, "beacon") == 0) {
+        int secs = 30, major = 1, minor = 0;
+        char bv[16];
+        if (db_config_get("bt_beacon_duration", bv, sizeof(bv)) && bv[0])
+            secs = atoi(bv);
+        if (secs < 2) secs = 2;
+        if (db_config_get("bt_beacon_major", bv, sizeof(bv)) && bv[0])
+            major = atoi(bv);
+        if (db_config_get("bt_beacon_minor", bv, sizeof(bv)) && bv[0])
+            minor = atoi(bv);
+        char btype[16] = "ibeacon";
+        if (db_config_get("bt_beacon_type", bv, sizeof(bv)) && bv[0])
+            snprintf(btype, sizeof(btype), "%s", bv);
+        g_btg_ok = bt_client_ble_beacon(iface, secs, btype, major, minor,
+                                        g_btg_text, sizeof(g_btg_text));
     }
     g_btg_done = 1;
     return NULL;
@@ -2570,7 +2594,9 @@ void ui_shell_poll_bt_global(void) {
     if (!g_bt_status_label) return;    /* salimos de la seccion */
     /* Mostramos la primera linea del resultado en el footer-status; el detalle
      * va al label de debajo del title (Toca Escanear...). */
-    const char *op = g_btg_kind[0] == 's' ? "BLE spam" : "Captura";
+    const char *op = (strcmp(g_btg_kind, "spam") == 0)    ? "BLE spam"
+                   : (strcmp(g_btg_kind, "beacon") == 0)  ? "Beacon"
+                   : "Captura";
     char head[80];
     snprintf(head, sizeof(head), "%s: %s", op, g_btg_ok ? "OK" : "ver detalle");
     ui_shell_set_status(head, g_btg_ok ? UI_STATUS_OK : UI_STATUS_ERROR);
@@ -2598,6 +2624,10 @@ static void bt_capture_btn_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
     bt_global_start("capture", "Capturando HCI (btmon)...");
 }
+static void bt_beacon_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    bt_global_start("beacon", "Beacon BLE en el aire (ver Config)...");
+}
 
 static void enter_section(const char *id, const char *label) {
     cfg_flush();   /* si venimos de Config con cambios, persistirlos (no-op si no) */
@@ -2608,6 +2638,7 @@ static void enter_section(const char *id, const char *label) {
     g_bt_scan_btn = NULL;
     g_bt_spam_btn = NULL;
     g_bt_capture_btn = NULL;
+    g_bt_beacon_btn = NULL;
     g_wifi_status_label = NULL;
     g_wifi_results_box = NULL;
     g_scan_btn = NULL;
@@ -2803,6 +2834,23 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(bcpl, lv_color_hex(0xCC66FF), 0);
         lv_obj_set_style_text_font(bcpl, &lv_font_montserrat_10, 0);
         lv_obj_center(bcpl);
+
+        /* Beacon BLE (teal): iBeacon/Eddystone estatico no-conectable segun
+         * Config (bt_beacon_type/major/minor/duration). SOLO lab. */
+        g_bt_beacon_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_bt_beacon_btn, 100, 34);
+        lv_obj_align(g_bt_beacon_btn, LV_ALIGN_TOP_LEFT, 352, 28);
+        lv_obj_set_style_bg_color(g_bt_beacon_btn, lv_color_hex(0x0a2222), 0);
+        lv_obj_set_style_border_color(g_bt_beacon_btn, lv_color_hex(0x33CCCC), 0);
+        lv_obj_set_style_border_width(g_bt_beacon_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_bt_beacon_btn, 10);
+        lv_obj_add_event_cb(g_bt_beacon_btn, bt_beacon_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(g_bt_beacon_btn);
+        lv_obj_t *bbl = lv_label_create(g_bt_beacon_btn);
+        lv_label_set_text(bbl, "Beacon");
+        lv_obj_set_style_text_color(bbl, lv_color_hex(0x33CCCC), 0);
+        lv_obj_set_style_text_font(bbl, &lv_font_montserrat_10, 0);
+        lv_obj_center(bbl);
 
         g_bt_status_label = lv_label_create(g_body);
         lv_label_set_text(g_bt_status_label, "Toca Escanear para buscar dispositivos BT");
