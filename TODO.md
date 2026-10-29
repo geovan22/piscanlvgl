@@ -74,19 +74,36 @@
 - [ ] Validar en pantalla: tocar Escanear en la sección Bluetooth, cambiar
       `bt_iface` a hci0 en Config y confirmar que el próximo scan usa el onboard.
 
-### Pendiente de iteración 2 (sin bloquear)
-- [ ] **RSSI por device**: hoy el scan deja `rssi=None`. Causa: bluetoothctl
-      en modo no-interactivo NO emite `[CHG] RSSI` eventos; solo `[NEW] Device`.
-      Fix propuesto: durante la sesión interactiva, después de `devices`, lanzar
-      `info <mac>` por cada MAC MIENTRAS el scan sigue activo — ahí la línea
-      `RSSI: 0xff... (-N)` sí aparece. Requiere un reader thread en el Popen
-      (ya el parser `parse_bluetoothctl_info` existe y extrae RSSI).
-- [ ] UUIDs resueltos + Appearance + Class + Icon (vienen del mismo `info`).
-- [ ] Tap en una fila → detalle (bluetoothctl info enriquecido).
-- [ ] Enumeración GATT para dispositivos LE (`gatttool`/`bluetoothctl connect`).
-- [ ] Filtros por tipo (LE/BR/dual) o por nombre.
-- [ ] Reportes (Fase 8) → export de `bluetooth_log` a markdown/pdf.
-- [ ] `bleak` (apt o pip): opcional, API Python LE más limpia para el futuro.
+### Iteración 2 (2026-10-29) — [x] CERRADA excepto GATT
+- [x] **RSSI por device**: implementado con reader thread sobre Popen de
+      bluetoothctl interactivo. Flow: `select <BD>` → `scan on` → sleep
+      (seconds-2) → snapshot de MACs de `[NEW]` → `info <mac>` por cada una
+      (mientras scan activo, ahí sí aparece `RSSI: 0xff.. (-N)`) → sleep
+      (max 1s, 0.12s/mac) → `scan off` → `devices` → `quit`.
+- [x] **addr_type + UUIDs resueltos + Appearance + Class + Icon**: todos vienen
+      del mismo bloque `info <mac>`. `_split_info_blocks` separa el stream en
+      bloques por MAC; `parse_bluetoothctl_info` enriquece cada device.
+- [x] **Fix del placeholder MAC-con-guiones**: bluez pone `AA-BB-CC-DD-EE-FF`
+      como `Alias` cuando no hay nombre real; `_is_mac_placeholder` lo descarta
+      para no mostrar "nombres" que son la MAC repetida.
+- [x] **Fix del header `Device MAC (public)` interpretado como entrada del
+      listado `devices`**: el handler de `_RX_BCTL_LIST` descarta nombres que
+      empiezan y terminan con paréntesis.
+- [x] **UI: filas clickables + overlay de detalle** (name, MAC+addr_type, tipo,
+      vendor, RSSI, Icon, Class, Appearance, Servicios). `close_bt_detail()`
+      se llama en `enter_section` y `show_carousel` para no dejar fugas.
+- [x] **bt_client (bridge C)**: `bt_device_t` suma `uuids[480]` serializado
+      como CSV de etiquetas humanas (preferido) o UUID corto si no hay label.
+- [x] Validado end-to-end: scan hci0 10s devolvió 9 devices con `rssi=7/9`,
+      `addr_type=8/9`, `uuids=6/9`. Vendors por OUI resuelven correctamente
+      (Hewlett Packard, Samsung, Tuya Smart Inc., etc.).
+- [x] 66/66 tests pasan (10 nuevos: split blocks, parse rssi hex, placeholder
+      alias, info-header-no-es-listado).
+- [ ] Validar en pantalla: tocar una fila BT y comprobar que abre el overlay
+      con todos los campos legibles.
+- [ ] Pendiente iteración 3: **GATT enumeration** para dispositivos LE
+      (`bluetoothctl connect` + listado de services/characteristics).
+- [ ] Pendiente: filtros por tipo/nombre; reportes (Fase 8); `bleak` opcional.
 
 ### Lecciones del día (2026-10-27, iteración 1.5)
 - **btmgmt 5.82 se cuelga con stdin=/dev/null**: `btmgmt info` o `btmgmt find`

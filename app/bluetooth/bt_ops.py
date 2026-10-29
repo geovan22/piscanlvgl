@@ -16,7 +16,7 @@ Comandos:
 
 iface default: hci1 (USB RTL8821CU).
 """
-import sys, os, re, json, subprocess, time
+import sys, os, re, json, subprocess, time, threading
 
 # Rutas absolutas de los binarios usados (coherente con wifi_ops.py / sudoers).
 BTMGMT       = "/usr/bin/btmgmt"
@@ -285,6 +285,19 @@ _RX_BCTL_UUID         = re.compile(r'^\s*UUID:\s+([^\s(]+(?:\s+[^\s(]+)*)\s*\(([
 _RX_BCTL_MANUF_KEY    = re.compile(r'^\s*ManufacturerData\.Key:\s*0x([0-9A-Fa-f]+)')
 
 
+def _is_mac_placeholder(s, mac):
+    """bluez usa la MAC con guiones ('AA-BB-CC-DD-EE-FF') como Name/Alias cuando
+    no hay nombre real. No es un nombre util; lo descartamos para que no quede
+    guardado en la DB ni mostrado en la UI."""
+    if not s:
+        return False
+    if re.fullmatch(r'[0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5}', s):
+        return True
+    if mac and s.upper() == mac.upper().replace(':', '-'):
+        return True
+    return False
+
+
 def parse_bluetoothctl_info(text):
     """Parsea la salida de `bluetoothctl info <mac>`. Devuelve dict con
     name, alias, appearance, icon, rssi, uuids, manufacturer_key, class, etc."""
@@ -314,9 +327,11 @@ def parse_bluetoothctl_info(text):
             k = mv.group(1).strip().lower()
             v = mv.group(2).strip()
             if k == 'name':
-                d["name"] = v[:96]
+                if not _is_mac_placeholder(v, d.get("mac")):
+                    d["name"] = v[:96]
             elif k == 'alias':
-                d["alias"] = v[:96]
+                if not _is_mac_placeholder(v, d.get("mac")):
+                    d["alias"] = v[:96]
             elif k == 'appearance':
                 d["appearance"] = v[:48]
             elif k == 'icon':
@@ -324,11 +339,19 @@ def parse_bluetoothctl_info(text):
             elif k == 'class':
                 d["class"] = v[:16]
             elif k == 'rssi':
-                try: d["rssi"] = int(v)
-                except Exception: pass
+                # Formato bluez: "0xffffffbc (-68)". Preferimos el valor en
+                # parentesis (int con signo). Fallback a parseo directo.
+                m2 = re.search(r'\((-?\d+)\)', v)
+                try:
+                    d["rssi"] = int(m2.group(1)) if m2 else int(v)
+                except Exception:
+                    pass
             elif k == 'txpower':
-                try: d["tx_power"] = int(v)
-                except Exception: pass
+                m2 = re.search(r'\((-?\d+)\)', v)
+                try:
+                    d["tx_power"] = int(m2.group(1)) if m2 else int(v)
+                except Exception:
+                    pass
             elif k == 'paired':
                 d["paired"] = (v.lower() == 'yes')
             elif k == 'trusted':
@@ -438,6 +461,11 @@ def parse_bluetoothctl_scan(text):
         if m:
             mac = m.group(1).upper()
             name = (m.group(2) or '').strip()
+            # Si lo que sigue a la MAC es '(public)' / '(random)' etc., es el
+            # header de un bloque `info`, no una entrada del comando `devices`;
+            # el bloque lo procesa _split_info_blocks y no debemos tomar name aqui.
+            if name.startswith('(') and name.endswith(')'):
+                continue
             d = devs.setdefault(mac, {"mac": mac, "addr_type": "", "kind": "le",
                                       "rssi": None, "name": "", "tx_power": None,
                                       "uuids": [], "manufacturer_data": "",
@@ -453,6 +481,38 @@ def _bd_address(iface):
     """iface -> BD address (ej 'B8:27:EB:B3:66:DB'), o '' si no se puede."""
     info = ctl_info(iface)
     return info.get("address", "") if info else ""
+
+
+def _split_info_blocks(text):
+    """Separa el stream de bluetoothctl interactivo en bloques `info <mac>`.
+    Cada vez que vemos una linea "Device MAC (type)" abrimos bloque; cerramos
+    al proximo header o al prompt "[bluetooth]#". Retorna {MAC: texto_bloque}.
+    Util para enriquecer el scan con los datos que vienen de `info <mac>`
+    (RSSI, UUIDs, appearance, icon, class) mientras el scan sigue activo."""
+    blocks = {}
+    cur_mac = None
+    cur_lines = []
+    for raw in (text or '').splitlines():
+        line = _RX_ANSI.sub('', raw)
+        m = re.match(r'^Device\s+([0-9A-F:]{17})\s*\(', line)
+        if m:
+            if cur_mac:
+                blocks[cur_mac] = '\n'.join(cur_lines)
+            cur_mac = m.group(1).upper()
+            cur_lines = [line]
+            continue
+        # cierre si llegamos a un prompt o a un nuevo comando
+        if line.lstrip().startswith('[bluetooth]#') or line.lstrip().startswith('[CHG]') or line.lstrip().startswith('[NEW]'):
+            if cur_mac:
+                blocks[cur_mac] = '\n'.join(cur_lines)
+                cur_mac = None
+                cur_lines = []
+            continue
+        if cur_mac:
+            cur_lines.append(line)
+    if cur_mac:
+        blocks[cur_mac] = '\n'.join(cur_lines)
+    return blocks
 
 
 def scan(iface=DEFAULT_IFACE, seconds=10, mode='dual'):
@@ -478,42 +538,109 @@ def scan(iface=DEFAULT_IFACE, seconds=10, mode='dual'):
     if not bd:
         return None, f"No se pudo obtener BD address de {iface}"
 
-    # bluetoothctl interactivo: select <bd> + scan on + sleep + scan off + devices + quit.
+    # bluetoothctl interactivo con reader thread para capturar el stream mientras
+    # inyectamos comandos. Flow:
+    #   select <bd> + scan on + sleep (seconds-2)
+    #   -> snapshot de MACs vistas ([NEW] events)
+    #   -> info <mac> por cada (asi vienen RSSI/UUIDs/appearance/class/addr_type)
+    #   sleep (0.1 por mac, floor 1s)
+    #   scan off + devices + quit
     proc = subprocess.Popen(
         [BLUETOOTHCTL],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
-    out = ""
+    lines = []
+    stop = threading.Event()
+
+    def _reader():
+        try:
+            for line in iter(proc.stdout.readline, ''):
+                if stop.is_set():
+                    break
+                lines.append(line)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+
     try:
         proc.stdin.write(f"select {bd}\n")
         proc.stdin.write("scan on\n")
         proc.stdin.flush()
-        time.sleep(seconds)
+        pre = max(1, seconds - 2)
+        time.sleep(pre)
+
+        # Snapshot de MACs vistas por [NEW] events hasta el momento.
+        snapshot = ''.join(lines)
+        clean = _RX_ANSI.sub('', snapshot)
+        macs = []
+        seen = set()
+        for m in re.finditer(r'\[NEW\]\s+Device\s+([0-9A-F:]{17})', clean):
+            mm = m.group(1).upper()
+            if mm not in seen:
+                seen.add(mm); macs.append(mm)
+        macs = macs[:48]   # tope duro para no abusar
+
+        # Pedir info de cada MAC mientras el scan sigue activo (RSSI fresca).
+        for m in macs:
+            proc.stdin.write(f"info {m}\n")
+        proc.stdin.flush()
+        time.sleep(max(1.0, 0.12 * len(macs)))
+
         proc.stdin.write("scan off\n")
         proc.stdin.write("devices\n")
         proc.stdin.flush()
-        time.sleep(0.6)
+        time.sleep(0.4)
         proc.stdin.write("quit\n")
         proc.stdin.flush()
         try:
-            out, _ = proc.communicate(timeout=seconds + 10)
+            proc.wait(timeout=seconds + 10)
         except subprocess.TimeoutExpired:
             proc.kill()
-            out, _ = proc.communicate()
     except Exception as e:
         try: proc.kill()
         except Exception: pass
+        stop.set(); t.join(timeout=1)
         return None, f"bluetoothctl fallo: {e}"
 
+    stop.set()
+    t.join(timeout=1)
+    out = ''.join(lines)
+
+    # 1) MACs + name + eventos del scan.
     found = parse_bluetoothctl_scan(out)
-    # Vendor (OUI o '(aleatoria)') por cada MAC.
-    for d in found:
+    by_mac = {d["mac"]: d for d in found}
+
+    # 2) Enriquecer con los bloques `info` (RSSI/UUIDs/appearance/class/icon/addr_type).
+    for mac, block in _split_info_blocks(out).items():
+        info = parse_bluetoothctl_info(block)
+        if mac in by_mac:
+            by_mac[mac] = merge_bt_devices(by_mac[mac], info)
+            # addr_type del info: si venia vacio en el scan, lo tomamos.
+            if info.get("addr_type") and not by_mac[mac].get("addr_type"):
+                by_mac[mac]["addr_type"] = info["addr_type"]
+            # kind: si es "random" o "public" tipico BLE, kind=le; "br/edr" -> classic
+            at = (info.get("addr_type") or '').lower()
+            if 'br' in at:
+                by_mac[mac]["kind"] = "classic"
+            elif at in ("public", "random"):
+                by_mac[mac]["kind"] = "le"
+        else:
+            # Device solo visto en info (raro); lo agregamos.
+            base = {"mac": mac, "addr_type": "", "kind": "le", "rssi": None,
+                    "name": "", "tx_power": None, "uuids": [],
+                    "manufacturer_data": "", "appearance": ""}
+            by_mac[mac] = merge_bt_devices(base, info)
+
+    devices = list(by_mac.values())
+    for d in devices:
         d["vendor"] = _vendor_for(d["mac"])
 
     # Log en DB (best-effort; nunca tumba el scan).
-    log_bluetooth_batch(iface, mode, found)
-    return found, None
+    log_bluetooth_batch(iface, mode, devices)
+    return devices, None
 
 
 # ---------------------------------------------------------------------------

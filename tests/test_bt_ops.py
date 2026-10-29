@@ -229,6 +229,123 @@ class ParseBluetoothctlScanTests(unittest.TestCase):
         self.assertEqual(bt_ops.parse_bluetoothctl_scan(""), [])
         self.assertEqual(bt_ops.parse_bluetoothctl_scan(None), [])
 
+    def test_info_header_is_not_treated_as_device_entry(self):
+        """La linea `Device MAC (public)` del bloque info no debe cargar
+        name='(public)' en el listado."""
+        sample = ("[NEW] Device 00:04:EA:10:20:40 00-04-EA-10-20-40\n"
+                  "Device 00:04:EA:10:20:40 (public)\n"
+                  "\tAlias: HP-Printer\n")
+        devs = bt_ops.parse_bluetoothctl_scan(sample)
+        self.assertEqual(len(devs), 1)
+        self.assertNotIn("public", devs[0]["name"])
+        self.assertNotIn("(", devs[0]["name"])
+
+
+INTERACTIVE_SESSION_SAMPLE = """\
+[bluetooth]# select B8:27:EB:B3:66:DB
+Controller B8:27:EB:B3:66:DB geo22 [default]
+[bluetooth]# scan on
+SetDiscoveryFilter success
+Discovery started
+[\x1b[0;93mCHG\x1b[0m] Controller B8:27:EB:B3:66:DB Discovering: yes
+[\x1b[0;92mNEW\x1b[0m] Device 60:45:C9:BE:F8:D0 LAP-1MJLWG3
+[\x1b[0;92mNEW\x1b[0m] Device 38:3B:C5:4A:89:BF 38-3B-C5-4A-89-BF
+[bluetooth]# info 60:45:C9:BE:F8:D0
+Device 60:45:C9:BE:F8:D0 (public)
+	Name: LAP-1MJLWG3
+	Alias: LAP-1MJLWG3
+	Class: 0x002a010c
+	Icon: computer
+	Paired: no
+	Trusted: no
+	Blocked: no
+	Connected: no
+	LegacyPairing: no
+	UUID: Generic Access Profile    (00001800-0000-1000-8000-00805f9b34fb)
+	UUID: PnP Information           (00001200-0000-1000-8000-00805f9b34fb)
+	RSSI: 0xffffffbc (-68)
+[bluetooth]# info 38:3B:C5:4A:89:BF
+Device 38:3B:C5:4A:89:BF (random)
+	Name: Mi-Reloj
+	Alias: Mi-Reloj
+	Appearance: Generic Watch (0x00C0)
+	Icon: audio-card
+	Paired: no
+	Trusted: no
+	Blocked: no
+	Connected: no
+	LegacyPairing: no
+	UUID: Battery Service           (0000180f-0000-1000-8000-00805f9b34fb)
+	RSSI: 0xffffffa8 (-88)
+[bluetooth]# scan off
+Discovery stopped
+[bluetooth]# devices
+Device 60:45:C9:BE:F8:D0 LAP-1MJLWG3
+Device 38:3B:C5:4A:89:BF Mi-Reloj
+[bluetooth]# quit
+"""
+
+
+class SplitInfoBlocksTests(unittest.TestCase):
+    def test_splits_two_distinct_info_blocks(self):
+        blocks = bt_ops._split_info_blocks(INTERACTIVE_SESSION_SAMPLE)
+        self.assertEqual(set(blocks.keys()),
+                         {"60:45:C9:BE:F8:D0", "38:3B:C5:4A:89:BF"})
+
+    def test_block_text_contains_fields(self):
+        blocks = bt_ops._split_info_blocks(INTERACTIVE_SESSION_SAMPLE)
+        b = blocks["60:45:C9:BE:F8:D0"]
+        self.assertIn("Name: LAP-1MJLWG3", b)
+        self.assertIn("RSSI: 0xffffffbc (-68)", b)
+        self.assertIn("PnP Information", b)
+
+    def test_empty_input_yields_empty_dict(self):
+        self.assertEqual(bt_ops._split_info_blocks(""), {})
+
+    def test_prompt_closes_block_not_bleeds_into_next(self):
+        sample = ("Device AA:BB:CC:DD:EE:FF (public)\n"
+                  "\tName: A\n"
+                  "[bluetooth]# ignored\n"
+                  "Device 11:22:33:44:55:66 (random)\n"
+                  "\tName: B\n")
+        blocks = bt_ops._split_info_blocks(sample)
+        self.assertEqual(set(blocks), {"AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"})
+        self.assertIn("Name: A", blocks["AA:BB:CC:DD:EE:FF"])
+        self.assertIn("Name: B", blocks["11:22:33:44:55:66"])
+        self.assertNotIn("Name: B", blocks["AA:BB:CC:DD:EE:FF"])
+
+
+class ParseBluetoothctlInfoRssiTests(unittest.TestCase):
+    def test_rssi_with_hex_prefix_and_parens(self):
+        d = bt_ops.parse_bluetoothctl_info("Device AA:BB:CC:DD:EE:FF (public)\n\tRSSI: 0xffffffbc (-68)\n")
+        self.assertEqual(d["rssi"], -68)
+
+    def test_txpower_in_parens(self):
+        d = bt_ops.parse_bluetoothctl_info("Device AA:BB:CC:DD:EE:FF (public)\n\tTxPower: 0x08 (8)\n")
+        self.assertEqual(d["tx_power"], 8)
+
+    def test_plain_integer_rssi_still_works(self):
+        d = bt_ops.parse_bluetoothctl_info("Device AA:BB:CC:DD:EE:FF (public)\n\tRSSI: -72\n")
+        self.assertEqual(d["rssi"], -72)
+
+    def test_mac_placeholder_alias_is_discarded(self):
+        """bluez pone 'AA-BB-CC-DD-EE-FF' como Alias cuando no hay nombre real.
+        Nuestro parser debe descartarlo para no mostrar 'nombres' que son solo
+        la MAC repetida en la UI/DB."""
+        block = ("Device 42:4F:BA:BC:3D:DB (random)\n"
+                 "\tAlias: 42-4F-BA-BC-3D-DB\n")
+        d = bt_ops.parse_bluetoothctl_info(block)
+        self.assertEqual(d["name"], "")
+        self.assertEqual(d["alias"], "")
+
+    def test_real_name_is_kept(self):
+        block = ("Device 60:45:C9:BE:F8:D0 (public)\n"
+                 "\tName: LAP-1MJLWG3\n"
+                 "\tAlias: LAP-1MJLWG3\n")
+        d = bt_ops.parse_bluetoothctl_info(block)
+        self.assertEqual(d["name"], "LAP-1MJLWG3")
+        self.assertEqual(d["alias"], "LAP-1MJLWG3")
+
 
 class ScanDispatchTests(unittest.TestCase):
     def test_scan_fails_fast_when_power_on_fails(self):

@@ -2138,6 +2138,112 @@ void ui_shell_poll_bluetooth(void) {
     render_bt_list();
 }
 
+/* Overlay con el detalle de un dispositivo BT (ver bt_detail_show). */
+static lv_obj_t *g_bt_detail_overlay = NULL;
+
+static void close_bt_detail(void) {
+    if (g_bt_detail_overlay) {
+        lv_obj_del(g_bt_detail_overlay);
+        g_bt_detail_overlay = NULL;
+    }
+}
+
+static void bt_detail_close_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    close_bt_detail();
+}
+
+static void bt_detail_show(int idx) {
+    if (idx < 0 || idx >= g_bt_count) return;
+    if (g_bt_detail_overlay) return;
+    bt_device_t *d = &g_bt_devices[idx];
+
+    g_bt_detail_overlay = lv_obj_create(g_main_screen);
+    lv_obj_set_size(g_bt_detail_overlay, 480, 320);
+    lv_obj_set_pos(g_bt_detail_overlay, 0, 0);
+    lv_obj_set_style_bg_color(g_bt_detail_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(g_bt_detail_overlay, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(g_bt_detail_overlay, 0, 0);
+    lv_obj_set_style_pad_all(g_bt_detail_overlay, 0, 0);
+    lv_obj_clear_flag(g_bt_detail_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(g_bt_detail_overlay, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *box = lv_obj_create(g_bt_detail_overlay);
+    lv_obj_set_size(box, 440, 280);
+    lv_obj_center(box);
+    lv_obj_set_style_bg_color(box, lv_color_hex(0x071007), 0);
+    lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(box, lv_color_hex(0x33CCFF), 0);
+    lv_obj_set_style_border_width(box, 2, 0);
+    lv_obj_set_style_pad_all(box, 8, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Titulo = nombre (o MAC si no hay). */
+    lv_obj_t *title = lv_label_create(box);
+    char tb[80];
+    snprintf(tb, sizeof(tb), "%s", d->name[0] ? d->name : d->mac);
+    lv_label_set_text(title, tb);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x33CCFF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 2, 0);
+
+    /* Cuerpo: campos. */
+    lv_obj_t *body = lv_label_create(box);
+    lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(body, 420);
+    lv_obj_align(body, LV_ALIGN_TOP_LEFT, 2, 24);
+    lv_obj_set_style_text_color(body, COLOR_OK, 0);
+    lv_obj_set_style_text_font(body, &lv_font_montserrat_10, 0);
+
+    const char *kind_label = "?";
+    if (strcmp(d->kind, "le") == 0)         kind_label = "LE";
+    else if (strcmp(d->kind, "classic") == 0) kind_label = "BR/EDR";
+    else if (strcmp(d->kind, "dual") == 0)  kind_label = "LE+BR/EDR";
+
+    char rssi_txt[16];
+    if (d->rssi != 0) snprintf(rssi_txt, sizeof(rssi_txt), "%d dBm", d->rssi);
+    else              snprintf(rssi_txt, sizeof(rssi_txt), "---");
+
+    char buf[1400];
+    snprintf(buf, sizeof(buf),
+             "MAC:    %s  (%s)\n"
+             "Tipo:   %s\n"
+             "Fab.:   %s\n"
+             "Senal:  %s\n"
+             "Icon:   %s\n"
+             "Class:  %s\n"
+             "Appear: %s\n"
+             "Servicios:\n%s",
+             d->mac, d->addr_type[0] ? d->addr_type : "?",
+             kind_label,
+             d->vendor[0] ? d->vendor : "?",
+             rssi_txt,
+             d->icon[0] ? d->icon : "-",
+             d->cls[0] ? d->cls : "-",
+             d->appearance[0] ? d->appearance : "-",
+             d->uuids[0] ? d->uuids : "(sin servicios detectados)");
+    lv_label_set_text(body, buf);
+
+    /* Boton Cerrar. */
+    lv_obj_t *b = lv_button_create(box);
+    lv_obj_set_size(b, 110, 32);
+    lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 0, -4);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x0a2a0a), 0);
+    lv_obj_set_style_border_color(b, COLOR_OK, 0);
+    lv_obj_set_style_border_width(b, 2, 0);
+    lv_obj_add_event_cb(b, bt_detail_close_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(b);
+    lv_obj_t *bl = lv_label_create(b);
+    lv_label_set_text(bl, "Cerrar");
+    lv_obj_set_style_text_color(bl, COLOR_OK, 0);
+    lv_obj_center(bl);
+}
+
+static void bt_row_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    intptr_t idx = (intptr_t)lv_event_get_user_data(e);
+    bt_detail_show((int)idx);
+}
+
 static void render_bt_list(void) {
     if (!g_bt_box || !g_bt_status_label) return;
     lv_obj_clean(g_bt_box);
@@ -2157,7 +2263,7 @@ static void render_bt_list(void) {
         return;
     }
     char hdr[80];
-    snprintf(hdr, sizeof(hdr), "%d dispositivo(s) BT", g_bt_count);
+    snprintf(hdr, sizeof(hdr), "%d dispositivo(s) BT - toca uno para ver detalle", g_bt_count);
     lv_label_set_text(g_bt_status_label, hdr);
     ui_shell_set_status(hdr, UI_STATUS_OK);
 
@@ -2169,6 +2275,10 @@ static void render_bt_list(void) {
         lv_obj_set_style_border_width(row, 0, 0);
         lv_obj_set_style_pad_all(row, 0, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(row, 10);
+        lv_obj_set_user_data(row, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(row, bt_row_cb, LV_EVENT_PRESSED, NULL);
 
         /* Columna 0: nombre (o MAC si no hay nombre), coloreado por tipo:
          *   LE = cyan, classic = verde, dual = magenta. */
@@ -2248,6 +2358,7 @@ static void enter_section(const char *id, const char *label) {
     g_cfg_box = NULL;
     for (int _i = 0; _i < CFG_N; _i++) g_cfg_vlabel[_i] = NULL;
     close_actions_menu();   /* por si quedo un overlay de acciones abierto */
+    close_bt_detail();       /* idem para el detalle BT */
 
     if (strcmp(id, "wifi") == 0) {
         lv_obj_t *title = lv_label_create(g_body);
@@ -2693,6 +2804,7 @@ static void draw_menu_current(void) {
 static void show_carousel(void) {
     cfg_flush();   /* guarda en 1 fork lo que se haya cambiado en Config */
     close_actions_menu();   /* por si quedara un overlay de acciones abierto */
+    close_bt_detail();      /* idem para el detalle BT */
     lv_obj_clean(g_body);
     g_net_box = NULL;
     g_net_status_label = NULL;

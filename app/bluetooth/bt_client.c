@@ -104,6 +104,7 @@ int bt_client_scan(const char *iface, int seconds, const char *mode,
             cJSON *appearance = cJSON_GetObjectItemCaseSensitive(item, "appearance");
             cJSON *icon = cJSON_GetObjectItemCaseSensitive(item, "icon");
             cJSON *cls = cJSON_GetObjectItemCaseSensitive(item, "class");
+            cJSON *uuids = cJSON_GetObjectItemCaseSensitive(item, "uuids");
 
             snprintf(out[count].mac, sizeof(out[count].mac), "%s",
                      cJSON_IsString(mac) ? mac->valuestring : "");
@@ -123,6 +124,43 @@ int bt_client_scan(const char *iface, int seconds, const char *mode,
                      cJSON_IsString(icon) ? icon->valuestring : "");
             snprintf(out[count].cls, sizeof(out[count].cls), "%s",
                      cJSON_IsString(cls) ? cls->valuestring : "");
+
+            /* uuids: cada entrada viene como "uuid|Etiqueta humana". Preferimos
+             * la etiqueta (es lo util para el usuario); si no hay, usamos la
+             * UUID corta. Juntamos con ", " hasta llenar el buffer. */
+            out[count].uuids[0] = '\0';
+            if (cJSON_IsArray(uuids)) {
+                size_t used = 0;
+                cJSON *uu;
+                cJSON_ArrayForEach(uu, uuids) {
+                    if (!cJSON_IsString(uu)) continue;
+                    const char *s = uu->valuestring;
+                    const char *pipe = strchr(s, '|');
+                    const char *label;
+                    char short_uuid[12];
+                    if (pipe && pipe[1]) {
+                        label = pipe + 1;
+                    } else {
+                        /* uuid sin label: mostramos los 4 chars utiles (bytes 4-7). */
+                        size_t L = strlen(s);
+                        if (L >= 8) { snprintf(short_uuid, sizeof(short_uuid), "%.4s", s + 4); }
+                        else        { snprintf(short_uuid, sizeof(short_uuid), "%s", s); }
+                        label = short_uuid;
+                    }
+                    size_t avail = sizeof(out[count].uuids) - used;
+                    if (avail <= 4) break;  /* no entra, cortamos */
+                    int w;
+                    if (used == 0) w = snprintf(out[count].uuids + used, avail, "%s", label);
+                    else           w = snprintf(out[count].uuids + used, avail, ", %s", label);
+                    if (w <= 0) break;
+                    if ((size_t)w >= avail) {
+                        used = sizeof(out[count].uuids) - 1;
+                        out[count].uuids[used] = '\0';
+                        break;
+                    }
+                    used += (size_t)w;
+                }
+            }
             count++;
         }
     }

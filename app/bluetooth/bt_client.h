@@ -12,9 +12,10 @@ typedef struct {
     char vendor[32];     /* fabricante por OUI, "(aleatoria)" o "" */
     int  rssi;           /* dBm; 0 si no se detecto */
     int  tx_power;       /* dBm; 0 si no se detecto */
-    char appearance[32]; /* BLE appearance (ej "Generic Watch") */
-    char icon[24];       /* icono bluez */
-    char cls[12];        /* Class of Device (BR/EDR) */
+    char appearance[48]; /* BLE appearance (ej "Generic Watch (0x00C0)") */
+    char icon[32];       /* icono bluez (ej "computer", "audio-card") */
+    char cls[16];        /* Class of Device (BR/EDR, hex) */
+    char uuids[480];     /* CSV de servicios: "Battery Service, GAP, ..." */
 } bt_device_t;
 
 /* Escanea con app/bluetooth/bt_ops.py durante `seconds`. mode: "dual" (default),
