@@ -58,6 +58,14 @@
 > receptor (ver memoria del proyecto).
 
 ### Orden de prioridad
+> **PRÓXIMA DECISIÓN (pendiente de elegir por el usuario):**
+> - **A)** Seguir con los verificables sin hardware extra: **#3 L2ping flood** +
+>   **#4 Sniffer pcap** (rápidos, los valido yo en la Pi).
+> - **B)** Arrancar **#1 GATT read/write/subscribe** — requiere que el usuario
+>   ponga un periférico BLE propio (pulsera/sensor/bombilla/ESP32) en modo
+>   conectable/pairing para validar el read/write real (hoy no hay ninguno
+>   conectable libre en rango).
+
 **Single-change (se construyen en esta/próxima iteración, autocontenidas):**
 - [~] **1. GATT read/write/subscribe** (diferenciador Linux #1). Extiende
       `gatt_enum`: leer valor de característica, escribir hex, y suscribir
@@ -65,10 +73,23 @@
       `text_input` para UUID/handle y valor. Config: `gatt_timeout` (s).
       DB: reusar `BluetoothAttackLog` (action=`gatt_read`/`gatt_write`/
       `gatt_notify`, details=uuid+valor) → base para análisis de dispositivos.
-- [ ] **2. BLE beacon (iBeacon/Eddystone)** (paridad). `ble_beacon()` reusa el
-      motor HCI adv del spam; botón global. Config: `beacon_ble_type`
-      (CHOICE ibeacon/eddystone), `beacon_ble_uuid`, `beacon_ble_major`,
-      `beacon_ble_minor`, `beacon_ble_secs`. DB: `log_bt_attack` action=`ble_beacon`.
+      **BLOQUEADO para validar:** sin periférico BLE conectable libre en rango
+      (2026-10-29, los targets vistos rechazan conexión o están ligados a su
+      dueño). Construible, pero el read/write no se puede probar a ciegas → es
+      la opción B de la decisión de arriba.
+- [x] **2. BLE beacon (iBeacon/Eddystone)** (paridad) — HECHO y verificado
+      on-device (2026-10-29, commit 4e65589). `ble_beacon()` reusa el motor HCI
+      adv (trama fija no-conectable ADV_NONCONN_IND). iBeacon (UUID PiScan +
+      major/minor) y Eddystone-URL (https://piscan.lab) **irradian** (on_air,
+      status 00, vistos desde hci0) y loguean a `bluetooth_attack_log`
+      (action=`ble_beacon`). Bridge `bt_client_ble_beacon`; 4º botón "Beacon"
+      (teal) en la fila BT (reusa hilo+poll global, kind="beacon"). Config
+      (grupo Bluetooth): `bt_beacon_type` (CHOICE), `bt_beacon_major`,
+      `bt_beacon_minor`, `bt_beacon_duration`. Tests +2 (iBeacon/Eddystone).
+      Binario recompilado en la Pi (exit 0). **UI aparece tras `sudo systemctl
+      restart piscan`** (el proceso corriendo aún es el binario viejo; Python/
+      CLI ya vivos). `systemctl restart` NO está en NOPASSWD → pendiente decidir
+      si se agrega a sudoers.
 - [ ] **3. L2ping flood / BlueSmack** (diferenciador, lab). Hacer `count`/`size`
       del L2ping configurables → permite flood/paquete grande. Config:
       `l2ping_count`, `l2ping_size`. DB: ya loguea (sent/recv/loss).
