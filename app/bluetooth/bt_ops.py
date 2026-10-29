@@ -1349,8 +1349,13 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
             n = "Galaxy Buds (Samsung EasySetup)"
             r_disable = _hci(iface, 0x000A, [0x00])
             r_addr = _hci(iface, 0x0005, _random_static_address())
+            r_params = _hci(iface, 0x0006, [
+                0xA0, 0x00, 0xA0, 0x00, 0x03, 0x01,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00,
+            ])
             if (r_disable is None or r_disable.returncode != 0 or
-                    r_addr is None or r_addr.returncode != 0):
+                    r_addr is None or r_addr.returncode != 0 or
+                    r_params is None or r_params.returncode != 0):
                 failed_commands += 1
                 time.sleep(period)
                 continue
