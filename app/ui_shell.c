@@ -126,6 +126,10 @@ static int       g_cfg_active = 0;       /* 1 mientras la pantalla Config esta v
 static char g_cfg_ckey[CFG_CACHE_MAX][64];
 static char g_cfg_cval[CFG_CACHE_MAX][128];
 static int  g_cfg_cn = 0;
+/* Subseccion de Config seleccionada ("" = menu de grupos). El modelo escala
+ * para modulos nuevos: al agregar un item con group="X" aparece un boton nuevo
+ * en el menu de grupos automaticamente. */
+static char g_cfg_group_sel[32] = "";
 
 /* ── WiFi: escaneo en hilo aparte (nunca tocar LVGL desde el hilo) ── */
 static lv_obj_t *g_wifi_status_label = NULL;
@@ -1969,35 +1973,40 @@ static void cfg_make_btn(lv_obj_t *row, int i, int dir, int x_ofs, const char *t
     lv_obj_center(l);
 }
 
-/* Si este item abre un grupo nuevo (distinto al anterior), inserta una
- * fila 'header' chica con el nombre del grupo. Agrupa visualmente la lista
- * (WiFi / Honeypot / Bluetooth) sin cambiar el modelo de persistencia. */
-static void cfg_make_group_header(int i) {
-    const cfg_item_t *it = &CFG_ITEMS[i];
-    if (!it->group || !it->group[0]) return;
-    if (i > 0 && CFG_ITEMS[i - 1].group &&
-        strcmp(CFG_ITEMS[i - 1].group, it->group) == 0) return;   /* mismo grupo */
+/* Extrae grupos unicos de CFG_ITEMS preservando orden de aparicion. Devuelve
+ * cuantos encontro (<=max). Items sin group se agrupan en "General". */
+static int cfg_get_groups(const char *groups[], int max) {
+    int n = 0;
+    for (int i = 0; i < CFG_N; i++) {
+        const char *g = CFG_ITEMS[i].group;
+        if (!g || !g[0]) g = "General";
+        int found = 0;
+        for (int j = 0; j < n; j++) {
+            if (strcmp(groups[j], g) == 0) { found = 1; break; }
+        }
+        if (!found && n < max) groups[n++] = g;
+    }
+    return n;
+}
 
-    lv_obj_t *hdr = lv_obj_create(g_cfg_box);
-    lv_obj_set_size(hdr, 384, 18);
-    lv_obj_set_style_bg_opa(hdr, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(hdr, 0, 0);
-    lv_obj_set_style_pad_all(hdr, 0, 0);
-    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+static void cfg_group_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    const char *group = (const char *)lv_event_get_user_data(e);
+    if (!group) return;
+    snprintf(g_cfg_group_sel, sizeof(g_cfg_group_sel), "%s", group);
+    enter_section("config", "Config");
+}
 
-    lv_obj_t *l = lv_label_create(hdr);
-    char buf[48];
-    snprintf(buf, sizeof(buf), "── %s ──", it->group);
-    lv_label_set_text(l, buf);
-    lv_obj_set_style_text_color(l, lv_color_hex(0x33CCFF), 0);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-    lv_obj_align(l, LV_ALIGN_LEFT_MID, 2, 0);
+static void cfg_back_to_groups_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    cfg_flush();                           /* guarda cambios pendientes */
+    g_cfg_group_sel[0] = '\0';
+    enter_section("config", "Config");
 }
 
 /* Crea la fila compacta del parametro i dentro de g_cfg_box. */
 static void cfg_make_row(int i) {
     const cfg_item_t *it = &CFG_ITEMS[i];
-    cfg_make_group_header(i);
     lv_obj_t *row = lv_obj_create(g_cfg_box);
     lv_obj_set_size(row, 384, 30);
     lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
@@ -2240,14 +2249,20 @@ static void *bt_action_thread_fn(void *arg) {
     if (db_config_get("bt_iface", v, sizeof(v)) && v[0]) {
         snprintf(iface, sizeof(iface), "%s", v);
     }
+    /* Hint del scan para que SDP/L2ping no bloqueen de mas (si lo vimos
+     * como "public", intentamos aunque la MAC tenga bit locally-admin). */
+    const char *at = "";
+    if (g_bt_detail_idx >= 0 && g_bt_detail_idx < g_bt_count) {
+        at = g_bt_devices[g_bt_detail_idx].addr_type;
+    }
     if (strcmp(g_bt_action_kind, "sdp") == 0) {
-        g_bt_action_ok = bt_client_sdp(g_bt_detail_mac,
+        g_bt_action_ok = bt_client_sdp(g_bt_detail_mac, at,
                                        g_bt_action_text, sizeof(g_bt_action_text));
     } else if (strcmp(g_bt_action_kind, "gatt") == 0) {
         g_bt_action_ok = bt_client_gatt(g_bt_detail_mac, iface,
                                         g_bt_action_text, sizeof(g_bt_action_text));
     } else if (strcmp(g_bt_action_kind, "l2") == 0) {
-        g_bt_action_ok = bt_client_l2ping(g_bt_detail_mac, 5, 44,
+        g_bt_action_ok = bt_client_l2ping(g_bt_detail_mac, 5, 44, at,
                                           g_bt_action_text, sizeof(g_bt_action_text));
     }
     g_bt_action_done = 1;
@@ -2915,64 +2930,110 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_center(ndn_lbl);
 
     } else if (strcmp(id, "config") == 0) {
+        /* Config con 2 niveles: menu de grupos (si g_cfg_group_sel vacio) o
+         * items del grupo seleccionado. Escala: cada group= nuevo en CFG_ITEMS
+         * aparece como boton nuevo automaticamente. */
         lv_obj_t *title = lv_label_create(g_body);
-        lv_label_set_text(title, "Config");
+        char tbuf[80];
+        if (g_cfg_group_sel[0])
+            snprintf(tbuf, sizeof(tbuf), "Config / %s", g_cfg_group_sel);
+        else
+            snprintf(tbuf, sizeof(tbuf), "Config");
+        lv_label_set_text(title, tbuf);
         lv_obj_set_style_text_color(title, COLOR_OK, 0);
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
 
-        /* Lista scrollable de parametros. Escala agregando filas a CFG_ITEMS;
-         * nada de offsets fijos que llenen la pantalla (rediseño 2026-10-19). */
-        g_cfg_box = lv_obj_create(g_body);
-        lv_obj_set_size(g_cfg_box, 400, 178);
-        lv_obj_align(g_cfg_box, LV_ALIGN_TOP_LEFT, 8, 28);
-        lv_obj_set_style_bg_opa(g_cfg_box, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(g_cfg_box, 0, 0);
-        lv_obj_set_style_pad_all(g_cfg_box, 0, 0);
-        lv_obj_set_style_pad_row(g_cfg_box, 4, 0);
-        lv_obj_set_flex_flow(g_cfg_box, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_scroll_dir(g_cfg_box, LV_DIR_VER);
+        if (!g_cfg_group_sel[0]) {
+            /* ── Menu de grupos (nivel 1) ───────────────────────────────── */
+            const char *groups[16];
+            int ng = cfg_get_groups(groups, 16);
+            /* 3 columnas x N filas, botones 140x50 */
+            for (int i = 0; i < ng; i++) {
+                int col = i % 3, rowi = i / 3;
+                lv_obj_t *b = lv_button_create(g_body);
+                lv_obj_set_size(b, 140, 50);
+                lv_obj_align(b, LV_ALIGN_TOP_LEFT,
+                             14 + col * 150, 32 + rowi * 60);
+                lv_obj_set_style_bg_color(b, lv_color_hex(0x0a2a0a), 0);
+                lv_obj_set_style_border_color(b, lv_color_hex(0x33CCFF), 0);
+                lv_obj_set_style_border_width(b, 2, 0);
+                lv_obj_set_ext_click_area(b, 8);
+                lv_obj_add_event_cb(b, cfg_group_btn_cb, LV_EVENT_PRESSED,
+                                    (void *)groups[i]);
+                ui_apply_press_effect(b);
+                lv_obj_t *l = lv_label_create(b);
+                lv_label_set_text(l, groups[i]);
+                lv_obj_set_style_text_color(l, lv_color_hex(0x33CCFF), 0);
+                lv_obj_center(l);
+            }
+        } else {
+            /* ── Items del grupo seleccionado (nivel 2) ─────────────────── */
+            g_cfg_box = lv_obj_create(g_body);
+            lv_obj_set_size(g_cfg_box, 400, 178);
+            lv_obj_align(g_cfg_box, LV_ALIGN_TOP_LEFT, 8, 28);
+            lv_obj_set_style_bg_opa(g_cfg_box, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(g_cfg_box, 0, 0);
+            lv_obj_set_style_pad_all(g_cfg_box, 0, 0);
+            lv_obj_set_style_pad_row(g_cfg_box, 4, 0);
+            lv_obj_set_flex_flow(g_cfg_box, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(g_cfg_box, LV_DIR_VER);
 
-        /* Ocultamos la caja durante el fill para no gatillar un redraw del SPI
-         * KeDei por cada fila (ver CLAUDE.md §6: SPI por-pixel = cuello real).
-         * Un solo flush al final cuando mostramos la caja. */
-        lv_obj_add_flag(g_cfg_box, LV_OBJ_FLAG_HIDDEN);
-        cfg_load_all();   /* toda la config en UN fork (no 1 por parametro) */
-        for (int i = 0; i < CFG_N; i++) {
-            cfg_item_load(i);
-            cfg_make_row(i);
+            lv_obj_add_flag(g_cfg_box, LV_OBJ_FLAG_HIDDEN);
+            cfg_load_all();
+            for (int i = 0; i < CFG_N; i++) {
+                const char *g = CFG_ITEMS[i].group ? CFG_ITEMS[i].group : "General";
+                if (strcmp(g, g_cfg_group_sel) != 0) continue;
+                cfg_item_load(i);
+                cfg_make_row(i);
+            }
+            g_cfg_active = 1;
+            lv_obj_scroll_to_y(g_cfg_box, 0, LV_ANIM_OFF);
+            lv_obj_clear_flag(g_cfg_box, LV_OBJ_FLAG_HIDDEN);
+
+            /* Scroll ▲▼ */
+            lv_obj_t *cup = lv_button_create(g_body);
+            lv_obj_set_size(cup, 40, 44);
+            lv_obj_align(cup, LV_ALIGN_TOP_RIGHT, -8, 28);
+            lv_obj_set_style_bg_color(cup, lv_color_hex(0x0a2a0a), 0);
+            lv_obj_set_style_border_color(cup, COLOR_OK, 0);
+            lv_obj_set_style_border_width(cup, 2, 0);
+            lv_obj_set_ext_click_area(cup, 10);
+            lv_obj_add_event_cb(cup, cfg_scroll_up_cb, LV_EVENT_PRESSED, NULL);
+            ui_apply_press_effect(cup);
+            lv_obj_t *cupl = lv_label_create(cup);
+            lv_label_set_text(cupl, LV_SYMBOL_UP);
+            lv_obj_set_style_text_color(cupl, COLOR_OK, 0);
+            lv_obj_center(cupl);
+
+            lv_obj_t *cdn = lv_button_create(g_body);
+            lv_obj_set_size(cdn, 40, 44);
+            lv_obj_align(cdn, LV_ALIGN_TOP_RIGHT, -8, 78);
+            lv_obj_set_style_bg_color(cdn, lv_color_hex(0x0a2a0a), 0);
+            lv_obj_set_style_border_color(cdn, COLOR_OK, 0);
+            lv_obj_set_style_border_width(cdn, 2, 0);
+            lv_obj_set_ext_click_area(cdn, 10);
+            lv_obj_add_event_cb(cdn, cfg_scroll_down_cb, LV_EVENT_PRESSED, NULL);
+            ui_apply_press_effect(cdn);
+            lv_obj_t *cdnl = lv_label_create(cdn);
+            lv_label_set_text(cdnl, LV_SYMBOL_DOWN);
+            lv_obj_set_style_text_color(cdnl, COLOR_OK, 0);
+            lv_obj_center(cdnl);
+
+            /* Boton "< Grupos" (vuelve al nivel 1 persistiendo cambios). */
+            lv_obj_t *gback = lv_button_create(g_body);
+            lv_obj_set_size(gback, 100, 36);
+            lv_obj_align(gback, LV_ALIGN_BOTTOM_LEFT, 10, -14);
+            lv_obj_set_style_bg_color(gback, lv_color_hex(0x0a2a0a), 0);
+            lv_obj_set_style_border_color(gback, lv_color_hex(0x33CCFF), 0);
+            lv_obj_set_style_border_width(gback, 2, 0);
+            lv_obj_set_ext_click_area(gback, 10);
+            lv_obj_add_event_cb(gback, cfg_back_to_groups_cb, LV_EVENT_PRESSED, NULL);
+            ui_apply_press_effect(gback);
+            lv_obj_t *gbl = lv_label_create(gback);
+            lv_label_set_text(gbl, "< Grupos");
+            lv_obj_set_style_text_color(gbl, lv_color_hex(0x33CCFF), 0);
+            lv_obj_center(gbl);
         }
-        g_cfg_active = 1;   /* a partir de aca los cambios se juntan y se guardan al salir */
-        lv_obj_scroll_to_y(g_cfg_box, 0, LV_ANIM_OFF);
-        lv_obj_clear_flag(g_cfg_box, LV_OBJ_FLAG_HIDDEN);
-
-        /* Scroll por botones ▲▼ (el touch-scroll del KeDei no es fiable). */
-        lv_obj_t *cup = lv_button_create(g_body);
-        lv_obj_set_size(cup, 40, 44);
-        lv_obj_align(cup, LV_ALIGN_TOP_RIGHT, -8, 28);
-        lv_obj_set_style_bg_color(cup, lv_color_hex(0x0a2a0a), 0);
-        lv_obj_set_style_border_color(cup, COLOR_OK, 0);
-        lv_obj_set_style_border_width(cup, 2, 0);
-        lv_obj_set_ext_click_area(cup, 10);
-        lv_obj_add_event_cb(cup, cfg_scroll_up_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(cup);
-        lv_obj_t *cupl = lv_label_create(cup);
-        lv_label_set_text(cupl, LV_SYMBOL_UP);
-        lv_obj_set_style_text_color(cupl, COLOR_OK, 0);
-        lv_obj_center(cupl);
-
-        lv_obj_t *cdn = lv_button_create(g_body);
-        lv_obj_set_size(cdn, 40, 44);
-        lv_obj_align(cdn, LV_ALIGN_TOP_RIGHT, -8, 78);
-        lv_obj_set_style_bg_color(cdn, lv_color_hex(0x0a2a0a), 0);
-        lv_obj_set_style_border_color(cdn, COLOR_OK, 0);
-        lv_obj_set_style_border_width(cdn, 2, 0);
-        lv_obj_set_ext_click_area(cdn, 10);
-        lv_obj_add_event_cb(cdn, cfg_scroll_down_cb, LV_EVENT_PRESSED, NULL);
-        ui_apply_press_effect(cdn);
-        lv_obj_t *cdnl = lv_label_create(cdn);
-        lv_label_set_text(cdnl, LV_SYMBOL_DOWN);
-        lv_obj_set_style_text_color(cdnl, COLOR_OK, 0);
-        lv_obj_center(cdnl);
 
     } else if (strcmp(id, "tools") == 0) {
         lv_obj_t *title = lv_label_create(g_body);
@@ -3091,6 +3152,7 @@ static void show_carousel(void) {
     cfg_flush();   /* guarda en 1 fork lo que se haya cambiado en Config */
     close_actions_menu();   /* por si quedara un overlay de acciones abierto */
     close_bt_detail();      /* idem para el detalle BT */
+    g_cfg_group_sel[0] = '\0';   /* al salir de Config vuelve al menu grupos */
     lv_obj_clean(g_body);
     g_net_box = NULL;
     g_net_status_label = NULL;

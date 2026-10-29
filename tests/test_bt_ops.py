@@ -572,6 +572,76 @@ class BtsnoopPacketCountTests(unittest.TestCase):
                 os.unlink(bad_path)
 
 
+class OsPayloadBuilderTests(unittest.TestCase):
+    def test_apple_payload_starts_with_flags_and_apple_cid(self):
+        p = bt_ops._build_apple_payload()
+        self.assertEqual(p[0:3], bytes([0x02, 0x01, 0x06]))  # Flags
+        # Manuf header: len=0x1B type=0xFF Apple CID little-endian 4C 00
+        self.assertEqual(p[3], 0x1B)
+        self.assertEqual(p[4], 0xFF)
+        self.assertEqual(p[5], 0x4C)
+        self.assertEqual(p[6], 0x00)
+        # Nearby Action marker 0x0F 0x05
+        self.assertEqual(p[7], 0x0F)
+        self.assertEqual(p[8], 0x05)
+        self.assertLessEqual(len(p), 31)
+
+    def test_google_payload_has_fast_pair_service_uuid(self):
+        p = bt_ops._build_google_payload()
+        # Flags + Incomplete UUID list(0xFE2C) + Service Data (0x16) 0xFE2C
+        self.assertEqual(p[0:3], bytes([0x02, 0x01, 0x06]))
+        self.assertEqual(p[3:7], bytes([0x03, 0x03, 0x2C, 0xFE]))
+        self.assertEqual(p[7:11], bytes([0x06, 0x16, 0x2C, 0xFE]))
+        self.assertEqual(len(p), 14)
+
+    def test_microsoft_payload_is_swift_pair_beacon(self):
+        p = bt_ops._build_microsoft_payload()
+        # Flags + Manuf Microsoft 06 00 + beacon 03 00 80
+        self.assertEqual(p[0:3], bytes([0x02, 0x01, 0x06]))
+        self.assertEqual(p[3], 0x09)
+        self.assertEqual(p[4], 0xFF)
+        self.assertEqual(p[5:7], bytes([0x06, 0x00]))
+        self.assertEqual(p[7:10], bytes([0x03, 0x00, 0x80]))
+
+    def test_samsung_payload_still_builds_to_31_bytes(self):
+        p = bt_ops._build_samsung_buds_payload()
+        self.assertLessEqual(len(p), 31)
+        self.assertEqual(p[1], 0xFF)
+        self.assertEqual(p[2:4], bytes([0x75, 0x00]))   # Samsung CID LE
+
+
+class AddrTypeHintTests(unittest.TestCase):
+    def test_sdp_blocks_immediately_when_hint_random(self):
+        """Si viene addr_type=random del scan, SDP no toca sdptool."""
+        with patch.object(bt_ops, "_run") as run_mock, \
+             patch.object(bt_ops, "log_bt_attack", lambda *a, **kw: None):
+            data, err = bt_ops.sdp_browse("AA:BB:CC:DD:EE:FF", addr_type="random")
+        self.assertIn("BLE", err)
+        self.assertEqual(data["services"], [])
+        run_mock.assert_not_called()
+
+    def test_sdp_proceeds_when_hint_public_even_if_mac_locally_admin(self):
+        """addr_type=public del scan debe pisar la heuristica _mac_is_random."""
+        def fake_run(cmd, timeout=15):
+            # Devolvemos vacio: solo verificamos que llego a correr sdptool.
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch.object(bt_ops, "_run", side_effect=fake_run), \
+             patch.object(bt_ops, "log_bt_attack", lambda *a, **kw: None):
+            # 0x02 primer octeto = locally administered (seria "random" por la
+            # heuristica), pero el scan lo etiqueto como public.
+            data, err = bt_ops.sdp_browse("02:AA:BB:CC:DD:EE", addr_type="public")
+        # No bloquea: err es "sin respuesta" u otra cosa, pero NO el de BLE.
+        self.assertTrue(err is None or "BLE" not in err)
+
+    def test_l2ping_blocks_when_hint_random(self):
+        with patch.object(bt_ops, "_run") as run_mock, \
+             patch.object(bt_ops, "log_bt_attack", lambda *a, **kw: None):
+            data, err = bt_ops.l2ping("AA:BB:CC:DD:EE:FF", addr_type="random")
+        self.assertIn("BLE", err)
+        self.assertEqual(data["stats"]["sent"], 0)
+        run_mock.assert_not_called()
+
+
 class LoadBleNamesTests(unittest.TestCase):
     def test_loads_names_from_repo_data_file(self):
         """El archivo data/ble_names.txt debe traer al menos 10 nombres."""

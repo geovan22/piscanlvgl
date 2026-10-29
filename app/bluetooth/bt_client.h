@@ -39,8 +39,10 @@ int bt_client_power(int on, const char *iface,
  * ───────────────────────────────────────────────────────────────────── */
 
 /* SDP browse (BR/EDR classic): lista servicios anunciados por SDP del target
- * sin pairing. Util para identificar perfil (A2DP/HFP/HID/OBEX/etc). */
-int bt_client_sdp(const char *mac, char *out_text, int out_size);
+ * sin pairing. `addr_type` ("public"/"random"/"" = unknown) es el hint del
+ * scan para no bloquear injustamente devices que PiScan vio como "public". */
+int bt_client_sdp(const char *mac, const char *addr_type,
+                  char *out_text, int out_size);
 
 /* GATT enumeration (LE): conecta via bluetoothctl, lista services + chars,
  * desconecta. Puede tardar >15s. Si el device requiere pairing, falla. */
@@ -48,8 +50,9 @@ int bt_client_gatt(const char *mac, const char *iface,
                    char *out_text, int out_size);
 
 /* L2CAP ping (BR/EDR classic). Prueba de alcance + latencia. Count 1..50,
- * size 1..600. BLE-only responde "Host is down". */
+ * size 1..600. `addr_type` como en SDP. */
 int bt_client_l2ping(const char *mac, int count, int size,
+                     const char *addr_type,
                      char *out_text, int out_size);
 
 /* ───────────── Acciones globales del controller ─────────────────────── */

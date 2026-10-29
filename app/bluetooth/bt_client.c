@@ -189,11 +189,15 @@ static int _append(char *buf, int cap, int *used, const char *fmt, ...) {
     return 1;
 }
 
-int bt_client_sdp(const char *mac, char *out_text, int out_size) {
+int bt_client_sdp(const char *mac, const char *addr_type,
+                  char *out_text, int out_size) {
     if (!mac || !out_text || out_size < 32) return 0;
-    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "sdp",
-                     (char *)mac, NULL };
-    char *raw = run_and_capture(argv);
+    const char *at = (addr_type && addr_type[0]) ? addr_type : "";
+    char *argv_w[]  = { "python3", (char *)PISCAN_BT_OPS_PATH, "sdp",
+                        (char *)mac, (char *)at, NULL };
+    char *argv_wo[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "sdp",
+                        (char *)mac, NULL };
+    char *raw = run_and_capture(at[0] ? argv_w : argv_wo);
     if (!raw) {
         snprintf(out_text, out_size, "SDP: no se pudo ejecutar bt_ops.py");
         return 0;
@@ -325,6 +329,7 @@ int bt_client_gatt(const char *mac, const char *iface,
 }
 
 int bt_client_l2ping(const char *mac, int count, int size,
+                     const char *addr_type,
                      char *out_text, int out_size) {
     if (!mac || !out_text || out_size < 32) return 0;
     if (count <= 0) count = 5;
@@ -332,9 +337,12 @@ int bt_client_l2ping(const char *mac, int count, int size,
     char cstr[8], sstr[8];
     snprintf(cstr, sizeof(cstr), "%d", count);
     snprintf(sstr, sizeof(sstr), "%d", size);
-    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "l2ping",
-                     (char *)mac, cstr, sstr, NULL };
-    char *raw = run_and_capture(argv);
+    const char *at = (addr_type && addr_type[0]) ? addr_type : "";
+    char *argv_w[]  = { "python3", (char *)PISCAN_BT_OPS_PATH, "l2ping",
+                        (char *)mac, cstr, sstr, (char *)at, NULL };
+    char *argv_wo[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "l2ping",
+                        (char *)mac, cstr, sstr, NULL };
+    char *raw = run_and_capture(at[0] ? argv_w : argv_wo);
     if (!raw) {
         snprintf(out_text, out_size, "L2ping: no se pudo ejecutar bt_ops.py");
         return 0;
