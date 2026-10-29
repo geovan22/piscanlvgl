@@ -22,6 +22,9 @@ import sys, os, re, json, subprocess, time, threading
 BTMGMT       = "/usr/bin/btmgmt"
 BLUETOOTHCTL = "/usr/bin/bluetoothctl"
 HCICONFIG    = "/usr/bin/hciconfig"
+SDPTOOL      = "/usr/bin/sdptool"
+L2PING       = "/usr/bin/l2ping"
+BTMON        = "/usr/bin/btmon"
 TIMEOUT_BIN  = "/usr/bin/timeout"
 STDBUF_BIN   = "/usr/bin/stdbuf"
 RFKILL_BIN   = "/usr/sbin/rfkill"
@@ -698,6 +701,288 @@ def log_bluetooth_batch(iface, mode, devices):
 
 
 # ---------------------------------------------------------------------------
+# Pentesting / auditoria: SDP (BR/EDR) + GATT (LE) + L2ping (BR/EDR)
+# Marco: SOLO redes y dispositivos propios o con autorizacion explicita.
+# ---------------------------------------------------------------------------
+
+def log_bt_attack(action, target_mac, result, details=None, target_name=None):
+    """Inserta una fila en bluetooth_attack_log. Silencia fallos de DB."""
+    try:
+        base = os.path.expanduser("~/piscanlvgl/app")
+        if base not in sys.path:
+            sys.path.insert(0, base)
+        from db.models import get_session, BluetoothAttackLog
+        s = get_session()
+        s.add(BluetoothAttackLog(
+            action=(action or "")[:32],
+            target_mac=(target_mac or "")[:24],
+            target_name=(target_name or "")[:96] if target_name else None,
+            result=(result or "")[:16],
+            details=(details or "")[:1800] if details else None,
+        ))
+        s.commit(); s.close()
+    except Exception:
+        pass
+
+
+_RX_SDP_RECORD = re.compile(r'^Service Name:\s*(.+?)\s*$')
+_RX_SDP_RHANDLE = re.compile(r'^Service RecHandle:\s*(0x[0-9A-Fa-f]+)')
+_RX_SDP_CLASS   = re.compile(r'^"?([^"]+)"?\s*\((0x[0-9A-Fa-f]+)\)')
+
+
+def parse_sdptool_browse(text):
+    """Parsea `sdptool browse <mac>`. Devuelve lista de servicios BR/EDR:
+    [{name, rec_handle, classes:[(name,uuid16)]}]. Nunca lanza."""
+    services = []
+    cur = None
+    in_classes = False
+    for raw in (text or '').splitlines():
+        line = raw.rstrip()
+        m = _RX_SDP_RECORD.match(line.strip())
+        if m:
+            if cur: services.append(cur)
+            cur = {"name": m.group(1).strip(), "rec_handle": "", "classes": []}
+            in_classes = False
+            continue
+        if cur is None:
+            continue
+        mh = _RX_SDP_RHANDLE.match(line.strip())
+        if mh:
+            cur["rec_handle"] = mh.group(1)
+            continue
+        if line.strip().startswith('Service Class ID List'):
+            in_classes = True
+            continue
+        if in_classes:
+            mc = _RX_SDP_CLASS.match(line.strip())
+            if mc:
+                cur["classes"].append((mc.group(1).strip(), mc.group(2)))
+            elif line.strip() == "" or (line and not line.startswith((' ', '\t'))):
+                in_classes = False
+    if cur: services.append(cur)
+    return services
+
+
+def sdp_browse(mac, timeout=15):
+    """Enumera servicios BR/EDR del target via SDP (sin pairing). Util para
+    identificar perfil (A2DP/HFP/HID/OBEX...) y evaluar superficie de ataque.
+    Nota: solo funciona con dispositivos BR/EDR; muchos LE-only responden vacio."""
+    mac = (mac or '').strip().upper()
+    if not re.fullmatch(r'[0-9A-F:]{17}', mac):
+        return None, "MAC invalida"
+    r = _run([SUDO, '-n', SDPTOOL, 'browse', mac], timeout=timeout)
+    text = ""
+    if r:
+        text = (r.stdout or '') + (r.stderr or '')
+    services = parse_sdptool_browse(text)
+    err = None
+    if (r is None) or (r.returncode != 0 and not services):
+        err = (text.strip() or "sin respuesta")[:200]
+    result = "ok" if services else ("fail" if err else "empty")
+    log_bt_attack("sdp_browse", mac, result,
+                  details=f"services={len(services)}" + (f" err={err}" if err else ""))
+    return {"services": services, "raw": text[-800:]}, err
+
+
+_RX_GATT_SERVICE = re.compile(r'Service\s+(?:Attribute\s+)?/org/bluez/[^\s]+/service([0-9a-f]+)\s*(?:$|\s)', re.I)
+# UUID 128-bit canonical dentro de parentesis (bluetoothctl format):
+#   "UUID: Generic Access Profile    (00001800-0000-1000-8000-00805f9b34fb)"
+_RX_GATT_UUID    = re.compile(r'\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)')
+_RX_GATT_LABEL   = re.compile(r'UUID:\s+(.+?)\s*\([0-9a-fA-F-]+\)\s*$')
+
+
+def parse_bluetoothctl_gatt(text):
+    """Parsea el stream interactivo de `menu gatt` + `list-attributes`:
+       Primary Service (Handle 0x????)
+            /org/bluez/hci0/dev_XX/serviceNN
+            UUID: 00001800-0000-1000-8000-00805f9b34fb
+       Characteristic (Handle 0x????)
+            /org/bluez/hci0/dev_XX/serviceNN/charMM
+            UUID: ...
+    Devuelve lista de dicts {kind:'service'|'characteristic', path, uuid, label}."""
+    attrs = []
+    cur = None
+    for raw in (text or '').splitlines():
+        line = _RX_ANSI.sub('', raw).strip()
+        low = line.lower()
+        if 'primary service' in low:
+            if cur: attrs.append(cur)
+            cur = {"kind": "service", "path": "", "uuid": "", "label": ""}
+            continue
+        if low.startswith('characteristic'):
+            if cur: attrs.append(cur)
+            cur = {"kind": "characteristic", "path": "", "uuid": "", "label": ""}
+            continue
+        if low.startswith('descriptor'):
+            if cur: attrs.append(cur)
+            cur = {"kind": "descriptor", "path": "", "uuid": "", "label": ""}
+            continue
+        if cur is None:
+            continue
+        if line.startswith('/org/bluez/'):
+            cur["path"] = line
+            continue
+        if 'UUID:' in line or line.lstrip().startswith('UUID'):
+            mu = _RX_GATT_UUID.search(line)
+            if mu:
+                cur["uuid"] = mu.group(1).lower()
+            ml = _RX_GATT_LABEL.search(line)
+            if ml:
+                cur["label"] = ml.group(1).strip()[:48]
+            continue
+    if cur: attrs.append(cur)
+    return attrs
+
+
+def gatt_enum(mac, iface=DEFAULT_IFACE, timeout=30):
+    """Enumera services + characteristics GATT de un device LE. Conecta via
+    bluetoothctl interactivo (sin pairing para servicios publicos), lista los
+    atributos, desconecta. Si el device requiere pairing o rechaza, devuelve
+    error con detalle. SOLO lab."""
+    mac = (mac or '').strip().upper()
+    if not re.fullmatch(r'[0-9A-F:]{17}', mac):
+        return None, "MAC invalida"
+    try:
+        _iface_index(iface)
+    except ValueError as e:
+        return None, str(e)
+    ok, msg = power_on(iface)
+    if not ok:
+        return None, f"No se pudo encender {iface}: {msg}"
+    bd = _bd_address(iface)
+    if not bd:
+        return None, f"No se pudo obtener BD de {iface}"
+
+    proc = subprocess.Popen(
+        [BLUETOOTHCTL],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, bufsize=1,
+    )
+    lines = []
+    stop = threading.Event()
+    def _rd():
+        try:
+            for line in iter(proc.stdout.readline, ''):
+                if stop.is_set(): break
+                lines.append(line)
+        except Exception:
+            pass
+    t = threading.Thread(target=_rd, daemon=True); t.start()
+
+    err = None
+    try:
+        proc.stdin.write(f"select {bd}\n")
+        proc.stdin.write(f"connect {mac}\n")
+        proc.stdin.flush()
+        # Esperamos a Connected: yes o fallo (hasta 10s)
+        t0 = time.time()
+        connected = False
+        while time.time() - t0 < 10:
+            if any('Connected: yes' in l for l in lines):
+                connected = True; break
+            if any('Failed to connect' in l or 'org.bluez.Error' in l for l in lines):
+                err = "connect fallo"; break
+            time.sleep(0.3)
+        if connected:
+            # Dar tiempo al GATT discovery
+            time.sleep(3)
+            proc.stdin.write("menu gatt\n")
+            proc.stdin.write("list-attributes\n")
+            proc.stdin.flush()
+            time.sleep(2)
+            proc.stdin.write("back\n")
+            proc.stdin.write(f"disconnect {mac}\n")
+            proc.stdin.flush()
+            time.sleep(1)
+        proc.stdin.write("quit\n")
+        proc.stdin.flush()
+        try: proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired: proc.kill()
+    except Exception as e:
+        try: proc.kill()
+        except Exception: pass
+        stop.set(); t.join(timeout=1)
+        return None, f"bluetoothctl fallo: {e}"
+
+    stop.set(); t.join(timeout=1)
+    out = ''.join(lines)
+    if err is None and 'Failed to connect' in out:
+        err = "connect fallo"
+    attrs = parse_bluetoothctl_gatt(out)
+    services = [a for a in attrs if a["kind"] == "service"]
+    chars    = [a for a in attrs if a["kind"] == "characteristic"]
+
+    result = "ok" if attrs else ("fail" if err else "empty")
+    log_bt_attack("gatt_enum", mac, result,
+                  details=f"services={len(services)} chars={len(chars)}" +
+                          (f" err={err}" if err else ""))
+    return {"services": services, "characteristics": chars,
+            "raw": out[-1500:]}, err
+
+
+_RX_L2PING_SENT = re.compile(r'^(\d+)\s+bytes\s+from\s+([0-9A-F:]{17})\s+id\s+(\d+)\s+time\s+([\d.]+)\s*ms', re.I)
+_RX_L2PING_STAT = re.compile(r'^(\d+)\s+sent,\s+(\d+)\s+received,\s+(\d+)%\s+loss', re.I)
+
+
+def parse_l2ping_output(text):
+    """Parsea `l2ping` output. Devuelve stats: {sent, received, loss_pct,
+    avg_ms, min_ms, max_ms, samples:[{id, time_ms}]}."""
+    samples = []
+    for raw in (text or '').splitlines():
+        m = _RX_L2PING_SENT.match(raw.strip())
+        if m:
+            try:
+                samples.append({"id": int(m.group(3)),
+                                "time_ms": float(m.group(4))})
+            except Exception:
+                pass
+    stats = {"sent": 0, "received": 0, "loss_pct": None,
+             "avg_ms": None, "min_ms": None, "max_ms": None,
+             "samples": samples}
+    for raw in (text or '').splitlines():
+        m = _RX_L2PING_STAT.match(raw.strip())
+        if m:
+            try:
+                stats["sent"] = int(m.group(1))
+                stats["received"] = int(m.group(2))
+                stats["loss_pct"] = int(m.group(3))
+            except Exception:
+                pass
+    if samples:
+        times = [s["time_ms"] for s in samples]
+        stats["avg_ms"] = round(sum(times) / len(times), 2)
+        stats["min_ms"] = round(min(times), 2)
+        stats["max_ms"] = round(max(times), 2)
+    return stats
+
+
+def l2ping(mac, count=5, size=44, timeout=20):
+    """L2CAP ping (BR/EDR). Prueba de alcance/latencia y stress leve. SOLO
+    funciona con BR/EDR classic; BLE-only responde 'Host is down' u otro error.
+    SOLO lab."""
+    mac = (mac or '').strip().upper()
+    if not re.fullmatch(r'[0-9A-F:]{17}', mac):
+        return None, "MAC invalida"
+    count = max(1, min(int(count or 5), 50))
+    size = max(1, min(int(size or 44), 600))
+    r = _run([SUDO, '-n', L2PING, '-c', str(count), '-s', str(size), mac],
+             timeout=timeout)
+    text = ""
+    if r:
+        text = (r.stdout or '') + (r.stderr or '')
+    err = None
+    if r is None:
+        err = "l2ping: sin respuesta"
+    elif r.returncode != 0 and 'bytes from' not in text:
+        err = text.strip()[-200:] or "l2ping fallo"
+    stats = parse_l2ping_output(text)
+    result = "ok" if stats["received"] > 0 else ("fail" if err else "empty")
+    log_bt_attack("l2ping", mac, result,
+                  details=f"sent={stats['sent']} recv={stats['received']} loss={stats['loss_pct']}% avg={stats['avg_ms']}ms")
+    return {"stats": stats, "raw": text[-600:]}, err
+
+
+# ---------------------------------------------------------------------------
 # Show (bluetoothctl info enriquecido, para una MAC concreta)
 # ---------------------------------------------------------------------------
 
@@ -727,7 +1012,7 @@ def _emit(obj):
 
 def main():
     if len(sys.argv) < 2:
-        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|show> [args]"})
+        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|show|sdp|gatt|l2ping> [args]"})
         sys.exit(1)
     cmd = sys.argv[1]
     iface = DEFAULT_IFACE
@@ -774,6 +1059,55 @@ def main():
                 _emit({"ok": False, "error": err})
                 sys.exit(1)
             _emit({"ok": True, "device": data})
+        elif cmd == 'sdp':
+            # bt_ops.py sdp <mac>
+            args = sys.argv[2:]
+            if args and re.match(r'^hci\d+$', args[0]):
+                args = args[1:]
+            if not args:
+                _emit({"ok": False, "error": "uso: bt_ops.py sdp <mac>"})
+                sys.exit(1)
+            data, err = sdp_browse(args[0].upper())
+            if err and not data:
+                _emit({"ok": False, "error": err})
+                sys.exit(1)
+            _emit({"ok": True, "mac": args[0].upper(),
+                   "services": data.get("services", []),
+                   "raw": data.get("raw", ""), "warn": err})
+        elif cmd == 'gatt':
+            # bt_ops.py gatt [iface] <mac>
+            args = sys.argv[2:]
+            if args and re.match(r'^hci\d+$', args[0]):
+                args = args[1:]
+            if not args:
+                _emit({"ok": False, "error": "uso: bt_ops.py gatt [iface] <mac>"})
+                sys.exit(1)
+            data, err = gatt_enum(args[0].upper(), iface)
+            if err and not data:
+                _emit({"ok": False, "error": err})
+                sys.exit(1)
+            _emit({"ok": True, "mac": args[0].upper(),
+                   "services": data.get("services", []),
+                   "characteristics": data.get("characteristics", []),
+                   "raw": data.get("raw", ""), "warn": err})
+        elif cmd == 'l2ping':
+            # bt_ops.py l2ping <mac> [count] [size]
+            args = sys.argv[2:]
+            if args and re.match(r'^hci\d+$', args[0]):
+                args = args[1:]
+            if not args:
+                _emit({"ok": False, "error": "uso: bt_ops.py l2ping <mac> [count] [size]"})
+                sys.exit(1)
+            mac = args[0].upper()
+            count = int(args[1]) if len(args) > 1 and args[1].isdigit() else 5
+            size  = int(args[2]) if len(args) > 2 and args[2].isdigit() else 44
+            data, err = l2ping(mac, count, size)
+            if err and not (data and data.get("stats", {}).get("received", 0) > 0):
+                _emit({"ok": False, "error": err, "stats": (data or {}).get("stats")})
+                sys.exit(1)
+            _emit({"ok": True, "mac": mac,
+                   "stats": data.get("stats"), "raw": data.get("raw", ""),
+                   "warn": err})
         else:
             _emit({"ok": False, "error": f"comando desconocido: {cmd}"})
             sys.exit(1)

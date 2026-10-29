@@ -30,4 +30,25 @@ int bt_client_scan(const char *iface, int seconds, const char *mode,
 int bt_client_power(int on, const char *iface,
                     char *out_detail, int detail_size);
 
+/* ───────────── Pentesting / auditoria por device ────────────────────────
+ * Las tres acciones hacen fork+exec de bt_ops.py y arman un texto
+ * multilinea listo para pintar en el overlay (lv_label). Retornan 1 si la
+ * operacion termino bien (o parcialmente ok), 0 si fallo (ver out_text).
+ * SOLO lab / dispositivos propios o con autorizacion.
+ * ───────────────────────────────────────────────────────────────────── */
+
+/* SDP browse (BR/EDR classic): lista servicios anunciados por SDP del target
+ * sin pairing. Util para identificar perfil (A2DP/HFP/HID/OBEX/etc). */
+int bt_client_sdp(const char *mac, char *out_text, int out_size);
+
+/* GATT enumeration (LE): conecta via bluetoothctl, lista services + chars,
+ * desconecta. Puede tardar >15s. Si el device requiere pairing, falla. */
+int bt_client_gatt(const char *mac, const char *iface,
+                   char *out_text, int out_size);
+
+/* L2CAP ping (BR/EDR classic). Prueba de alcance + latencia. Count 1..50,
+ * size 1..600. BLE-only responde "Host is down". */
+int bt_client_l2ping(const char *mac, int count, int size,
+                     char *out_text, int out_size);
+
 #endif

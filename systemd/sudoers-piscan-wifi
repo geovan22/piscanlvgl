@@ -38,3 +38,8 @@ geo22 ALL=(ALL) NOPASSWD: /usr/bin/btmgmt
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/hcitool
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/sdptool
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/gatttool
+# Fase 3 iter 3 - pentesting/auditoria BT (SOLO lab):
+# l2ping = ping L2CAP (BR/EDR, test de alcance + stress leve).
+# btmon = sniffer HCI opcional (para reportes de captura).
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/l2ping
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/btmon

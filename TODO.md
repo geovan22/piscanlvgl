@@ -74,6 +74,49 @@
 - [ ] Validar en pantalla: tocar Escanear en la sección Bluetooth, cambiar
       `bt_iface` a hci0 en Config y confirmar que el próximo scan usa el onboard.
 
+### Iteración 3 (2026-10-29) — [x] Acciones de pentesting por device
+> Marco: SOLO lab / dispositivos propios o con autorización explícita.
+- [x] Tabla `BluetoothAttackLog` (action/target_mac/target_name/result/details).
+- [x] Backend `bt_ops.py`:
+      - `sdp_browse(mac)` — BR/EDR services via `sdptool browse` (sin pairing).
+        Útil para identificar perfil (A2DP/HFP/HID/OBEX...).
+      - `gatt_enum(mac, iface)` — LE: `bluetoothctl` interactivo con `connect`
+        + `menu gatt` + `list-attributes`. Parser `parse_bluetoothctl_gatt`
+        extrae services + characteristics + descriptors (uuid 128-bit canonical
+        entre paréntesis + label humano antes).
+      - `l2ping(mac, count, size)` — L2CAP echo (BR/EDR, test alcance + stress
+        leve). Parser `parse_l2ping_output` da sent/recv/loss/avg/min/max.
+      - CLI: `bt_ops.py sdp <mac>`, `gatt [iface] <mac>`, `l2ping <mac> [count] [size]`.
+- [x] Bridge C `bt_client_{sdp,gatt,l2ping}` → texto multilínea para `lv_label`.
+- [x] UI: overlay BT detalle con 3 botones de acción (SDP ámbar, GATT cyan,
+      L2ping rojo) + Cerrar. Al tocar, hilo+poll (`ui_shell_poll_bt_action`);
+      el resultado reemplaza el body del overlay sin cerrar.
+- [x] sudoers versionado: + `l2ping`, `btmon`.
+- [x] diag.py: nuevos checks `bin/bluetooth/{sdptool,gatttool,l2ping,btmon}`.
+- [x] 11 tests nuevos (parsers SDP, L2ping, GATT, UUID canonical). Suite 74/74.
+- [x] Validado end-to-end: SDP contra target → JSON válido con services=[] +
+      warn="Host is down" (muchos LE-only no exponen SDP). Fila en
+      `bluetooth_attack_log` registra la acción. l2ping sin sudoers aplicado
+      falla con "sudo: a password is required" y queda loggeado.
+- [ ] **Aplicar en la Pi** (requiere sudo con password):
+      `sudo cp ~/piscanlvgl/systemd/sudoers-piscan-wifi /etc/sudoers.d/piscan-wifi && sudo chmod 440 /etc/sudoers.d/piscan-wifi`
+- [ ] Validar en pantalla: tocar un device en Bluetooth → overlay → tocar
+      SDP/GATT/L2ping → el resultado aparece dentro del overlay.
+
+### Config lento — [~] optimización + telemetría
+- [x] **Instrumentar `db_tool.py`** con `run_cli_with_log` SELECTIVO
+      (`config list|set|setmany`, `credential set`, `action clear`). Los
+      `config get` frecuentes NO se logean (serían spam en action_log).
+      Permite medir cuánto tarda abrir Config (= `config list`) y guardar
+      al salir (= `config setmany`).
+- [x] **Ocultar `g_cfg_box` durante el fill de rows** (`LV_OBJ_FLAG_HIDDEN`
+      antes de la carga, `clear_flag` al final). Evita que el SPI KeDei
+      repinte parcialmente por cada fila añadida al flex-column — un solo
+      flush al final.
+- [ ] Medir en la Pi: tras reiniciar, abrir Config y ver `action list db`
+      para los `duration_ms` reales. Si `config list` tarda >400ms es un
+      candidato a cachear en memoria.
+
 ### Iteración 2 (2026-10-29) — [x] CERRADA excepto GATT
 - [x] **RSSI por device**: implementado con reader thread sobre Popen de
       bluetoothctl interactivo. Flow: `select <BD>` → `scan on` → sleep

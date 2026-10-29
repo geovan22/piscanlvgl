@@ -125,6 +125,18 @@ class BluetoothLog(Base):
     manufacturer_data: Mapped[str] = mapped_column(Text, nullable=True)   # company_id -> hex
     details: Mapped[str] = mapped_column(Text, nullable=True)
 
+class BluetoothAttackLog(Base):
+    """Registro de operaciones ofensivas / de auditoria sobre un dispositivo BT:
+    SDP browse, GATT enum, L2ping, etc. Marco: laboratorio autorizado."""
+    __tablename__ = "bluetooth_attack_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)   # sdp_browse|gatt_enum|l2ping|rssi_track
+    target_mac: Mapped[str] = mapped_column(String(24), nullable=True)
+    target_name: Mapped[str] = mapped_column(String(96), nullable=True)
+    result: Mapped[str] = mapped_column(String(16), nullable=True)    # ok|fail|done|partial
+    details: Mapped[str] = mapped_column(Text, nullable=True)
+
 class ActionLog(Base):
     """Registro generico de operaciones del sistema para depuracion:
     sección (pantalla), herramienta, entradas, salidas y error. Nutre la

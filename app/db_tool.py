@@ -275,4 +275,21 @@ def main():
         err(str(e))
 
 if __name__ == "__main__":
-    main()
+    # Logging centralizado: solo para operaciones *pesadas* o *escritoras*
+    # (config list/set/setmany, credential set, action clear). Los `config get`
+    # frecuentes del PIN lock / UI quedarian fuera; no spameamos action_log.
+    _LOG_CMDS = {
+        ("config", "list"), ("config", "set"), ("config", "setmany"),
+        ("credential", "set"),
+        ("action", "clear"),
+    }
+    _args = sys.argv[1:3] if len(sys.argv) >= 3 else []
+    _key = tuple(_args) if len(_args) == 2 else None
+    if _key in _LOG_CMDS:
+        try:
+            from db.action_log import run_cli_with_log
+            run_cli_with_log("db", main)
+        except Exception:
+            main()
+    else:
+        main()

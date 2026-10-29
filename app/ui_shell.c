@@ -2140,11 +2140,32 @@ void ui_shell_poll_bluetooth(void) {
 
 /* Overlay con el detalle de un dispositivo BT (ver bt_detail_show). */
 static lv_obj_t *g_bt_detail_overlay = NULL;
+static lv_obj_t *g_bt_detail_body    = NULL;
+static lv_obj_t *g_bt_detail_btn_sdp = NULL;
+static lv_obj_t *g_bt_detail_btn_gatt = NULL;
+static lv_obj_t *g_bt_detail_btn_l2 = NULL;
+static lv_obj_t *g_bt_detail_btn_close = NULL;
+static char g_bt_detail_mac[24] = "";
+static int  g_bt_detail_idx = -1;      /* indice en g_bt_devices del overlay actual */
+
+/* Estado de la accion BT por device (SDP/GATT/L2ping). Patron hilo + poll. */
+static volatile int g_bt_action_running = 0;
+static volatile int g_bt_action_done = 0;
+static int   g_bt_action_ok = 0;
+static char  g_bt_action_kind[8] = "";   /* "sdp" | "gatt" | "l2" */
+static char  g_bt_action_text[2200];     /* salida ya formateada para el label */
 
 static void close_bt_detail(void) {
     if (g_bt_detail_overlay) {
         lv_obj_del(g_bt_detail_overlay);
         g_bt_detail_overlay = NULL;
+        g_bt_detail_body    = NULL;
+        g_bt_detail_btn_sdp = NULL;
+        g_bt_detail_btn_gatt = NULL;
+        g_bt_detail_btn_l2 = NULL;
+        g_bt_detail_btn_close = NULL;
+        g_bt_detail_mac[0] = '\0';
+        g_bt_detail_idx = -1;
     }
 }
 
@@ -2153,10 +2174,113 @@ static void bt_detail_close_cb(lv_event_t *e) {
     close_bt_detail();
 }
 
+static void bt_detail_set_buttons_disabled(int disabled) {
+    lv_obj_t *btns[] = { g_bt_detail_btn_sdp, g_bt_detail_btn_gatt,
+                         g_bt_detail_btn_l2, g_bt_detail_btn_close };
+    for (int i = 0; i < 4; i++) {
+        if (!btns[i]) continue;
+        if (disabled) lv_obj_add_state(btns[i], LV_STATE_DISABLED);
+        else          lv_obj_clear_state(btns[i], LV_STATE_DISABLED);
+    }
+}
+
+static void *bt_action_thread_fn(void *arg) {
+    (void)arg;
+    g_bt_action_text[0] = '\0';
+    char iface[16] = "hci1";
+    char v[32];
+    if (db_config_get("bt_iface", v, sizeof(v)) && v[0]) {
+        snprintf(iface, sizeof(iface), "%s", v);
+    }
+    if (strcmp(g_bt_action_kind, "sdp") == 0) {
+        g_bt_action_ok = bt_client_sdp(g_bt_detail_mac,
+                                       g_bt_action_text, sizeof(g_bt_action_text));
+    } else if (strcmp(g_bt_action_kind, "gatt") == 0) {
+        g_bt_action_ok = bt_client_gatt(g_bt_detail_mac, iface,
+                                        g_bt_action_text, sizeof(g_bt_action_text));
+    } else if (strcmp(g_bt_action_kind, "l2") == 0) {
+        g_bt_action_ok = bt_client_l2ping(g_bt_detail_mac, 5, 44,
+                                          g_bt_action_text, sizeof(g_bt_action_text));
+    }
+    g_bt_action_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_bt_action(void) {
+    if (!g_bt_action_done) return;
+    g_bt_action_done = 0;
+    g_bt_action_running = 0;
+    if (!g_bt_detail_body) return;    /* overlay cerrado mientras corria */
+    lv_label_set_text(g_bt_detail_body,
+                      g_bt_action_text[0] ? g_bt_action_text : "(sin salida)");
+    const char *kind_lbl = "accion";
+    if (strcmp(g_bt_action_kind, "sdp") == 0)  kind_lbl = "SDP";
+    else if (strcmp(g_bt_action_kind, "gatt") == 0) kind_lbl = "GATT";
+    else if (strcmp(g_bt_action_kind, "l2") == 0)   kind_lbl = "L2ping";
+    char st[64];
+    snprintf(st, sizeof(st), "%s: %s", kind_lbl, g_bt_action_ok ? "ok" : "ver detalle");
+    ui_shell_set_status(st, g_bt_action_ok ? UI_STATUS_OK : UI_STATUS_INFO);
+    bt_detail_set_buttons_disabled(0);
+}
+
+static void bt_action_start(const char *kind, const char *tag) {
+    if (g_bt_action_running) return;
+    if (!g_bt_detail_mac[0]) return;
+    snprintf(g_bt_action_kind, sizeof(g_bt_action_kind), "%s", kind);
+    g_bt_action_running = 1;
+    g_bt_action_done = 0;
+    if (g_bt_detail_body) {
+        char w[80];
+        snprintf(w, sizeof(w), "%s en curso contra %s...", tag, g_bt_detail_mac);
+        lv_label_set_text(g_bt_detail_body, w);
+    }
+    ui_shell_set_status("BT: operando (puede tardar)...", UI_STATUS_WORKING);
+    bt_detail_set_buttons_disabled(1);
+    pthread_t tid;
+    pthread_create(&tid, NULL, bt_action_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static void bt_sdp_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    bt_action_start("sdp", "SDP");
+}
+static void bt_gatt_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    bt_action_start("gatt", "GATT");
+}
+static void bt_l2_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    bt_action_start("l2", "L2ping");
+}
+
+/* Helper para botones del overlay BT (compacto, con etiqueta). */
+static lv_obj_t *bt_make_action_btn(lv_obj_t *parent, const char *txt,
+                                    uint32_t color, int x_ofs,
+                                    lv_event_cb_t cb) {
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_size(b, 92, 30);
+    lv_obj_align(b, LV_ALIGN_BOTTOM_LEFT, x_ofs, -4);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x0a2a0a), 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(color), 0);
+    lv_obj_set_style_border_width(b, 2, 0);
+    lv_obj_set_ext_click_area(b, 6);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(b);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, txt);
+    lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
+    lv_obj_center(l);
+    return b;
+}
+
 static void bt_detail_show(int idx) {
     if (idx < 0 || idx >= g_bt_count) return;
     if (g_bt_detail_overlay) return;
     bt_device_t *d = &g_bt_devices[idx];
+    g_bt_detail_idx = idx;
+    snprintf(g_bt_detail_mac, sizeof(g_bt_detail_mac), "%s", d->mac);
 
     g_bt_detail_overlay = lv_obj_create(g_main_screen);
     lv_obj_set_size(g_bt_detail_overlay, 480, 320);
@@ -2169,7 +2293,7 @@ static void bt_detail_show(int idx) {
     lv_obj_add_flag(g_bt_detail_overlay, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *box = lv_obj_create(g_bt_detail_overlay);
-    lv_obj_set_size(box, 440, 280);
+    lv_obj_set_size(box, 460, 300);
     lv_obj_center(box);
     lv_obj_set_style_bg_color(box, lv_color_hex(0x071007), 0);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
@@ -2187,12 +2311,12 @@ static void bt_detail_show(int idx) {
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 2, 0);
 
     /* Cuerpo: campos. */
-    lv_obj_t *body = lv_label_create(box);
-    lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(body, 420);
-    lv_obj_align(body, LV_ALIGN_TOP_LEFT, 2, 24);
-    lv_obj_set_style_text_color(body, COLOR_OK, 0);
-    lv_obj_set_style_text_font(body, &lv_font_montserrat_10, 0);
+    g_bt_detail_body = lv_label_create(box);
+    lv_label_set_long_mode(g_bt_detail_body, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(g_bt_detail_body, 440);
+    lv_obj_align(g_bt_detail_body, LV_ALIGN_TOP_LEFT, 2, 22);
+    lv_obj_set_style_text_color(g_bt_detail_body, COLOR_OK, 0);
+    lv_obj_set_style_text_font(g_bt_detail_body, &lv_font_montserrat_10, 0);
 
     const char *kind_label = "?";
     if (strcmp(d->kind, "le") == 0)         kind_label = "LE";
@@ -2205,37 +2329,28 @@ static void bt_detail_show(int idx) {
 
     char buf[1400];
     snprintf(buf, sizeof(buf),
-             "MAC:    %s  (%s)\n"
-             "Tipo:   %s\n"
-             "Fab.:   %s\n"
-             "Senal:  %s\n"
-             "Icon:   %s\n"
-             "Class:  %s\n"
+             "MAC: %s (%s)   Tipo: %s   Senal: %s\n"
+             "Fab: %s   Icon: %s   Class: %s\n"
              "Appear: %s\n"
-             "Servicios:\n%s",
+             "Servicios: %s\n"
+             "\n"
+             "Acciones (SOLO lab): SDP (BR/EDR services),\n"
+             "GATT (LE services+chars), L2ping (BR/EDR echo).",
              d->mac, d->addr_type[0] ? d->addr_type : "?",
-             kind_label,
+             kind_label, rssi_txt,
              d->vendor[0] ? d->vendor : "?",
-             rssi_txt,
              d->icon[0] ? d->icon : "-",
              d->cls[0] ? d->cls : "-",
              d->appearance[0] ? d->appearance : "-",
              d->uuids[0] ? d->uuids : "(sin servicios detectados)");
-    lv_label_set_text(body, buf);
+    lv_label_set_text(g_bt_detail_body, buf);
 
-    /* Boton Cerrar. */
-    lv_obj_t *b = lv_button_create(box);
-    lv_obj_set_size(b, 110, 32);
-    lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 0, -4);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0x0a2a0a), 0);
-    lv_obj_set_style_border_color(b, COLOR_OK, 0);
-    lv_obj_set_style_border_width(b, 2, 0);
-    lv_obj_add_event_cb(b, bt_detail_close_cb, LV_EVENT_PRESSED, NULL);
-    ui_apply_press_effect(b);
-    lv_obj_t *bl = lv_label_create(b);
-    lv_label_set_text(bl, "Cerrar");
-    lv_obj_set_style_text_color(bl, COLOR_OK, 0);
-    lv_obj_center(bl);
+    /* Fila de botones al pie: SDP (ambar), GATT (cyan), L2ping (rojo), Cerrar. */
+    g_bt_detail_btn_sdp   = bt_make_action_btn(box, "SDP",    0xFFCC33,   4, bt_sdp_btn_cb);
+    g_bt_detail_btn_gatt  = bt_make_action_btn(box, "GATT",   0x33CCFF, 102, bt_gatt_btn_cb);
+    g_bt_detail_btn_l2    = bt_make_action_btn(box, "L2ping", 0xFF4444, 200, bt_l2_btn_cb);
+    g_bt_detail_btn_close = bt_make_action_btn(box, "Cerrar", 0x33FF33, 332, bt_detail_close_cb);
+    /* Diferenciar el cierre: borde verde + fondo mas tenue. ya con color_ok. */
 }
 
 static void bt_row_cb(lv_event_t *e) {
@@ -2651,6 +2766,10 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_flex_flow(g_cfg_box, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_scroll_dir(g_cfg_box, LV_DIR_VER);
 
+        /* Ocultamos la caja durante el fill para no gatillar un redraw del SPI
+         * KeDei por cada fila (ver CLAUDE.md §6: SPI por-pixel = cuello real).
+         * Un solo flush al final cuando mostramos la caja. */
+        lv_obj_add_flag(g_cfg_box, LV_OBJ_FLAG_HIDDEN);
         cfg_load_all();   /* toda la config en UN fork (no 1 por parametro) */
         for (int i = 0; i < CFG_N; i++) {
             cfg_item_load(i);
@@ -2658,6 +2777,7 @@ static void enter_section(const char *id, const char *label) {
         }
         g_cfg_active = 1;   /* a partir de aca los cambios se juntan y se guardan al salir */
         lv_obj_scroll_to_y(g_cfg_box, 0, LV_ANIM_OFF);
+        lv_obj_clear_flag(g_cfg_box, LV_OBJ_FLAG_HIDDEN);
 
         /* Scroll por botones ▲▼ (el touch-scroll del KeDei no es fiable). */
         lv_obj_t *cup = lv_button_create(g_body);

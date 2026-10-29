@@ -4,6 +4,7 @@
    ═══════════════════════════════════════════════════════ */
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -167,6 +168,215 @@ int bt_client_scan(const char *iface, int seconds, const char *mode,
 
     cJSON_Delete(root);
     return count;
+}
+
+/* ----------------------------------------------------------------------
+ * Pentesting / auditoria: SDP + GATT + L2ping. Cada funcion arma texto
+ * multilinea para pintar en el overlay (lv_label). SOLO lab.
+ * ---------------------------------------------------------------------- */
+
+static int _append(char *buf, int cap, int *used, const char *fmt, ...) {
+    if (*used + 1 >= cap) return 0;
+    va_list ap; va_start(ap, fmt);
+    int w = vsnprintf(buf + *used, cap - *used, fmt, ap);
+    va_end(ap);
+    if (w <= 0) return 0;
+    if (*used + w >= cap) { *used = cap - 1; buf[*used] = '\0'; return 0; }
+    *used += w;
+    return 1;
+}
+
+int bt_client_sdp(const char *mac, char *out_text, int out_size) {
+    if (!mac || !out_text || out_size < 32) return 0;
+    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "sdp",
+                     (char *)mac, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        snprintf(out_text, out_size, "SDP: no se pudo ejecutar bt_ops.py");
+        return 0;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        snprintf(out_text, out_size, "SDP: JSON invalido");
+        return 0;
+    }
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
+    cJSON *services = cJSON_GetObjectItemCaseSensitive(root, "services");
+    cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+    cJSON *warn = cJSON_GetObjectItemCaseSensitive(root, "warn");
+
+    out_text[0] = '\0';
+    int used = 0;
+    if (!ok_b) {
+        _append(out_text, out_size, &used, "SDP %s FALLO:\n%s\n", mac,
+                cJSON_IsString(err) ? err->valuestring : "desconocido");
+        cJSON_Delete(root);
+        return 0;
+    }
+    int n = (cJSON_IsArray(services)) ? cJSON_GetArraySize(services) : 0;
+    _append(out_text, out_size, &used, "SDP %s - %d servicio(s)%s\n",
+            mac, n,
+            cJSON_IsString(warn) ? " (parcial)" : "");
+    if (cJSON_IsArray(services)) {
+        cJSON *s;
+        int i = 0;
+        cJSON_ArrayForEach(s, services) {
+            cJSON *name = cJSON_GetObjectItemCaseSensitive(s, "name");
+            cJSON *rh   = cJSON_GetObjectItemCaseSensitive(s, "rec_handle");
+            cJSON *cls  = cJSON_GetObjectItemCaseSensitive(s, "classes");
+            _append(out_text, out_size, &used, "* %s",
+                    cJSON_IsString(name) ? name->valuestring : "?");
+            if (cJSON_IsString(rh) && rh->valuestring[0])
+                _append(out_text, out_size, &used, "  [%s]", rh->valuestring);
+            _append(out_text, out_size, &used, "\n");
+            /* class names */
+            if (cJSON_IsArray(cls)) {
+                int ci = 0; cJSON *c;
+                cJSON_ArrayForEach(c, cls) {
+                    if (!cJSON_IsArray(c) || cJSON_GetArraySize(c) < 1) continue;
+                    cJSON *cn = cJSON_GetArrayItem(c, 0);
+                    if (cJSON_IsString(cn))
+                        _append(out_text, out_size, &used, "    - %s\n",
+                                cn->valuestring);
+                    if (++ci >= 2) break;
+                }
+            }
+            if (++i >= 10) {
+                _append(out_text, out_size, &used, "... (%d mas)\n", n - i);
+                break;
+            }
+        }
+    }
+    if (n == 0 && cJSON_IsString(warn)) {
+        _append(out_text, out_size, &used, "\nAviso: %s", warn->valuestring);
+    }
+    cJSON_Delete(root);
+    return (n > 0) ? 1 : 0;
+}
+
+int bt_client_gatt(const char *mac, const char *iface,
+                   char *out_text, int out_size) {
+    if (!mac || !out_text || out_size < 32) return 0;
+    const char *ifs = (iface && iface[0]) ? iface : BT_DEFAULT_IFACE;
+    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "gatt",
+                     (char *)ifs, (char *)mac, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        snprintf(out_text, out_size, "GATT: no se pudo ejecutar bt_ops.py");
+        return 0;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        snprintf(out_text, out_size, "GATT: JSON invalido");
+        return 0;
+    }
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
+    cJSON *services = cJSON_GetObjectItemCaseSensitive(root, "services");
+    cJSON *chars    = cJSON_GetObjectItemCaseSensitive(root, "characteristics");
+    cJSON *err  = cJSON_GetObjectItemCaseSensitive(root, "error");
+    cJSON *warn = cJSON_GetObjectItemCaseSensitive(root, "warn");
+
+    out_text[0] = '\0';
+    int used = 0;
+    if (!ok_b) {
+        _append(out_text, out_size, &used, "GATT %s FALLO:\n%s\n", mac,
+                cJSON_IsString(err) ? err->valuestring : "desconocido");
+        cJSON_Delete(root);
+        return 0;
+    }
+    int ns = cJSON_IsArray(services) ? cJSON_GetArraySize(services) : 0;
+    int nc = cJSON_IsArray(chars) ? cJSON_GetArraySize(chars) : 0;
+    _append(out_text, out_size, &used, "GATT %s - %d svc, %d chars%s\n",
+            mac, ns, nc,
+            cJSON_IsString(warn) ? " (parcial)" : "");
+    if (cJSON_IsArray(services)) {
+        cJSON *s; int i = 0;
+        cJSON_ArrayForEach(s, services) {
+            cJSON *uuid = cJSON_GetObjectItemCaseSensitive(s, "uuid");
+            cJSON *lbl  = cJSON_GetObjectItemCaseSensitive(s, "label");
+            const char *u = cJSON_IsString(uuid) ? uuid->valuestring : "?";
+            const char *l = (cJSON_IsString(lbl) && lbl->valuestring[0])
+                            ? lbl->valuestring : "";
+            if (l[0])
+                _append(out_text, out_size, &used, "svc %.8s %s\n", u, l);
+            else
+                _append(out_text, out_size, &used, "svc %.36s\n", u);
+            if (++i >= 8) {
+                _append(out_text, out_size, &used, "... (%d svc mas)\n", ns - i);
+                break;
+            }
+        }
+    }
+    if (nc > 0) {
+        _append(out_text, out_size, &used, "chars: %d (ver DB para detalle)\n", nc);
+    }
+    if (cJSON_IsString(warn)) {
+        _append(out_text, out_size, &used, "\nAviso: %s", warn->valuestring);
+    }
+    cJSON_Delete(root);
+    return (ns + nc > 0) ? 1 : 0;
+}
+
+int bt_client_l2ping(const char *mac, int count, int size,
+                     char *out_text, int out_size) {
+    if (!mac || !out_text || out_size < 32) return 0;
+    if (count <= 0) count = 5;
+    if (size <= 0)  size = 44;
+    char cstr[8], sstr[8];
+    snprintf(cstr, sizeof(cstr), "%d", count);
+    snprintf(sstr, sizeof(sstr), "%d", size);
+    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "l2ping",
+                     (char *)mac, cstr, sstr, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        snprintf(out_text, out_size, "L2ping: no se pudo ejecutar bt_ops.py");
+        return 0;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        snprintf(out_text, out_size, "L2ping: JSON invalido");
+        return 0;
+    }
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
+    cJSON *stats = cJSON_GetObjectItemCaseSensitive(root, "stats");
+    cJSON *err  = cJSON_GetObjectItemCaseSensitive(root, "error");
+
+    out_text[0] = '\0';
+    int used = 0;
+    if (!ok_b && !cJSON_IsObject(stats)) {
+        _append(out_text, out_size, &used, "L2ping %s FALLO:\n%s\n", mac,
+                cJSON_IsString(err) ? err->valuestring : "desconocido");
+        cJSON_Delete(root);
+        return 0;
+    }
+    cJSON *sent = cJSON_GetObjectItemCaseSensitive(stats, "sent");
+    cJSON *recv = cJSON_GetObjectItemCaseSensitive(stats, "received");
+    cJSON *loss = cJSON_GetObjectItemCaseSensitive(stats, "loss_pct");
+    cJSON *avg  = cJSON_GetObjectItemCaseSensitive(stats, "avg_ms");
+    cJSON *mn   = cJSON_GetObjectItemCaseSensitive(stats, "min_ms");
+    cJSON *mx   = cJSON_GetObjectItemCaseSensitive(stats, "max_ms");
+    int snt = cJSON_IsNumber(sent) ? sent->valueint : 0;
+    int rcv = cJSON_IsNumber(recv) ? recv->valueint : 0;
+    _append(out_text, out_size, &used, "L2ping %s\n", mac);
+    _append(out_text, out_size, &used, "sent=%d  recv=%d", snt, rcv);
+    if (cJSON_IsNumber(loss))
+        _append(out_text, out_size, &used, "  loss=%d%%", loss->valueint);
+    _append(out_text, out_size, &used, "\n");
+    if (cJSON_IsNumber(avg))
+        _append(out_text, out_size, &used, "avg=%.2fms  min=%.2fms  max=%.2fms\n",
+                avg->valuedouble,
+                cJSON_IsNumber(mn) ? mn->valuedouble : 0.0,
+                cJSON_IsNumber(mx) ? mx->valuedouble : 0.0);
+    if (!ok_b && cJSON_IsString(err))
+        _append(out_text, out_size, &used, "\nAviso: %s", err->valuestring);
+    cJSON_Delete(root);
+    return rcv > 0 ? 1 : 0;
 }
 
 int bt_client_power(int on, const char *iface,

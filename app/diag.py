@@ -44,6 +44,11 @@ REQUIRED_BINARIES = [
     ("btmgmt",        ["/usr/bin/btmgmt"],                      "bluetooth", False),
     ("hcitool",       ["/usr/bin/hcitool"],                     "bluetooth", False),
     ("rfkill",        ["/usr/sbin/rfkill", "/usr/bin/rfkill"],  "bluetooth", False),
+    # Pentesting/auditoria BT (fase 3 iter 3)
+    ("sdptool",       ["/usr/bin/sdptool"],                     "bluetooth", False),
+    ("gatttool",      ["/usr/bin/gatttool"],                    "bluetooth", False),
+    ("l2ping",        ["/usr/bin/l2ping"],                      "bluetooth", False),
+    ("btmon",         ["/usr/bin/btmon"],                       "bluetooth", False),
 ]
 
 EXPECTED_WLAN1_DRIVER = "rtw88_8821cu"

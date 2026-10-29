@@ -347,6 +347,117 @@ class ParseBluetoothctlInfoRssiTests(unittest.TestCase):
         self.assertEqual(d["alias"], "LAP-1MJLWG3")
 
 
+SDPTOOL_SAMPLE = """\
+Browsing 00:1A:7D:12:34:56 ...
+Service Name: Audio Sink
+Service RecHandle: 0x10001
+Service Class ID List:
+  "Audio Sink" (0x110b)
+Protocol Descriptor List:
+  "L2CAP" (0x0100)
+    PSM: 25
+
+Service Name: Hands-Free unit
+Service RecHandle: 0x10002
+Service Class ID List:
+  "Handsfree" (0x111e)
+  "Generic Audio" (0x1203)
+"""
+
+
+class ParseSdpToolTests(unittest.TestCase):
+    def test_parses_two_services(self):
+        svs = bt_ops.parse_sdptool_browse(SDPTOOL_SAMPLE)
+        self.assertEqual(len(svs), 2)
+        self.assertEqual(svs[0]["name"], "Audio Sink")
+        self.assertEqual(svs[0]["rec_handle"], "0x10001")
+        self.assertEqual(svs[1]["name"], "Hands-Free unit")
+
+    def test_captures_classes(self):
+        svs = bt_ops.parse_sdptool_browse(SDPTOOL_SAMPLE)
+        self.assertEqual(svs[0]["classes"][0], ("Audio Sink", "0x110b"))
+        names = [c[0] for c in svs[1]["classes"]]
+        self.assertIn("Handsfree", names)
+
+    def test_empty_input_returns_empty_list(self):
+        self.assertEqual(bt_ops.parse_sdptool_browse(""), [])
+        self.assertEqual(bt_ops.parse_sdptool_browse(None), [])
+
+
+L2PING_SAMPLE = """\
+Ping: AA:BB:CC:DD:EE:FF from DD:EE:FF:00:11:22 (data size 44) ...
+44 bytes from AA:BB:CC:DD:EE:FF id 0 time 12.21ms
+44 bytes from AA:BB:CC:DD:EE:FF id 1 time 11.07ms
+44 bytes from AA:BB:CC:DD:EE:FF id 2 time 14.80ms
+3 sent, 3 received, 0% loss
+"""
+
+L2PING_LOSSY_SAMPLE = """\
+44 bytes from AA:BB:CC:DD:EE:FF id 0 time 11.00ms
+5 sent, 1 received, 80% loss
+"""
+
+
+class ParseL2pingTests(unittest.TestCase):
+    def test_captures_stats_from_success(self):
+        s = bt_ops.parse_l2ping_output(L2PING_SAMPLE)
+        self.assertEqual(s["sent"], 3)
+        self.assertEqual(s["received"], 3)
+        self.assertEqual(s["loss_pct"], 0)
+        self.assertEqual(len(s["samples"]), 3)
+        self.assertAlmostEqual(s["avg_ms"], 12.69, places=2)
+        self.assertEqual(s["min_ms"], 11.07)
+        self.assertEqual(s["max_ms"], 14.80)
+
+    def test_captures_stats_with_packet_loss(self):
+        s = bt_ops.parse_l2ping_output(L2PING_LOSSY_SAMPLE)
+        self.assertEqual(s["sent"], 5)
+        self.assertEqual(s["received"], 1)
+        self.assertEqual(s["loss_pct"], 80)
+
+    def test_empty_input_zero_sent(self):
+        s = bt_ops.parse_l2ping_output("")
+        self.assertEqual(s["sent"], 0)
+        self.assertEqual(s["received"], 0)
+        self.assertEqual(s["samples"], [])
+
+
+GATT_SAMPLE = """\
+[bluetooth]# connect AA:BB:CC:DD:EE:FF
+Attempting to connect to AA:BB:CC:DD:EE:FF
+[\x1b[0;93mCHG\x1b[0m] Device AA:BB:CC:DD:EE:FF Connected: yes
+[bluetooth]# menu gatt
+[bluetooth:gatt]# list-attributes
+Primary Service (Handle 0x0001)
+	/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0001
+	UUID: Generic Access Profile    (00001800-0000-1000-8000-00805f9b34fb)
+Characteristic (Handle 0x0003)
+	/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0001/char0002
+	UUID: Device Name    (00002a00-0000-1000-8000-00805f9b34fb)
+Primary Service (Handle 0x0010)
+	/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0010
+	UUID: Battery Service    (0000180f-0000-1000-8000-00805f9b34fb)
+Characteristic (Handle 0x0012)
+	/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0010/char0011
+	UUID: Battery Level    (00002a19-0000-1000-8000-00805f9b34fb)
+"""
+
+
+class ParseGattTests(unittest.TestCase):
+    def test_parses_services_and_characteristics(self):
+        attrs = bt_ops.parse_bluetoothctl_gatt(GATT_SAMPLE)
+        svc = [a for a in attrs if a["kind"] == "service"]
+        chr_ = [a for a in attrs if a["kind"] == "characteristic"]
+        self.assertEqual(len(svc), 2)
+        self.assertEqual(len(chr_), 2)
+        self.assertEqual(svc[0]["uuid"], "00001800-0000-1000-8000-00805f9b34fb")
+        self.assertTrue(chr_[0]["path"].endswith("char0002"))
+        self.assertEqual(chr_[1]["label"], "Battery Level")
+
+    def test_empty_input_returns_empty_list(self):
+        self.assertEqual(bt_ops.parse_bluetoothctl_gatt(""), [])
+
+
 class ScanDispatchTests(unittest.TestCase):
     def test_scan_fails_fast_when_power_on_fails(self):
         """Si hciconfig up falla, scan devuelve error sin tocar bluetoothctl."""
