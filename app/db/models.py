@@ -121,6 +121,7 @@ class BluetoothLog(Base):
     appearance: Mapped[str] = mapped_column(String(48), nullable=True)    # BLE appearance (phone, ...)
     cls: Mapped[str] = mapped_column(String(16), nullable=True)           # Class of Device (BR/EDR)
     icon: Mapped[str] = mapped_column(String(32), nullable=True)          # bluez icon string
+    type_label: Mapped[str] = mapped_column("type", String(24), nullable=True)  # PC|Celular|Audio|Teclado|...
     services: Mapped[str] = mapped_column(Text, nullable=True)            # lista de UUIDs (coma)
     manufacturer_data: Mapped[str] = mapped_column(Text, nullable=True)   # company_id -> hex
     details: Mapped[str] = mapped_column(Text, nullable=True)

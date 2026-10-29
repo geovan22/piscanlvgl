@@ -82,6 +82,8 @@ typedef struct {
     /* CHOICE estatica: array de opciones; NULL = CHOICE dinamica (ej portal). */
     const char *const *choices;
     int n_choices;
+    /* Grupo visual para header en la pantalla Config (puede ser NULL). */
+    const char *group;
 } cfg_item_t;
 
 static const char *const BT_IFACE_CHOICES[] = { "hci1", "hci0" };
@@ -89,19 +91,27 @@ static const char *const BT_IFACE_CHOICES[] = { "hci1", "hci0" };
  * hci0 (onboard BCM43438, BT 5.0, UART, no comparte USB con wlan1) es la
  * opcion recomendada para uso intensivo con WiFi en paralelo. */
 
+static const char *const BT_SPAM_MODES[] = {
+    "names", "random", "apple", "google", "microsoft", "samsung",
+};
+
 static const cfg_item_t CFG_ITEMS[] = {
-    {"deauth_duration",      "Deauth sostenido",  "wifi", CFG_INT,    0, 600, 5,  0, "s",  NULL,              0},
-    {"beacon_duration",      "Beacon flood",      "wifi", CFG_INT,    5, 300, 5, 20, "s",  NULL,              0},
-    {"honeypot_portal",      "Honeypot portal",   "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL, NULL,              0},
-    {"honeypot_bridge",      "Honeypot internet", "wifi", CFG_BOOL,   0,   1, 1,  0, NULL, NULL,              0},
-    {"honeypot_pcap",        "Honeypot PCAP",     "wifi", CFG_BOOL,   0,   1, 1,  1, NULL, NULL,              0},
-    {"honeypot_probe_sniff", "Honeypot probe/PNL","wifi", CFG_BOOL,   0,   1, 1,  0, NULL, NULL,              0},
-    /* bt_iface: cat="wifi" por consistencia con las demas keys de Config
-     * (cfg_load_all/set_many filtran por una sola category hoy). */
-    {"bt_iface",             "Bluetooth iface",   "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL, BT_IFACE_CHOICES,  2},
-    /* Acciones globales BT (iter 4). SOLO lab. */
-    {"bt_spam_duration",     "BT: BLE spam",      "wifi", CFG_INT,    5, 180, 5, 20, "s",  NULL,              0},
-    {"bt_capture_duration",  "BT: Capturar HCI",  "wifi", CFG_INT,    5, 300, 5, 30, "s",  NULL,              0},
+    /* -- WiFi -- */
+    {"deauth_duration",      "Deauth sostenido",  "wifi", CFG_INT,    0, 600, 5,  0, "s",  NULL,              0,                        "WiFi"},
+    {"beacon_duration",      "Beacon flood",      "wifi", CFG_INT,    5, 300, 5, 20, "s",  NULL,              0,                        "WiFi"},
+    /* -- Honeypot -- */
+    {"honeypot_portal",      "Portal",            "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL, NULL,              0,                        "Honeypot"},
+    {"honeypot_bridge",      "Internet (puente)", "wifi", CFG_BOOL,   0,   1, 1,  0, NULL, NULL,              0,                        "Honeypot"},
+    {"honeypot_pcap",        "PCAP de sesion",    "wifi", CFG_BOOL,   0,   1, 1,  1, NULL, NULL,              0,                        "Honeypot"},
+    {"honeypot_probe_sniff", "Probe/PNL sniff",   "wifi", CFG_BOOL,   0,   1, 1,  0, NULL, NULL,              0,                        "Honeypot"},
+    /* -- Bluetooth -- */
+    /* bt_iface: cat="wifi" por consistencia con las demas keys (cfg_load_all/
+     * set_many filtran por una sola category hoy). */
+    {"bt_iface",             "Interfaz",          "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL, BT_IFACE_CHOICES,  2,                        "Bluetooth"},
+    {"bt_spam_mode",         "Spam target",       "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL, BT_SPAM_MODES,
+                                                                                              sizeof(BT_SPAM_MODES)/sizeof(BT_SPAM_MODES[0]),"Bluetooth"},
+    {"bt_spam_duration",     "Spam duracion",     "wifi", CFG_INT,    5, 180, 5, 20, "s",  NULL,              0,                        "Bluetooth"},
+    {"bt_capture_duration",  "Captura HCI",       "wifi", CFG_INT,    5, 300, 5, 30, "s",  NULL,              0,                        "Bluetooth"},
 };
 #define CFG_N ((int)(sizeof(CFG_ITEMS)/sizeof(CFG_ITEMS[0])))
 static int       g_cfg_val[CFG_N];       /* valor actual (INT/BOOL) o indice (CHOICE) */
@@ -1959,9 +1969,35 @@ static void cfg_make_btn(lv_obj_t *row, int i, int dir, int x_ofs, const char *t
     lv_obj_center(l);
 }
 
+/* Si este item abre un grupo nuevo (distinto al anterior), inserta una
+ * fila 'header' chica con el nombre del grupo. Agrupa visualmente la lista
+ * (WiFi / Honeypot / Bluetooth) sin cambiar el modelo de persistencia. */
+static void cfg_make_group_header(int i) {
+    const cfg_item_t *it = &CFG_ITEMS[i];
+    if (!it->group || !it->group[0]) return;
+    if (i > 0 && CFG_ITEMS[i - 1].group &&
+        strcmp(CFG_ITEMS[i - 1].group, it->group) == 0) return;   /* mismo grupo */
+
+    lv_obj_t *hdr = lv_obj_create(g_cfg_box);
+    lv_obj_set_size(hdr, 384, 18);
+    lv_obj_set_style_bg_opa(hdr, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 0, 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *l = lv_label_create(hdr);
+    char buf[48];
+    snprintf(buf, sizeof(buf), "── %s ──", it->group);
+    lv_label_set_text(l, buf);
+    lv_obj_set_style_text_color(l, lv_color_hex(0x33CCFF), 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
+    lv_obj_align(l, LV_ALIGN_LEFT_MID, 2, 0);
+}
+
 /* Crea la fila compacta del parametro i dentro de g_cfg_box. */
 static void cfg_make_row(int i) {
     const cfg_item_t *it = &CFG_ITEMS[i];
+    cfg_make_group_header(i);
     lv_obj_t *row = lv_obj_create(g_cfg_box);
     lv_obj_set_size(row, 384, 30);
     lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
@@ -2341,15 +2377,18 @@ static void bt_detail_show(int idx) {
 
     char buf[1400];
     snprintf(buf, sizeof(buf),
-             "MAC: %s (%s)   Tipo: %s   Senal: %s\n"
+             "Device: %s   Transporte: %s   Senal: %s\n"
+             "MAC: %s (%s)\n"
              "Fab: %s   Icon: %s   Class: %s\n"
              "Appear: %s\n"
              "Servicios: %s\n"
              "\n"
              "Acciones (SOLO lab): SDP (BR/EDR services),\n"
-             "GATT (LE services+chars), L2ping (BR/EDR echo).",
-             d->mac, d->addr_type[0] ? d->addr_type : "?",
+             "GATT (LE services+chars), L2ping (BR/EDR echo).\n"
+             "LE puro -> solo GATT aplica. BR/EDR -> SDP/L2ping.",
+             d->type_lbl[0] ? d->type_lbl : "?",
              kind_label, rssi_txt,
+             d->mac, d->addr_type[0] ? d->addr_type : "?",
              d->vendor[0] ? d->vendor : "?",
              d->icon[0] ? d->icon : "-",
              d->cls[0] ? d->cls : "-",
@@ -2407,33 +2446,33 @@ static void render_bt_list(void) {
         lv_obj_set_user_data(row, (void *)(intptr_t)i);
         lv_obj_add_event_cb(row, bt_row_cb, LV_EVENT_PRESSED, NULL);
 
-        /* Columna 0: nombre (o MAC si no hay nombre), coloreado por tipo:
+        /* Columna 0: nombre o MAC. Coloreado por kind:
          *   LE = cyan, classic = verde, dual = magenta. */
         const char *tx = (d->name[0] ? d->name : d->mac);
         lv_color_t name_col = COLOR_OK;
         if (strcmp(d->kind, "le") == 0)        name_col = lv_color_hex(0x33CCFF);
         else if (strcmp(d->kind, "dual") == 0) name_col = lv_color_hex(0xCC66FF);
-        make_row_label(row, tx, name_col, 0);
+        char tbuf[22];
+        snprintf(tbuf, sizeof(tbuf), "%.20s", tx);
+        make_row_label(row, tbuf, name_col, 0);
 
-        /* Columna 1: MAC (si no estuvo ya en nombre) */
-        if (d->name[0]) {
-            char mbuf[20];
-            snprintf(mbuf, sizeof(mbuf), "%s", d->mac + 9);  /* ultimos 2 octetos */
-            make_row_label(row, mbuf, COLOR_DIM, 165);
-        }
+        /* Columna 1: tipo (PC/Celular/Audio/Teclado/...) en magenta tenue */
+        char tyb[16];
+        snprintf(tyb, sizeof(tyb), "%.10s", d->type_lbl[0] ? d->type_lbl : "-");
+        make_row_label(row, tyb, lv_color_hex(0xFFCC33), 155);
 
         /* Columna 2: fabricante */
         char vbuf[20];
-        snprintf(vbuf, sizeof(vbuf), "%.14s", d->vendor[0] ? d->vendor : "?");
-        make_row_label(row, vbuf, lv_color_hex(0x33CCFF), 210);
+        snprintf(vbuf, sizeof(vbuf), "%.12s", d->vendor[0] ? d->vendor : "?");
+        make_row_label(row, vbuf, lv_color_hex(0x33CCFF), 215);
 
         /* Columna 3: RSSI */
         char rbuf[16];
         if (d->rssi != 0) snprintf(rbuf, sizeof(rbuf), "%ddBm", d->rssi);
         else              snprintf(rbuf, sizeof(rbuf), "---");
-        make_row_label(row, rbuf, COLOR_DIM, 300);
+        make_row_label(row, rbuf, COLOR_DIM, 295);
 
-        /* Columna 4: tipo (LE/BR) */
+        /* Columna 4: kind BT (LE/BR/DUAL) */
         const char *kb = "?";
         if (strcmp(d->kind, "le") == 0)        kb = "LE";
         else if (strcmp(d->kind, "classic") == 0) kb = "BR";
@@ -2489,7 +2528,11 @@ static void *bt_global_thread_fn(void *arg) {
         if (db_config_get("bt_spam_duration", sv, sizeof(sv)) && sv[0])
             secs = atoi(sv);
         if (secs < 2) secs = 2;
-        g_btg_ok = bt_client_ble_spam(iface, secs, "names",
+        char mode[16] = "names";
+        char mv[16];
+        if (db_config_get("bt_spam_mode", mv, sizeof(mv)) && mv[0])
+            snprintf(mode, sizeof(mode), "%s", mv);
+        g_btg_ok = bt_client_ble_spam(iface, secs, mode,
                                       g_btg_text, sizeof(g_btg_text));
     } else if (strcmp(g_btg_kind, "capture") == 0) {
         int secs = 30;

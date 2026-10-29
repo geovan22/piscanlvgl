@@ -1,0 +1,9 @@
+# ble_payloads/samsung.txt — Samsung Buds-style (telefonos Samsung muestran
+# un popup tipo "Galaxy Buds Live"). Marco: SOLO lab.
+# Formato: name=<string>|cid=<4-hex>|data=<hex-pairs>
+# cid=0075 -> Samsung Electronics
+# Formato Buds adv: 42 09 81 02 14 15 03 21 <modelo> <bateria>
+name=Galaxy Buds2|cid=0075|data=42 09 81 02 14 15 03 21 00 00
+name=Galaxy Buds Pro|cid=0075|data=42 09 81 02 14 15 03 21 03 00
+name=Galaxy Buds Live|cid=0075|data=42 09 81 02 14 15 03 21 02 00
+name=Galaxy Buds+|cid=0075|data=42 09 81 02 14 15 03 21 01 00

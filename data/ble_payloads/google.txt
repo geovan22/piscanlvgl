@@ -1,0 +1,13 @@
+# ble_payloads/google.txt — Fast Pair / Nearby (Android muestra popup
+# "Dispositivo cercano"). Marco: SOLO lab.
+# Formato: name=<string>|cid=<4-hex>|data=<hex-pairs>
+# cid=00e0 -> Google LLC
+# Fast Pair real usa Service Data en UUID 0xFE2C con un model_id de 3 bytes.
+# Aqui lo exponemos como Manufacturer Data con el company ID de Google (basta
+# para hacer visible el advertisement). Para un popup real, el model_id debe
+# estar registrado en Google Fast Pair Service.
+name=Pixel Buds Pro|cid=00e0|data=4C 95 03 00
+name=Pixel Buds A|cid=00e0|data=F5 23 7F 00
+name=Fast Pair|cid=00e0|data=D4 51 2C 00
+name=Nest Mini|cid=00e0|data=00 00 00 00
+name=Pixel 8|cid=00e0|data=00 10 10 10

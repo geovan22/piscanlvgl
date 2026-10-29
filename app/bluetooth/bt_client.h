@@ -15,6 +15,7 @@ typedef struct {
     char appearance[48]; /* BLE appearance (ej "Generic Watch (0x00C0)") */
     char icon[32];       /* icono bluez (ej "computer", "audio-card") */
     char cls[16];        /* Class of Device (BR/EDR, hex) */
+    char type_lbl[16];   /* etiqueta corta: PC/Celular/Audio/Teclado/... */
     char uuids[480];     /* CSV de servicios: "Battery Service, GAP, ..." */
 } bt_device_t;
 

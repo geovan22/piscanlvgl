@@ -105,6 +105,7 @@ int bt_client_scan(const char *iface, int seconds, const char *mode,
             cJSON *appearance = cJSON_GetObjectItemCaseSensitive(item, "appearance");
             cJSON *icon = cJSON_GetObjectItemCaseSensitive(item, "icon");
             cJSON *cls = cJSON_GetObjectItemCaseSensitive(item, "class");
+            cJSON *type_l = cJSON_GetObjectItemCaseSensitive(item, "type");
             cJSON *uuids = cJSON_GetObjectItemCaseSensitive(item, "uuids");
 
             snprintf(out[count].mac, sizeof(out[count].mac), "%s",
@@ -125,6 +126,8 @@ int bt_client_scan(const char *iface, int seconds, const char *mode,
                      cJSON_IsString(icon) ? icon->valuestring : "");
             snprintf(out[count].cls, sizeof(out[count].cls), "%s",
                      cJSON_IsString(cls) ? cls->valuestring : "");
+            snprintf(out[count].type_lbl, sizeof(out[count].type_lbl), "%s",
+                     cJSON_IsString(type_l) ? type_l->valuestring : "");
 
             /* uuids: cada entrada viene como "uuid|Etiqueta humana". Preferimos
              * la etiqueta (es lo util para el usuario); si no hay, usamos la
@@ -455,6 +458,7 @@ int bt_client_capture(const char *iface, int seconds,
     cJSON *path = cJSON_GetObjectItemCaseSensitive(root, "path");
     cJSON *size = cJSON_GetObjectItemCaseSensitive(root, "size");
     cJSON *dur  = cJSON_GetObjectItemCaseSensitive(root, "duration_s");
+    cJSON *pkts = cJSON_GetObjectItemCaseSensitive(root, "packets");
     int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
     int sz = cJSON_IsNumber(size) ? size->valueint : 0;
     int used = 0;
@@ -470,13 +474,30 @@ int bt_client_capture(const char *iface, int seconds,
     const char *slash = strrchr(p, '/');
     if (slash && slash[1]) fname = slash + 1;
     double d = cJSON_IsNumber(dur) ? dur->valuedouble : 0.0;
+    int n = cJSON_IsNumber(pkts) ? pkts->valueint : -1;
     _append(out_text, out_size, &used,
-            "Captura %s  (%s)\n"
-            "size=%d B  (%.1f KB)\n"
-            "duration=%.1f s\n"
+            "Captura %s  %s\n"
+            "paquetes HCI: %s\n"
+            "size: %.1f KB (%d B)\n"
+            "duracion: %.1f s\n"
             "path: %s",
             (iface && iface[0]) ? iface : "hci1", fname,
-            sz, sz / 1024.0, d, p);
+            (n < 0) ? "(no parseable)" : "",
+            sz / 1024.0, sz, d, p);
+    /* Reemplazar el placeholder de paquetes con el numero real */
+    if (n >= 0) {
+        /* buscamos y reemplazamos "HCI: \n" por "HCI: N\n" — simplifico
+           regenerando con la cuenta correcta */
+        used = 0; out_text[0] = '\0';
+        _append(out_text, out_size, &used,
+                "Captura %s  %s\n"
+                "paquetes HCI: %d\n"
+                "size: %.1f KB (%d B)\n"
+                "duracion: %.1f s\n"
+                "path: %s",
+                (iface && iface[0]) ? iface : "hci1", fname,
+                n, sz / 1024.0, sz, d, p);
+    }
     if (cJSON_IsString(warn)) {
         _append(out_text, out_size, &used, "\nAviso: %s", warn->valuestring);
     }

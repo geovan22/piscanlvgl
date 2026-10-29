@@ -1,0 +1,14 @@
+# ble_payloads/microsoft.txt — Swift Pair (Windows 10/11 muestra popup
+# "Nuevo dispositivo encontrado"). Marco: SOLO lab.
+# Formato: name=<string>|cid=<4-hex>|data=<hex-pairs>
+# cid=0006 -> Microsoft
+# Swift Pair Beacon format:
+#   first byte: beacon type (0x03 = Microsoft BLE beacon)
+#   second: subtype (0x00 = v1)
+#   third: beacon payload (0x80 = pairing)
+#   following: device/model info
+name=PiScan HID|cid=0006|data=03 00 80 06 00
+name=PiScan Mouse|cid=0006|data=03 00 80 01 00
+name=PiScan Keyboard|cid=0006|data=03 00 80 02 00
+name=PiScan Dongle|cid=0006|data=03 00 80 04 00
+name=Surface Pen|cid=0006|data=03 00 80 20 01 00

