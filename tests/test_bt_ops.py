@@ -458,6 +458,67 @@ class ParseGattTests(unittest.TestCase):
         self.assertEqual(bt_ops.parse_bluetoothctl_gatt(""), [])
 
 
+class DeviceTypeTests(unittest.TestCase):
+    def test_classifies_by_bluez_icon(self):
+        self.assertEqual(bt_ops._device_type("computer", "", "", ""), "PC")
+        self.assertEqual(bt_ops._device_type("phone", "", "", ""), "Celular")
+        self.assertEqual(bt_ops._device_type("audio-card", "", "", ""), "Audio")
+        self.assertEqual(bt_ops._device_type("input-keyboard", "", "", ""), "Teclado")
+
+    def test_classifies_by_appearance_watch(self):
+        self.assertEqual(
+            bt_ops._device_type("", "", "Generic Watch (0x00C0)", ""),
+            "Reloj",
+        )
+
+
+class BlePayloadTests(unittest.TestCase):
+    def test_loads_target_payload_files(self):
+        for mode in ("apple", "google", "microsoft", "samsung"):
+            payloads = bt_ops._load_payloads(mode)
+            self.assertTrue(payloads, f"faltan payloads para {mode}")
+
+    def test_build_payload_never_exceeds_legacy_limit(self):
+        item = {
+            "name": "Nombre-Largo-Sin-Recursos-Externos",
+            "cid": 0x004C,
+            "data": b"\x12\x13\x14",
+        }
+        payload = bt_ops._build_adv_payload(item)
+        self.assertLessEqual(len(payload), 31)
+        self.assertGreaterEqual(len(payload), 3)
+        self.assertEqual(payload[:3], b"\x02\x01\x06")
+
+
+class BtsnoopPacketCountTests(unittest.TestCase):
+    def test_counts_complete_records_and_rejects_bad_header(self):
+        import struct
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            path = f.name
+            try:
+                f.write(b"btsnoop\x00" + b"\x00" * 8)
+                record = struct.pack(">IIIIQ", 0, 4, 1, 0, 1)
+                f.write(record + b"\x01\x02\x03\x04")
+                f.write(record + b"\x05\x06\x07\x08")
+                f.flush()
+                self.assertEqual(bt_ops._btsnoop_count_packets(path), 2)
+            finally:
+                f.close()
+                os.unlink(path)
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            bad_path = f.name
+            try:
+                f.write(b"not-btsnoop")
+                f.flush()
+                self.assertIsNone(bt_ops._btsnoop_count_packets(bad_path))
+            finally:
+                f.close()
+                os.unlink(bad_path)
+
+
 class LoadBleNamesTests(unittest.TestCase):
     def test_loads_names_from_repo_data_file(self):
         """El archivo data/ble_names.txt debe traer al menos 10 nombres."""
