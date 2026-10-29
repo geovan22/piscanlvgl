@@ -919,6 +919,10 @@ def sdp_browse(mac, addr_type=None, timeout=15):
     err = None
     if (r is None) or (r.returncode != 0 and not services):
         err = (text.strip() or "sin respuesta")[:200]
+    if err and 'host is down' in err.lower():
+        err += (" | BR/EDR no alcanzable: el device no esta en modo "
+                "visible/emparejable, no soporta clasico, o ya esta conectado "
+                "a otro. SDP solo aplica a dispositivos BR/EDR clasicos.")
     result = "ok" if services else ("fail" if err else "empty")
     log_bt_attack("sdp_browse", mac, result,
                   details=f"services={len(services)}" + (f" err={err}" if err else ""))
@@ -1066,6 +1070,18 @@ def gatt_enum(mac, iface=DEFAULT_IFACE, timeout=30):
     services = [a for a in attrs if a["kind"] == "service"]
     chars    = [a for a in attrs if a["kind"] == "characteristic"]
 
+    # Antes, si el connect no llegaba a 'Connected: yes' ni imprimia 'Failed to
+    # connect' (p.ej. timeout silencioso contra un advert BLE no-conectable o un
+    # device ya ligado a su dueno), gatt_enum devolvia vacio con err=None -> la
+    # UI mostraba "0 servicios" sin explicar nada. Ahora damos un motivo claro.
+    if err is None and not connected:
+        err = ("No se pudo conectar. El device no acepta conexion BLE sin "
+               "emparejar, no es conectable, esta fuera de alcance, o ya esta "
+               "conectado a su dueno. GATT necesita un periferico BLE conectable.")
+    elif err is None and connected and not attrs:
+        err = ("Conectado, pero sin servicios GATT legibles sin emparejar "
+               "(el device pudo haber cortado la conexion).")
+
     result = "ok" if attrs else ("fail" if err else "empty")
     log_bt_attack("gatt_enum", mac, result,
                   details=f"services={len(services)} chars={len(chars)}" +
@@ -1144,6 +1160,9 @@ def l2ping(mac, count=5, size=44, addr_type=None, timeout=20):
         err = "l2ping: sin respuesta"
     elif r.returncode != 0 and 'bytes from' not in text:
         err = text.strip()[-200:] or "l2ping fallo"
+    if err and ('host is down' in err.lower() or "can't connect" in err.lower()):
+        err += (" | BR/EDR no alcanzable: el device no esta visible/emparejable "
+                "o es BLE-only. L2ping solo aplica a dispositivos BR/EDR clasicos.")
     stats = parse_l2ping_output(text)
     result = "ok" if stats["received"] > 0 else ("fail" if err else "empty")
     log_bt_attack("l2ping", mac, result,
