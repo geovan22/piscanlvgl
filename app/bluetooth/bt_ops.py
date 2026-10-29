@@ -16,7 +16,7 @@ Comandos:
 
 iface default: hci1 (USB RTL8821CU).
 """
-import sys, os, re, json, subprocess, time, threading
+import sys, os, re, json, subprocess, time, threading, random, datetime
 
 # Rutas absolutas de los binarios usados (coherente con wifi_ops.py / sudoers).
 BTMGMT       = "/usr/bin/btmgmt"
@@ -983,6 +983,188 @@ def l2ping(mac, count=5, size=44, timeout=20):
 
 
 # ---------------------------------------------------------------------------
+# BLE spam / fake advertising (SOLO lab)
+# ---------------------------------------------------------------------------
+
+def _load_ble_names():
+    """Lee data/ble_names.txt. Devuelve lista no vacia (fallback a 3 nombres
+    si el archivo falta o esta vacio)."""
+    paths = (
+        os.path.expanduser("~/piscanlvgl/data/ble_names.txt"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "..", "..", "data", "ble_names.txt"),
+    )
+    names = []
+    for p in paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", errors="replace") as f:
+                    for raw in f:
+                        s = raw.strip()
+                        if not s or s.startswith("#"):
+                            continue
+                        names.append(s[:32])  # bluez corta en algunos tamaños
+                if names:
+                    break
+            except Exception:
+                pass
+    if not names:
+        names = ["Piscan-Dev", "AirPods Pro", "JBL Flip 6"]
+    return names
+
+
+def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.5):
+    """Rota el nombre advertising del controller cada `period_s` segundos
+    durante `seconds`. SOLO lab / permiso explicito.
+
+    mode="names": elige nombres de data/ble_names.txt.
+    mode="random": nombres aleatorios cortos (ej. 'Dev-ab12').
+
+    bluez permite UN solo advertisement activo por controller a la vez; por
+    eso en vez de registrar varios en paralelo, rotamos el nombre y
+    reactivamos. Flow (bluetoothctl interactivo):
+      select <bd> + menu advertise + set-name <X> + on
+      sleep period_s
+      off + set-name <Y> + on
+      ...
+    """
+    try:
+        _iface_index(iface)
+    except ValueError as e:
+        return None, str(e)
+    seconds = max(2, min(int(seconds or 20), 300))
+    period = max(0.4, float(period_s))
+    mode = (mode or "names").lower()
+
+    ok, msg = power_on(iface)
+    if not ok:
+        return None, f"No se pudo encender {iface}: {msg}"
+    bd = _bd_address(iface)
+    if not bd:
+        return None, f"No se pudo obtener BD de {iface}"
+
+    names_pool = _load_ble_names() if mode == "names" else []
+
+    def _gen_name():
+        if mode == "names" and names_pool:
+            return random.choice(names_pool)
+        return "Dev-%04x" % random.randint(0, 0xFFFF)
+
+    proc = subprocess.Popen(
+        [BLUETOOTHCTL],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, bufsize=1,
+    )
+    lines = []
+    stop = threading.Event()
+    def _rd():
+        try:
+            for line in iter(proc.stdout.readline, ''):
+                if stop.is_set(): break
+                lines.append(line)
+        except Exception:
+            pass
+    t = threading.Thread(target=_rd, daemon=True); t.start()
+
+    used = []
+    try:
+        proc.stdin.write(f"select {bd}\n")
+        proc.stdin.write("menu advertise\n")
+        proc.stdin.flush()
+        time.sleep(0.3)
+
+        t_end = time.time() + seconds
+        while time.time() < t_end:
+            name = _gen_name()
+            used.append(name)
+            # off+on para no chocar con "already registered"
+            proc.stdin.write("off\n")
+            proc.stdin.write(f"set-name {name}\n")
+            proc.stdin.write("on\n")
+            proc.stdin.flush()
+            time.sleep(period)
+
+        # Teardown
+        proc.stdin.write("off\n")
+        proc.stdin.write("back\n")
+        proc.stdin.write("quit\n")
+        proc.stdin.flush()
+        try: proc.wait(timeout=5)
+        except subprocess.TimeoutExpired: proc.kill()
+    except Exception as e:
+        try: proc.kill()
+        except Exception: pass
+        stop.set(); t.join(timeout=1)
+        return None, f"bluetoothctl advertise fallo: {e}"
+
+    stop.set(); t.join(timeout=1)
+    out = ''.join(lines)
+    cycles = len(used)
+    uniq = len(set(used))
+    log_bt_attack("ble_spam", bd, "ok" if cycles > 0 else "fail",
+                  details=f"iface={iface} mode={mode} seconds={seconds} "
+                          f"cycles={cycles} uniq_names={uniq}")
+    return {"iface": iface, "mode": mode, "seconds": seconds,
+            "cycles": cycles, "uniq_names": uniq, "last_name": used[-1] if used else "",
+            "raw": out[-800:]}, None
+
+
+# ---------------------------------------------------------------------------
+# btmon capture (sniffer HCI; genera archivo .btsnoop compatible Wireshark)
+# ---------------------------------------------------------------------------
+
+def _capture_dir():
+    d = os.path.expanduser("~/piscanlvgl/data/captures")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def btmon_capture(iface=DEFAULT_IFACE, seconds=30):
+    """Captura HCI con `btmon` a archivo. Formato btsnoop (abierto por
+    Wireshark/btmon --read). SOLO lab. Devuelve path + size + duration real."""
+    try:
+        idx = _iface_index(iface)
+    except ValueError as e:
+        return None, str(e)
+    seconds = max(2, min(int(seconds or 30), 600))
+    power_on(iface)   # no es critico que falle; btmon ve todo igual
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(_capture_dir(), f"btmon_{iface}_{ts}.btsnoop")
+
+    t0 = time.time()
+    r = _run([SUDO, '-n', TIMEOUT_BIN, str(seconds),
+              BTMON, '-i', iface, '-w', path],
+             timeout=seconds + 10)
+    dur = round(time.time() - t0, 2)
+
+    text = ""
+    if r:
+        text = (r.stdout or '') + (r.stderr or '')
+
+    size = 0
+    try:
+        if os.path.exists(path):
+            size = os.path.getsize(path)
+    except Exception:
+        pass
+
+    err = None
+    if size == 0:
+        err = (text.strip() or "btmon no genero archivo (ver permisos)")[-200:]
+
+    result = "ok" if size > 0 else "fail"
+    log_bt_attack("capture", "", result,
+                  details=f"iface={iface} path={path} size={size}B dur={dur}s" +
+                          (f" err={err}" if err else ""))
+    return {"iface": iface, "path": path, "size": size,
+            "duration_s": dur, "raw": text[-400:]}, err
+
+
+# ---------------------------------------------------------------------------
 # Show (bluetoothctl info enriquecido, para una MAC concreta)
 # ---------------------------------------------------------------------------
 
@@ -1012,7 +1194,7 @@ def _emit(obj):
 
 def main():
     if len(sys.argv) < 2:
-        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|show|sdp|gatt|l2ping> [args]"})
+        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|show|sdp|gatt|l2ping|spam|capture> [args]"})
         sys.exit(1)
     cmd = sys.argv[1]
     iface = DEFAULT_IFACE
@@ -1090,6 +1272,29 @@ def main():
                    "services": data.get("services", []),
                    "characteristics": data.get("characteristics", []),
                    "raw": data.get("raw", ""), "warn": err})
+        elif cmd == 'spam':
+            # bt_ops.py spam [iface] [seconds] [mode]
+            args = sys.argv[2:]
+            if args and re.match(r'^hci\d+$', args[0]):
+                args = args[1:]
+            secs = int(args[0]) if args and args[0].isdigit() else 20
+            mode = args[1] if len(args) > 1 else "names"
+            data, err = ble_spam(iface, secs, mode)
+            if err and not data:
+                _emit({"ok": False, "error": err})
+                sys.exit(1)
+            _emit({"ok": True, **(data or {})})
+        elif cmd == 'capture':
+            # bt_ops.py capture [iface] [seconds]
+            args = sys.argv[2:]
+            if args and re.match(r'^hci\d+$', args[0]):
+                args = args[1:]
+            secs = int(args[0]) if args and args[0].isdigit() else 30
+            data, err = btmon_capture(iface, secs)
+            if err and not (data and data.get("size", 0) > 0):
+                _emit({"ok": False, "error": err, **(data or {})})
+                sys.exit(1)
+            _emit({"ok": True, "warn": err, **(data or {})})
         elif cmd == 'l2ping':
             # bt_ops.py l2ping <mac> [count] [size]
             args = sys.argv[2:]

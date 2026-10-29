@@ -51,4 +51,18 @@ int bt_client_gatt(const char *mac, const char *iface,
 int bt_client_l2ping(const char *mac, int count, int size,
                      char *out_text, int out_size);
 
+/* ───────────── Acciones globales del controller ─────────────────────── */
+
+/* BLE spam: rota el nombre advertising de `iface` durante `seconds` con
+ * nombres de data/ble_names.txt (si mode="names") o aleatorios cortos
+ * ("random"). bluez admite UN solo advertisement por controller a la vez,
+ * por eso se rota. SOLO lab. Retorna 1 si ciclo >0. */
+int bt_client_ble_spam(const char *iface, int seconds, const char *mode,
+                       char *out_text, int out_size);
+
+/* Captura HCI con btmon a archivo .btsnoop en data/captures/.
+ * Devuelve 1 si size>0. Retorna el texto con path + tamaño + duracion. */
+int bt_client_capture(const char *iface, int seconds,
+                      char *out_text, int out_size);
+
 #endif

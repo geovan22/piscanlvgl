@@ -99,6 +99,9 @@ static const cfg_item_t CFG_ITEMS[] = {
     /* bt_iface: cat="wifi" por consistencia con las demas keys de Config
      * (cfg_load_all/set_many filtran por una sola category hoy). */
     {"bt_iface",             "Bluetooth iface",   "wifi", CFG_CHOICE, 0,   0, 0,  0, NULL, BT_IFACE_CHOICES,  2},
+    /* Acciones globales BT (iter 4). SOLO lab. */
+    {"bt_spam_duration",     "BT: BLE spam",      "wifi", CFG_INT,    5, 180, 5, 20, "s",  NULL,              0},
+    {"bt_capture_duration",  "BT: Capturar HCI",  "wifi", CFG_INT,    5, 300, 5, 30, "s",  NULL,              0},
 };
 #define CFG_N ((int)(sizeof(CFG_ITEMS)/sizeof(CFG_ITEMS[0])))
 static int       g_cfg_val[CFG_N];       /* valor actual (INT/BOOL) o indice (CHOICE) */
@@ -161,6 +164,15 @@ static char g_bt_error[128];
 static lv_obj_t *g_bt_box = NULL;
 static lv_obj_t *g_bt_status_label = NULL;
 static lv_obj_t *g_bt_scan_btn = NULL;
+static lv_obj_t *g_bt_spam_btn = NULL;
+static lv_obj_t *g_bt_capture_btn = NULL;
+
+/* Fase 3 iter 4 - acciones globales del controller (spam / capture). Hilo+poll. */
+static volatile int g_btg_running = 0;
+static volatile int g_btg_done = 0;
+static int g_btg_ok = 0;
+static char g_btg_kind[12] = "";      /* "spam" | "capture" */
+static char g_btg_text[1200];
 
 static volatile int g_deauth_running = 0;
 static volatile int g_deauth_done = 0;
@@ -2453,6 +2465,82 @@ static void bt_scroll_down_cb(lv_event_t *e) {
     if (g_bt_box) lv_obj_scroll_by(g_bt_box, 0, -60, LV_ANIM_ON);
 }
 
+/* ── Acciones globales del controller: BLE spam + btmon capture ──────── */
+static void bt_global_set_buttons_disabled(int disabled) {
+    lv_obj_t *btns[] = { g_bt_scan_btn, g_bt_spam_btn, g_bt_capture_btn };
+    for (int i = 0; i < 3; i++) {
+        if (!btns[i]) continue;
+        if (disabled) lv_obj_add_state(btns[i], LV_STATE_DISABLED);
+        else          lv_obj_clear_state(btns[i], LV_STATE_DISABLED);
+    }
+}
+
+static void *bt_global_thread_fn(void *arg) {
+    (void)arg;
+    g_btg_text[0] = '\0';
+    char iface[16] = "hci1";
+    char v[32];
+    if (db_config_get("bt_iface", v, sizeof(v)) && v[0]) {
+        snprintf(iface, sizeof(iface), "%s", v);
+    }
+    if (strcmp(g_btg_kind, "spam") == 0) {
+        int secs = 20;
+        char sv[16];
+        if (db_config_get("bt_spam_duration", sv, sizeof(sv)) && sv[0])
+            secs = atoi(sv);
+        if (secs < 2) secs = 2;
+        g_btg_ok = bt_client_ble_spam(iface, secs, "names",
+                                      g_btg_text, sizeof(g_btg_text));
+    } else if (strcmp(g_btg_kind, "capture") == 0) {
+        int secs = 30;
+        char cv[16];
+        if (db_config_get("bt_capture_duration", cv, sizeof(cv)) && cv[0])
+            secs = atoi(cv);
+        if (secs < 2) secs = 2;
+        g_btg_ok = bt_client_capture(iface, secs,
+                                     g_btg_text, sizeof(g_btg_text));
+    }
+    g_btg_done = 1;
+    return NULL;
+}
+
+void ui_shell_poll_bt_global(void) {
+    if (!g_btg_done) return;
+    g_btg_done = 0;
+    g_btg_running = 0;
+    bt_global_set_buttons_disabled(0);
+    if (!g_bt_status_label) return;    /* salimos de la seccion */
+    /* Mostramos la primera linea del resultado en el footer-status; el detalle
+     * va al label de debajo del title (Toca Escanear...). */
+    const char *op = g_btg_kind[0] == 's' ? "BLE spam" : "Captura";
+    char head[80];
+    snprintf(head, sizeof(head), "%s: %s", op, g_btg_ok ? "OK" : "ver detalle");
+    ui_shell_set_status(head, g_btg_ok ? UI_STATUS_OK : UI_STATUS_ERROR);
+    lv_label_set_text(g_bt_status_label, g_btg_text[0] ? g_btg_text : head);
+}
+
+static void bt_global_start(const char *kind, const char *tag_running) {
+    if (g_btg_running || g_bt_running) return;
+    snprintf(g_btg_kind, sizeof(g_btg_kind), "%s", kind);
+    g_btg_running = 1;
+    g_btg_done = 0;
+    if (g_bt_status_label) lv_label_set_text(g_bt_status_label, tag_running);
+    ui_shell_set_status(tag_running, UI_STATUS_WORKING);
+    bt_global_set_buttons_disabled(1);
+    pthread_t tid;
+    pthread_create(&tid, NULL, bt_global_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static void bt_spam_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    bt_global_start("spam", "BLE spam en curso (ver bt_spam_duration)...");
+}
+static void bt_capture_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    bt_global_start("capture", "Capturando HCI (btmon)...");
+}
+
 static void enter_section(const char *id, const char *label) {
     cfg_flush();   /* si venimos de Config con cambios, persistirlos (no-op si no) */
     lv_obj_clean(g_body);
@@ -2460,6 +2548,8 @@ static void enter_section(const char *id, const char *label) {
     g_bt_box = NULL;
     g_bt_status_label = NULL;
     g_bt_scan_btn = NULL;
+    g_bt_spam_btn = NULL;
+    g_bt_capture_btn = NULL;
     g_wifi_status_label = NULL;
     g_wifi_results_box = NULL;
     g_scan_btn = NULL;
@@ -2609,7 +2699,7 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
 
         g_bt_scan_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_bt_scan_btn, 118, 34);
+        lv_obj_set_size(g_bt_scan_btn, 108, 34);
         lv_obj_align(g_bt_scan_btn, LV_ALIGN_TOP_LEFT, 10, 28);
         lv_obj_set_style_bg_color(g_bt_scan_btn, lv_color_hex(0x0a2a0a), 0);
         lv_obj_set_style_border_color(g_bt_scan_btn, COLOR_OK, 0);
@@ -2622,6 +2712,39 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(bsl, COLOR_OK, 0);
         lv_obj_set_style_text_font(bsl, &lv_font_montserrat_10, 0);
         lv_obj_center(bsl);
+
+        /* BLE spam (naranja): rota el nombre advertising del controller
+         * durante bt_spam_duration (Config, default 20s). SOLO lab. */
+        g_bt_spam_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_bt_spam_btn, 108, 34);
+        lv_obj_align(g_bt_spam_btn, LV_ALIGN_TOP_LEFT, 124, 28);
+        lv_obj_set_style_bg_color(g_bt_spam_btn, lv_color_hex(0x2a1a0a), 0);
+        lv_obj_set_style_border_color(g_bt_spam_btn, lv_color_hex(0xFF9933), 0);
+        lv_obj_set_style_border_width(g_bt_spam_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_bt_spam_btn, 10);
+        lv_obj_add_event_cb(g_bt_spam_btn, bt_spam_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(g_bt_spam_btn);
+        lv_obj_t *bspl = lv_label_create(g_bt_spam_btn);
+        lv_label_set_text(bspl, "BLE spam");
+        lv_obj_set_style_text_color(bspl, lv_color_hex(0xFF9933), 0);
+        lv_obj_set_style_text_font(bspl, &lv_font_montserrat_10, 0);
+        lv_obj_center(bspl);
+
+        /* Capturar (morado): btmon -> data/captures/btmon_hciN_<ts>.btsnoop. */
+        g_bt_capture_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_bt_capture_btn, 108, 34);
+        lv_obj_align(g_bt_capture_btn, LV_ALIGN_TOP_LEFT, 238, 28);
+        lv_obj_set_style_bg_color(g_bt_capture_btn, lv_color_hex(0x1a0a2a), 0);
+        lv_obj_set_style_border_color(g_bt_capture_btn, lv_color_hex(0xCC66FF), 0);
+        lv_obj_set_style_border_width(g_bt_capture_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_bt_capture_btn, 10);
+        lv_obj_add_event_cb(g_bt_capture_btn, bt_capture_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(g_bt_capture_btn);
+        lv_obj_t *bcpl = lv_label_create(g_bt_capture_btn);
+        lv_label_set_text(bcpl, "Capturar");
+        lv_obj_set_style_text_color(bcpl, lv_color_hex(0xCC66FF), 0);
+        lv_obj_set_style_text_font(bcpl, &lv_font_montserrat_10, 0);
+        lv_obj_center(bcpl);
 
         g_bt_status_label = lv_label_create(g_body);
         lv_label_set_text(g_bt_status_label, "Toca Escanear para buscar dispositivos BT");

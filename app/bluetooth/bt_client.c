@@ -379,6 +379,111 @@ int bt_client_l2ping(const char *mac, int count, int size,
     return rcv > 0 ? 1 : 0;
 }
 
+int bt_client_ble_spam(const char *iface, int seconds, const char *mode,
+                       char *out_text, int out_size) {
+    if (!out_text || out_size < 32) return 0;
+    const char *ifs = (iface && iface[0]) ? iface : BT_DEFAULT_IFACE;
+    const char *m   = (mode  && mode[0])  ? mode  : "names";
+    char ss[8];
+    snprintf(ss, sizeof(ss), "%d", seconds > 0 ? seconds : 20);
+    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "spam",
+                     (char *)ifs, ss, (char *)m, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        snprintf(out_text, out_size, "BLE spam: no se pudo ejecutar bt_ops.py");
+        return 0;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        snprintf(out_text, out_size, "BLE spam: JSON invalido");
+        return 0;
+    }
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+    cJSON *cycles = cJSON_GetObjectItemCaseSensitive(root, "cycles");
+    cJSON *uniq = cJSON_GetObjectItemCaseSensitive(root, "uniq_names");
+    cJSON *last = cJSON_GetObjectItemCaseSensitive(root, "last_name");
+    cJSON *modej = cJSON_GetObjectItemCaseSensitive(root, "mode");
+    cJSON *secj = cJSON_GetObjectItemCaseSensitive(root, "seconds");
+    int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
+    int used = 0;
+    out_text[0] = '\0';
+    if (!ok_b) {
+        _append(out_text, out_size, &used, "BLE spam FALLO:\n%s\n",
+                cJSON_IsString(err) ? err->valuestring : "desconocido");
+        cJSON_Delete(root);
+        return 0;
+    }
+    int cy = cJSON_IsNumber(cycles) ? cycles->valueint : 0;
+    int un = cJSON_IsNumber(uniq)  ? uniq->valueint  : 0;
+    int sc = cJSON_IsNumber(secj)  ? secj->valueint  : 0;
+    _append(out_text, out_size, &used,
+            "BLE spam %s mode=%s %ds\n"
+            "ciclos=%d  nombres unicos=%d\n"
+            "ultimo nombre: %s",
+            (iface && iface[0]) ? iface : "hci1",
+            cJSON_IsString(modej) ? modej->valuestring : "?",
+            sc, cy, un,
+            (cJSON_IsString(last) && last->valuestring[0]) ? last->valuestring : "-");
+    cJSON_Delete(root);
+    return cy > 0 ? 1 : 0;
+}
+
+int bt_client_capture(const char *iface, int seconds,
+                      char *out_text, int out_size) {
+    if (!out_text || out_size < 32) return 0;
+    const char *ifs = (iface && iface[0]) ? iface : BT_DEFAULT_IFACE;
+    char ss[8];
+    snprintf(ss, sizeof(ss), "%d", seconds > 0 ? seconds : 30);
+    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "capture",
+                     (char *)ifs, ss, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        snprintf(out_text, out_size, "Capture: no se pudo ejecutar bt_ops.py");
+        return 0;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        snprintf(out_text, out_size, "Capture: JSON invalido");
+        return 0;
+    }
+    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+    cJSON *warn = cJSON_GetObjectItemCaseSensitive(root, "warn");
+    cJSON *path = cJSON_GetObjectItemCaseSensitive(root, "path");
+    cJSON *size = cJSON_GetObjectItemCaseSensitive(root, "size");
+    cJSON *dur  = cJSON_GetObjectItemCaseSensitive(root, "duration_s");
+    int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
+    int sz = cJSON_IsNumber(size) ? size->valueint : 0;
+    int used = 0;
+    out_text[0] = '\0';
+    if (!ok_b && sz == 0) {
+        _append(out_text, out_size, &used, "Capture FALLO:\n%s\n",
+                cJSON_IsString(err) ? err->valuestring : "desconocido");
+        cJSON_Delete(root);
+        return 0;
+    }
+    const char *p = cJSON_IsString(path) ? path->valuestring : "?";
+    const char *fname = p;
+    const char *slash = strrchr(p, '/');
+    if (slash && slash[1]) fname = slash + 1;
+    double d = cJSON_IsNumber(dur) ? dur->valuedouble : 0.0;
+    _append(out_text, out_size, &used,
+            "Captura %s  (%s)\n"
+            "size=%d B  (%.1f KB)\n"
+            "duration=%.1f s\n"
+            "path: %s",
+            (iface && iface[0]) ? iface : "hci1", fname,
+            sz, sz / 1024.0, d, p);
+    if (cJSON_IsString(warn)) {
+        _append(out_text, out_size, &used, "\nAviso: %s", warn->valuestring);
+    }
+    cJSON_Delete(root);
+    return sz > 0 ? 1 : 0;
+}
+
 int bt_client_power(int on, const char *iface,
                     char *out_detail, int detail_size) {
     const char *iface_s = (iface && iface[0]) ? iface : BT_DEFAULT_IFACE;

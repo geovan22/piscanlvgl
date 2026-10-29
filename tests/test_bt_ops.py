@@ -458,6 +458,52 @@ class ParseGattTests(unittest.TestCase):
         self.assertEqual(bt_ops.parse_bluetoothctl_gatt(""), [])
 
 
+class LoadBleNamesTests(unittest.TestCase):
+    def test_loads_names_from_repo_data_file(self):
+        """El archivo data/ble_names.txt debe traer al menos 10 nombres."""
+        names = bt_ops._load_ble_names()
+        self.assertGreaterEqual(len(names), 10)
+        # Fallback kick-in si no estuviera: 3 items. 10+ asegura que se leyo.
+        self.assertTrue(all(isinstance(n, str) and n for n in names))
+
+
+class BtmonCaptureTests(unittest.TestCase):
+    def test_capture_reports_size_when_file_created(self):
+        """Con _run mock + archivo pre-escrito, btmon_capture devuelve size y path."""
+        tmp_dir = os.path.join(APP_DIR, "..", "data", "captures")
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        def fake_run(cmd, timeout=15):
+            # Simular que btmon escribio un archivo chico en `path` (-w arg).
+            try:
+                idx = cmd.index("-w")
+                path = cmd[idx + 1]
+                with open(path, "wb") as f:
+                    f.write(b"\x00" * 128)
+            except Exception:
+                pass
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(bt_ops, "_run", side_effect=fake_run), \
+             patch.object(bt_ops, "power_on", return_value=(True, "")), \
+             patch.object(bt_ops, "log_bt_attack", lambda *a, **kw: None):
+            data, err = bt_ops.btmon_capture("hci0", 2)
+        self.assertIsNone(err)
+        self.assertGreaterEqual(data["size"], 128)
+        self.assertTrue(data["path"].endswith(".btsnoop"))
+
+    def test_capture_reports_error_on_zero_size(self):
+        def fake_run(cmd, timeout=15):
+            return SimpleNamespace(returncode=1, stdout="",
+                                   stderr="Can't open hci device")
+        with patch.object(bt_ops, "_run", side_effect=fake_run), \
+             patch.object(bt_ops, "power_on", return_value=(True, "")), \
+             patch.object(bt_ops, "log_bt_attack", lambda *a, **kw: None):
+            data, err = bt_ops.btmon_capture("hci0", 2)
+        self.assertEqual(data["size"], 0)
+        self.assertIn("hci device", err)
+
+
 class ScanDispatchTests(unittest.TestCase):
     def test_scan_fails_fast_when_power_on_fails(self):
         """Si hciconfig up falla, scan devuelve error sin tocar bluetoothctl."""

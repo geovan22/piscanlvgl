@@ -174,6 +174,7 @@ int main(void) {
         ui_shell_poll_clients();
         ui_shell_poll_bluetooth();
         ui_shell_poll_bt_action();
+        ui_shell_poll_bt_global();
         ui_shell_poll_logs();
         if (g_ui_pending_action != 0) {
             int action = g_ui_pending_action;

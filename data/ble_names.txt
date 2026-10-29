@@ -1,0 +1,64 @@
+# ble_names.txt — nombres rotados por el modo "names" de bt_ops.ble_spam.
+# Marco: SOLO lab / dispositivos propios o con autorizacion. Son nombres
+# plausibles para generar advertisements BLE falsos (cebo / demo).
+# Formato: una entrada por linea; se ignoran lineas vacias y comentarios (#).
+AirPods Pro
+AirPods Max
+Beats Studio3
+Pixel Buds Pro
+Galaxy Buds2
+Galaxy Buds Live
+Sony WF-1000XM4
+Sony WH-1000XM5
+Bose QC45
+Bose QC Ultra
+JBL Flip 6
+JBL Charge 5
+UE Boom 3
+Marshall Emberton
+Sonos Roam
+Mi Band 7
+Mi Smart Band 8
+Galaxy Fit3
+Fitbit Charge 6
+Fitbit Versa 4
+Garmin Fenix 7
+Garmin Forerunner
+Oura Ring Gen3
+Amazfit GTS
+Apple Watch SE
+Google TV
+Chromecast Ultra
+Fire TV Stick
+Shield TV Pro
+Switch Pro Controller
+PS5 Controller
+Xbox Wireless
+Logitech MX Master
+Keychron K8
+Razer BlackShark
+HyperX Cloud
+SteelSeries Arctis
+Tile Mate
+Tile Pro
+Chipolo One
+AirTag
+SmartTag2
+Dyson V15
+Roomba j7
+Nest Cam
+Nest Hub
+Echo Dot
+Ring Doorbell
+Hue Go
+Hue Bridge
+LG WebOS TV
+LG XBOOM
+Samsung Soundbar
+Vizio M-Series
+TCL Alto
+Bose Soundlink
+Harman Kardon
+Beosound Explore
+Marshall Woburn
+Sony HT-A5000

@@ -74,6 +74,38 @@
 - [ ] Validar en pantalla: tocar Escanear en la sección Bluetooth, cambiar
       `bt_iface` a hci0 en Config y confirmar que el próximo scan usa el onboard.
 
+### Iteración 4 (2026-10-29) — [x] Acciones globales del controller BT
+> Marco: SOLO lab / dispositivos propios o con autorización explícita.
+- [x] **BLE spam / fake advertising** (`bt_ops.ble_spam`): rota el nombre
+      advertising del controller cada ~1.5s con nombres de `data/ble_names.txt`
+      (60 nombres plausibles: AirPods Pro, Mi Band, JBL Flip, AirTag, etc.) o
+      aleatorios cortos (`mode="random"`). bluez admite UN solo advertisement
+      por controller a la vez → rotamos (off+set-name+on) en loop. Duración
+      configurable (`bt_spam_duration` en Config, default 20s).
+- [x] **btmon capture** (`bt_ops.btmon_capture`): sniffer HCI a archivo
+      `data/captures/btmon_<iface>_<ts>.btsnoop` (formato btsnoop; abrible
+      con Wireshark y `btmon --read`). Duración configurable
+      (`bt_capture_duration` en Config, default 30s).
+- [x] CLI: `bt_ops.py spam [iface] [seconds] [names|random]`,
+      `bt_ops.py capture [iface] [seconds]`.
+- [x] Bridge C `bt_client_ble_spam` + `bt_client_capture`.
+- [x] UI: dos botones nuevos en la fila principal de Bluetooth:
+      **"BLE spam"** (naranja) y **"Capturar"** (púrpura). Hilo+poll
+      (`ui_shell_poll_bt_global`). Mientras corre, deshabilita todos los
+      botones de la fila. Al terminar, muestra resumen en el status label.
+- [x] Config: 2 keys nuevas `bt_spam_duration` (5..180s), `bt_capture_duration`
+      (5..300s). CFG_INT, paso 5s.
+- [x] sudoers (ya aplicado por el usuario): `l2ping` + `btmon` con NOPASSWD.
+- [x] 3 tests nuevos (`_load_ble_names`, `btmon_capture` con mock creando
+      archivo chico, caso de error zero-size). Suite 77/77 OK.
+- [x] Validado end-to-end en la Pi:
+      - `capture hci0 3s` → `btmon_hci0_<ts>.btsnoop` 386B, `bluetooth_attack_log`
+        action="capture" result="ok".
+      - `spam hci0 4s names` → cycles=3 uniq_names=3 last="Ring Doorbell",
+        `bluetooth_attack_log` action="ble_spam" result="ok".
+- [ ] Validar en pantalla: tocar "BLE spam" (debe aparecer un device con
+      nombre rotando cerca) y "Capturar" (archivo .btsnoop en data/captures/).
+
 ### Iteración 3 (2026-10-29) — [x] Acciones de pentesting por device
 > Marco: SOLO lab / dispositivos propios o con autorización explícita.
 - [x] Tabla `BluetoothAttackLog` (action/target_mac/target_name/result/details).
