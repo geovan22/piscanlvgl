@@ -43,3 +43,6 @@ geo22 ALL=(ALL) NOPASSWD: /usr/bin/gatttool
 # btmon = sniffer HCI opcional (para reportes de captura).
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/l2ping
 geo22 ALL=(ALL) NOPASSWD: /usr/bin/btmon
+# BLE spam de alta tasa: helper que abre un socket HCI crudo (requiere root)
+# y rota MAC+payload ~40/s. Ruta absoluta y fija del script (solo args libres).
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/python3 /home/geo22/piscanlvgl/app/bluetooth/ble_adv_fast.py *

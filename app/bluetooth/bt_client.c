@@ -488,6 +488,7 @@ int bt_client_ble_spam(const char *iface, int seconds, const char *mode,
     cJSON *modej = cJSON_GetObjectItemCaseSensitive(root, "mode");
     cJSON *secj = cJSON_GetObjectItemCaseSensitive(root, "seconds");
     cJSON *warn = cJSON_GetObjectItemCaseSensitive(root, "warn");
+    cJSON *ratej = cJSON_GetObjectItemCaseSensitive(root, "rate");
     int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
     int used = 0;
     out_text[0] = '\0';
@@ -500,14 +501,15 @@ int bt_client_ble_spam(const char *iface, int seconds, const char *mode,
     int cy = cJSON_IsNumber(cycles) ? cycles->valueint : 0;
     int un = cJSON_IsNumber(uniq)  ? uniq->valueint  : 0;
     int sc = cJSON_IsNumber(secj)  ? secj->valueint  : 0;
+    double rate = cJSON_IsNumber(ratej) ? ratej->valuedouble : 0.0;
     _append(out_text, out_size, &used,
             "BLE spam %s mode=%s %ds\n"
-            "ciclos=%d  nombres unicos=%d\n"
-            "ultimo nombre: %s",
+            "ciclos=%d  (~%.0f adv/s)\n"
+            "%s",
             (iface && iface[0]) ? iface : "hci1",
             cJSON_IsString(modej) ? modej->valuestring : "?",
-            sc, cy, un,
-            (cJSON_IsString(last) && last->valuestring[0]) ? last->valuestring : "-");
+            sc, cy, rate,
+            (un > 0 || cy > 0) ? "flood emitido" : "sin emision");
     /* Si no salio ningun advert al aire (cy==0) y el backend adjunto un
        diagnostico (p.ej. HCI status 0x0C command disallowed), lo mostramos:
        sin esto la UI solo decia "ciclos=0" sin causa. */

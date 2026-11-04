@@ -575,51 +575,42 @@ class BlePayloadTests(unittest.TestCase):
         self.assertTrue(ok2)
         self.assertIsNone(st2)
 
-    def test_ble_spam_surfaces_hci_disallowed_status(self):
-        # Todos los comandos salen con returncode 0 PERO el enable responde
-        # 0x0C: el spam debe reportar 0 cycles y el status real en el error.
-        def fake_hci(iface, ocf, data, timeout=3):
-            if ocf == 0x000A and list(data) == [0x01]:
-                return SimpleNamespace(returncode=0, stdout=(
-                    "> HCI Event: 0x0e plen 4\n  01 0A 20 0C \n"), stderr="")
-            return SimpleNamespace(returncode=0, stdout=(
-                "> HCI Event: 0x0e plen 4\n  01 00 00 00 \n"), stderr="")
+    def test_ble_spam_parses_fast_helper_json(self):
+        # ble_spam delega en ble_adv_fast.py (socket HCI rapido); mockeamos _run.
+        captured = {}
+
+        def fake_run(cmd, timeout=15):
+            captured["cmd"] = cmd
+            return SimpleNamespace(returncode=0, stderr="", stdout=(
+                '{"ok": true, "iface": "hci0", "mode": "google", '
+                '"seconds": 5, "cycles": 210, "rate": 42.0}'))
 
         with patch.object(bt_ops, "power_on", return_value=(True, "")), \
-             patch.object(bt_ops, "_hci", side_effect=fake_hci), \
-             patch.object(bt_ops.time, "sleep", return_value=None), \
-             patch.object(bt_ops.time, "time", side_effect=[0, 1, 3]), \
+             patch.object(bt_ops, "_run", side_effect=fake_run), \
              patch.object(bt_ops, "log_bt_attack", lambda *a, **kw: None):
-            data, err = bt_ops.ble_spam("hci0", 2, "random")
+            data, err = bt_ops.ble_spam("hci0", 5, "google")
 
-        self.assertEqual(data["cycles"], 0)
-        self.assertEqual(data["hci_status"], 0x0C)
-        self.assertEqual(data["hci_status_name"], "command disallowed")
-        self.assertIn("command disallowed", err)
+        self.assertIsNone(err)
+        self.assertEqual(data["cycles"], 210)
+        self.assertEqual(data["rate"], 42.0)
+        # invoca el helper como: sudo -n python3 .../ble_adv_fast.py hci0 5 google
+        self.assertIn("/usr/bin/sudo", captured["cmd"])
+        self.assertTrue(any("ble_adv_fast.py" in str(x) for x in captured["cmd"]))
+        self.assertIn("google", captured["cmd"])
 
-    def test_ble_spam_reports_rejected_advertising_commands(self):
-        # Orden de llamadas a _hci en modo random (1 ciclo): setup disable,
-        # setup params, [ciclo] disable, data, enable, [teardown] disable.
-        replies = iter([
-            SimpleNamespace(returncode=0, stdout="", stderr=""),  # setup disable
-            SimpleNamespace(returncode=0, stdout="", stderr=""),  # setup params
-            SimpleNamespace(returncode=0, stdout="", stderr=""),  # ciclo disable
-            SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),  # data
-            SimpleNamespace(returncode=1, stdout="", stderr="permission denied"),  # enable
-            SimpleNamespace(returncode=0, stdout="", stderr=""),  # teardown disable
-        ])
+    def test_ble_spam_reports_missing_helper_sudoers(self):
+        # Si el helper no devuelve JSON (p.ej. sin sudoers para python3), error.
+        def fake_run(cmd, timeout=15):
+            return SimpleNamespace(returncode=1, stdout="",
+                                   stderr="sudo: a password is required")
 
         with patch.object(bt_ops, "power_on", return_value=(True, "")), \
-             patch.object(bt_ops, "_hci", side_effect=lambda *a, **kw: next(replies)), \
-             patch.object(bt_ops.time, "sleep", return_value=None), \
-             patch.object(bt_ops.time, "time", side_effect=[0, 1, 3]), \
+             patch.object(bt_ops, "_run", side_effect=fake_run), \
              patch.object(bt_ops, "log_bt_attack", lambda *a, **kw: None):
-            data, err = bt_ops.ble_spam("hci0", 2, "random")
+            data, err = bt_ops.ble_spam("hci0", 5, "samsung")
 
-        self.assertIsNotNone(data)
         self.assertEqual(data["cycles"], 0)
-        self.assertGreater(data["failed_commands"], 0)
-        self.assertIn("rechazadas", err)
+        self.assertIn("JSON", err)
 
     def test_loads_target_payload_files(self):
         for mode in ("apple", "google", "microsoft", "samsung"):
