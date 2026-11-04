@@ -398,6 +398,27 @@ L2PING_LOSSY_SAMPLE = """\
 """
 
 
+class L2pingCapTests(unittest.TestCase):
+    def test_caps_count_and_size_for_flood(self):
+        """count<=200, size<=600 (flood/BlueSmack). addr_type='public' salta el
+        preflight BLE y va directo a _run; comprobamos los args pasados."""
+        captured = {}
+
+        def fake_run(cmd, timeout=15):
+            captured["cmd"] = cmd
+            captured["timeout"] = timeout
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(bt_ops, "_run", side_effect=fake_run), \
+             patch.object(bt_ops, "log_bt_attack", lambda *a, **k: None):
+            bt_ops.l2ping("AA:BB:CC:DD:EE:FF", count=9999, size=9999,
+                          addr_type="public")
+        cmd = captured["cmd"]
+        self.assertIn("200", cmd)   # count tope
+        self.assertIn("600", cmd)   # size tope
+        self.assertGreaterEqual(captured["timeout"], 200)  # timeout escalado
+
+
 class ParseL2pingTests(unittest.TestCase):
     def test_captures_stats_from_success(self):
         s = bt_ops.parse_l2ping_output(L2PING_SAMPLE)

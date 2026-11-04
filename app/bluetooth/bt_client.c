@@ -513,6 +513,31 @@ int bt_client_capture(const char *iface, int seconds,
                 (iface && iface[0]) ? iface : "hci1", fname,
                 n, sz / 1024.0, sz, d, p);
     }
+    /* Decode pasivo (tshark): nombres anunciados + operaciones ATT/GATT. */
+    cJSON *decode = cJSON_GetObjectItemCaseSensitive(root, "decode");
+    if (cJSON_IsObject(decode)) {
+        cJSON *names = cJSON_GetObjectItemCaseSensitive(decode, "names");
+        cJSON *att   = cJSON_GetObjectItemCaseSensitive(decode, "att_ops");
+        int nn = cJSON_IsArray(names) ? cJSON_GetArraySize(names) : 0;
+        if (nn > 0 || cJSON_IsNumber(att)) {
+            _append(out_text, out_size, &used, "\ndecode: %d nombres",
+                    nn);
+            if (cJSON_IsNumber(att))
+                _append(out_text, out_size, &used, ", %d ops ATT", att->valueint);
+        }
+        if (nn > 0) {
+            _append(out_text, out_size, &used, "\n  ");
+            int shown = nn < 6 ? nn : 6;
+            for (int i = 0; i < shown; i++) {
+                cJSON *it = cJSON_GetArrayItem(names, i);
+                if (cJSON_IsString(it))
+                    _append(out_text, out_size, &used, "%s%s",
+                            i ? ", " : "", it->valuestring);
+            }
+            if (nn > shown)
+                _append(out_text, out_size, &used, " (+%d)", nn - shown);
+        }
+    }
     if (cJSON_IsString(warn)) {
         _append(out_text, out_size, &used, "\nAviso: %s", warn->valuestring);
     }

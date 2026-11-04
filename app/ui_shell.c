@@ -119,6 +119,8 @@ static const cfg_item_t CFG_ITEMS[] = {
     {"bt_beacon_major",      "Beacon major",      "wifi", CFG_INT,    0, 65535, 1, 1, NULL, NULL,              0,                        "Bluetooth"},
     {"bt_beacon_minor",      "Beacon minor",      "wifi", CFG_INT,    0, 65535, 1, 0, NULL, NULL,              0,                        "Bluetooth"},
     {"bt_beacon_duration",   "Beacon duracion",   "wifi", CFG_INT,    5, 300, 5, 30, "s",  NULL,              0,                        "Bluetooth"},
+    {"bt_l2ping_count",      "L2ping count",      "wifi", CFG_INT,    1, 200, 5,  5, NULL, NULL,              0,                        "Bluetooth"},
+    {"bt_l2ping_size",       "L2ping size",       "wifi", CFG_INT,    1, 600, 20, 44, "B", NULL,              0,                        "Bluetooth"},
 };
 #define CFG_N ((int)(sizeof(CFG_ITEMS)/sizeof(CFG_ITEMS[0])))
 static int       g_cfg_val[CFG_N];       /* valor actual (INT/BOOL) o indice (CHOICE) */
@@ -2270,7 +2272,15 @@ static void *bt_action_thread_fn(void *arg) {
         g_bt_action_ok = bt_client_gatt(g_bt_detail_mac, iface,
                                         g_bt_action_text, sizeof(g_bt_action_text));
     } else if (strcmp(g_bt_action_kind, "l2") == 0) {
-        g_bt_action_ok = bt_client_l2ping(g_bt_detail_mac, 5, 44, at,
+        /* count/size configurables (Config -> bt_l2ping_count/size). size alto
+         * (hasta 600B) = BlueSmack; count alto = flood. Default 5 / 44. */
+        int l2count = 5, l2size = 44;
+        char cv[16];
+        if (db_config_get("bt_l2ping_count", cv, sizeof(cv)) && cv[0])
+            l2count = atoi(cv);
+        if (db_config_get("bt_l2ping_size", cv, sizeof(cv)) && cv[0])
+            l2size = atoi(cv);
+        g_bt_action_ok = bt_client_l2ping(g_bt_detail_mac, l2count, l2size, at,
                                           g_bt_action_text, sizeof(g_bt_action_text));
     }
     g_bt_action_done = 1;

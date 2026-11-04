@@ -26,6 +26,7 @@ HCITOOL      = "/usr/bin/hcitool"
 SDPTOOL      = "/usr/bin/sdptool"
 L2PING       = "/usr/bin/l2ping"
 BTMON        = "/usr/bin/btmon"
+TSHARK       = "/usr/bin/tshark"
 TIMEOUT_BIN  = "/usr/bin/timeout"
 STDBUF_BIN   = "/usr/bin/stdbuf"
 RFKILL_BIN   = "/usr/sbin/rfkill"
@@ -1148,10 +1149,15 @@ def l2ping(mac, count=5, size=44, addr_type=None, timeout=20):
         if _is_ble_only(info):
             return _n_a("L2ping no aplica: device BLE (addr random). Usa GATT.")
 
-    count = max(1, min(int(count or 5), 50))
+    count = max(1, min(int(count or 5), 200))
     size = max(1, min(int(size or 44), 600))
+    # Flood / BlueSmack: con `size` grande (hasta 600B = L2CAP echo sobredimen-
+    # sionado) y `count` alto se estresa el stack BR/EDR de equipos viejos. Con
+    # count alto el barrido tarda (l2ping espera ~1s entre envios), asi que
+    # escalamos el timeout del subproceso para no cortarlo antes de tiempo.
+    run_timeout = min(600, max(timeout, count + 15))
     r = _run([SUDO, '-n', L2PING, '-c', str(count), '-s', str(size), mac],
-             timeout=timeout)
+             timeout=run_timeout)
     text = ""
     if r:
         text = (r.stdout or '') + (r.stderr or '')
@@ -1743,6 +1749,42 @@ def _btsnoop_count_packets(path):
         return None
 
 
+def _tshark_summary(path, timeout=30):
+    """Resumen pasivo del .btsnoop con tshark (si esta disponible): nombres de
+    dispositivo anunciados (EIR/AD) y nro/opcodes de operaciones ATT/GATT.
+    Best-effort: devuelve {} si tshark falta o el archivo no se puede leer.
+    Nunca lanza (no debe tumbar la captura)."""
+    if not os.path.exists(TSHARK) or not path or not os.path.exists(path):
+        return {}
+    out = {}
+    try:
+        r = _run([TSHARK, '-r', path, '-Y',
+                  'btcommon.eir_ad.entry.device_name', '-T', 'fields',
+                  '-e', 'btcommon.eir_ad.entry.device_name'], timeout=timeout)
+        if r and r.returncode == 0:
+            names = set()
+            for ln in (r.stdout or '').splitlines():
+                for nm in ln.split(','):
+                    nm = nm.strip()
+                    if nm:
+                        names.add(nm[:48])
+            if names:
+                out["names"] = sorted(names)[:20]
+    except Exception:
+        pass
+    try:
+        r = _run([TSHARK, '-r', path, '-Y', 'btatt', '-T', 'fields',
+                  '-e', 'btatt.opcode'], timeout=timeout)
+        if r and r.returncode == 0:
+            ops = [x.strip() for x in (r.stdout or '').splitlines() if x.strip()]
+            if ops:
+                out["att_ops"] = len(ops)
+                out["att_opcodes"] = sorted(set(ops))[:16]
+    except Exception:
+        pass
+    return out
+
+
 def btmon_capture(iface=DEFAULT_IFACE, seconds=30):
     """Captura HCI con `btmon` a archivo. Formato btsnoop (abierto por
     Wireshark/btmon --read). SOLO lab. Devuelve path + size + duration real
@@ -1775,18 +1817,23 @@ def btmon_capture(iface=DEFAULT_IFACE, seconds=30):
         pass
 
     packets = _btsnoop_count_packets(path) if size > 0 else None
+    decode = _tshark_summary(path) if size > 0 else {}
 
     err = None
     if size == 0:
         err = (text.strip() or "btmon no genero archivo (ver permisos)")[-200:]
 
     result = "ok" if size > 0 else "fail"
+    dec_lbl = ""
+    if decode:
+        dec_lbl = (f" names={len(decode.get('names', []))} "
+                   f"att_ops={decode.get('att_ops', 0)}")
     log_bt_attack("capture", "", result,
                   details=f"iface={iface} path={path} size={size}B "
                           f"packets={packets if packets is not None else '?'} "
-                          f"dur={dur}s" + (f" err={err}" if err else ""))
+                          f"dur={dur}s{dec_lbl}" + (f" err={err}" if err else ""))
     return {"iface": iface, "path": path, "size": size,
-            "duration_s": dur, "packets": packets,
+            "duration_s": dur, "packets": packets, "decode": decode,
             "raw": text[-400:]}, err
 
 
