@@ -101,18 +101,32 @@
       en details. Validado on-device (decodificó "LAP-1MJLWG3").
 
 **Multi-iteración (más grandes, su propia tanda):**
-- [ ] **5. Tracking/presencia + wardriving BT**. Modo `track`: scans repetidos
-      logueando cada avistamiento (mac/rssi/ts) → análisis de presencia y
-      proximidad. Config: `bt_track_rounds`, `bt_track_window`. DB: **nueva
-      tabla `BluetoothSighting`** (o reusar `BluetoothLog` con timestamp).
-- [ ] **6. Bad BLE / BadBT (HID injection)** (paridad con su buque insignia).
-      La Pi se anuncia como teclado BLE (HID/HOGP vía BlueZ) e inyecta scripts
-      estilo Ducky a un host que acepte. Config: `badble_layout`. DB:
-      `BluetoothAttackLog` action=`badble` (script + resultado). Esfuerzo:
-      HID peripheral en BlueZ es quisquilloso.
-- [ ] **7. OBEX push/pull (clásico)**. Enviar/recibir archivos a equipos viejos
-      (OPP/FTP, `obexftp`/`ussp-push`). Solo Linux. DB: `BluetoothAttackLog`
-      action=`obex_push`. Sudoers: + `obexftp`.
+- [x] **5. Tracking/presencia** (diferenciador) — HECHO y verificado on-device
+      (2026-11-04, commit 3234b79). `track(iface, rounds, window, mode)` = N
+      barridos logueando avistamientos por ronda a **tabla nueva
+      `bluetooth_sighting`** (session/round/mac/rssi/ts); resumen agregado
+      (seen_rounds, rssi best/last). CLI `track`, bridge `bt_client_track`, 5º
+      botón "Track" (verde) en la fila BT. Config: `bt_track_rounds`,
+      `bt_track_window`. Verificado: 3 rondas → 6 únicos / 13 avistamientos.
+      (Wardriving = esto + GPS, futuro.)
+- [~] **6. Bad BLE / BadBT (HID injection)** — **PENDIENTE, iteración propia.**
+      Requiere: (a) instalar `python3-dbus` + `python3-gi` (no están), (b) un
+      servidor GATT **HOGP** (HID 0x1812 + report map + bonding + input reports)
+      corriendo como **proceso persistente** (no encaja en "un JSON por
+      invocación" — hay que repensar el patrón), (c) un **host que empareje**
+      para validar. No es single-change; no construir a ciegas con deps
+      faltantes. Config: `badble_layout`. DB: `BluetoothAttackLog`
+      action=`badble`. **Decisión del usuario:** ¿instalamos deps + lo armamos
+      como daemon con host de prueba?
+- [x] **7. OBEX push/pull (clásico)** (diferenciador) — HECHO (commit ebb8c24).
+      `obex_push(mac, filepath)` con `obexctl` (BlueZ/obexd); clave:
+      `_session_bus_env()` apunta `DBUS_SESSION_BUS_ADDRESS` a
+      `/run/user/<uid>/bus` (el servicio system no lo hereda). CLI `obexpush`,
+      bridge `bt_client_obex_push`, botón OBEX en el overlay de detalle (envía
+      `data/obex_test.txt`; rutas arbitrarias por CLI). DB: action=`obex_push`.
+      Verificado: obexctl alcanza a obexd; connect a no-OPP falla limpio. **Push
+      real pendiente de un target clásico en modo recepción OPP.** (No hizo
+      falta sudoers: obexctl corre como usuario.)
 - [ ] **8. A2DP: conectar a parlante propio** (play/capture audio). BlueZ/Pulse.
 - [ ] **9. BLE MITM / relay con los 2 radios** 🏆 (ningún Flipper/Bruce puede).
       Radio A conecta al periférico real, radio B anuncia un clon al teléfono;
