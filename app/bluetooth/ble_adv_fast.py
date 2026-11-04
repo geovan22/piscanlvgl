@@ -39,9 +39,25 @@ _ADV_TYPE = {
 def _mk_socket(dev_index):
     s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_RAW, socket.BTPROTO_HCI)
     s.bind((dev_index,))
-    # Filtro a cero: el kernel no nos encola eventos -> no hay que drenar RX.
-    s.setsockopt(SOL_HCI, HCI_FILTER, struct.pack("<LLLH", 0, 0, 0, 0))
+    # Intentar filtrar eventos (best-effort). El tamano del struct hci_filter
+    # varia segun kernel y un setsockopt con tamano erroneo da EINVAL; si falla
+    # no pasa nada: drenamos el RX en el loop (_drain). No debe tumbar el bind.
+    try:
+        s.setsockopt(SOL_HCI, HCI_FILTER, struct.pack("<LLLH", 0, 0, 0, 0))
+    except Exception:
+        pass
     return s
+
+
+def _drain(s):
+    """Vacia el buffer RX del socket (eventos HCI que no nos interesan) para que
+    no se llene en corridas largas. No bloquea (MSG_DONTWAIT)."""
+    for _ in range(64):
+        try:
+            if not s.recv(1024, socket.MSG_DONTWAIT):
+                break
+        except (BlockingIOError, OSError):
+            break
 
 
 def _cmd(s, ogf, ocf, data=b""):
@@ -115,6 +131,7 @@ def main():
             _cmd(s, 0x08, 0x0008, data)
             _cmd(s, 0x08, 0x000A, [0x01])
             cycles += 1
+            _drain(s)
             time.sleep(rotate_ms / 1000.0)
         _cmd(s, 0x08, 0x000A, [0x00])          # teardown
     except Exception as e:
