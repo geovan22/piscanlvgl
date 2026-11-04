@@ -121,6 +121,7 @@ static const cfg_item_t CFG_ITEMS[] = {
     {"bt_beacon_duration",   "Beacon duracion",   "wifi", CFG_INT,    5, 300, 5, 30, "s",  NULL,              0,                        "Bluetooth"},
     {"bt_l2ping_count",      "L2ping count",      "wifi", CFG_INT,    1, 200, 5,  5, NULL, NULL,              0,                        "Bluetooth"},
     {"bt_l2ping_size",       "L2ping size",       "wifi", CFG_INT,    1, 600, 20, 44, "B", NULL,              0,                        "Bluetooth"},
+    {"bt_gatt_notify_secs",  "GATT notify",       "wifi", CFG_INT,    2,  60, 2,  8, "s",  NULL,              0,                        "Bluetooth"},
 };
 #define CFG_N ((int)(sizeof(CFG_ITEMS)/sizeof(CFG_ITEMS[0])))
 static int       g_cfg_val[CFG_N];       /* valor actual (INT/BOOL) o indice (CHOICE) */
@@ -2212,14 +2213,22 @@ static lv_obj_t *g_bt_detail_btn_sdp = NULL;
 static lv_obj_t *g_bt_detail_btn_gatt = NULL;
 static lv_obj_t *g_bt_detail_btn_l2 = NULL;
 static lv_obj_t *g_bt_detail_btn_close = NULL;
+static lv_obj_t *g_bt_detail_btn_gread = NULL;
+static lv_obj_t *g_bt_detail_btn_gwrite = NULL;
+static lv_obj_t *g_bt_detail_btn_gnotify = NULL;
 static char g_bt_detail_mac[24] = "";
 static int  g_bt_detail_idx = -1;      /* indice en g_bt_devices del overlay actual */
 
-/* Estado de la accion BT por device (SDP/GATT/L2ping). Patron hilo + poll. */
+/* Estado del flujo GATT read/write/subscribe (se llena desde text_input). */
+static char g_gatt_mode[12] = "";   /* "read" | "write" | "subscribe" */
+static char g_gatt_char[96] = "";   /* UUID o path de la caracteristica */
+static char g_gatt_value[96] = "";  /* valor hex para write */
+
+/* Estado de la accion BT por device (SDP/GATT/L2ping/grw). Patron hilo + poll. */
 static volatile int g_bt_action_running = 0;
 static volatile int g_bt_action_done = 0;
 static int   g_bt_action_ok = 0;
-static char  g_bt_action_kind[8] = "";   /* "sdp" | "gatt" | "l2" */
+static char  g_bt_action_kind[8] = "";   /* "sdp" | "gatt" | "l2" | "grw" */
 static char  g_bt_action_text[2200];     /* salida ya formateada para el label */
 
 static void close_bt_detail(void) {
@@ -2231,6 +2240,9 @@ static void close_bt_detail(void) {
         g_bt_detail_btn_gatt = NULL;
         g_bt_detail_btn_l2 = NULL;
         g_bt_detail_btn_close = NULL;
+        g_bt_detail_btn_gread = NULL;
+        g_bt_detail_btn_gwrite = NULL;
+        g_bt_detail_btn_gnotify = NULL;
         g_bt_detail_mac[0] = '\0';
         g_bt_detail_idx = -1;
     }
@@ -2243,8 +2255,10 @@ static void bt_detail_close_cb(lv_event_t *e) {
 
 static void bt_detail_set_buttons_disabled(int disabled) {
     lv_obj_t *btns[] = { g_bt_detail_btn_sdp, g_bt_detail_btn_gatt,
-                         g_bt_detail_btn_l2, g_bt_detail_btn_close };
-    for (int i = 0; i < 4; i++) {
+                         g_bt_detail_btn_l2, g_bt_detail_btn_close,
+                         g_bt_detail_btn_gread, g_bt_detail_btn_gwrite,
+                         g_bt_detail_btn_gnotify };
+    for (int i = 0; i < 7; i++) {
         if (!btns[i]) continue;
         if (disabled) lv_obj_add_state(btns[i], LV_STATE_DISABLED);
         else          lv_obj_clear_state(btns[i], LV_STATE_DISABLED);
@@ -2282,6 +2296,21 @@ static void *bt_action_thread_fn(void *arg) {
             l2size = atoi(cv);
         g_bt_action_ok = bt_client_l2ping(g_bt_detail_mac, l2count, l2size, at,
                                           g_bt_action_text, sizeof(g_bt_action_text));
+    } else if (strcmp(g_bt_action_kind, "grw") == 0) {
+        /* GATT read/write/subscribe. value: hex (write), secs (subscribe,
+         * Config bt_gatt_notify_secs), "" (read). */
+        const char *val = "";
+        char sv[16] = "8";
+        if (strcmp(g_gatt_mode, "write") == 0) {
+            val = g_gatt_value;
+        } else if (strcmp(g_gatt_mode, "subscribe") == 0) {
+            if (db_config_get("bt_gatt_notify_secs", sv, sizeof(sv)) && sv[0])
+                val = sv;
+            else val = "8";
+        }
+        g_bt_action_ok = bt_client_gatt_rw(g_gatt_mode, g_bt_detail_mac,
+                                           g_gatt_char, val, iface,
+                                           g_bt_action_text, sizeof(g_bt_action_text));
     }
     g_bt_action_done = 1;
     return NULL;
@@ -2298,6 +2327,7 @@ void ui_shell_poll_bt_action(void) {
     if (strcmp(g_bt_action_kind, "sdp") == 0)  kind_lbl = "SDP";
     else if (strcmp(g_bt_action_kind, "gatt") == 0) kind_lbl = "GATT";
     else if (strcmp(g_bt_action_kind, "l2") == 0)   kind_lbl = "L2ping";
+    else if (strcmp(g_bt_action_kind, "grw") == 0)  kind_lbl = "GATT rw";
     char st[64];
     snprintf(st, sizeof(st), "%s: %s", kind_lbl, g_bt_action_ok ? "ok" : "ver detalle");
     ui_shell_set_status(st, g_bt_action_ok ? UI_STATUS_OK : UI_STATUS_INFO);
@@ -2335,13 +2365,54 @@ static void bt_l2_btn_cb(lv_event_t *e) {
     bt_action_start("l2", "L2ping");
 }
 
-/* Helper para botones del overlay BT (compacto, con etiqueta). */
-static lv_obj_t *bt_make_action_btn(lv_obj_t *parent, const char *txt,
-                                    uint32_t color, int x_ofs,
-                                    lv_event_cb_t cb) {
+/* --- GATT read/write/subscribe: piden el UUID (y el valor) por text_input --- */
+static void gatt_value_result_cb(const char *text, void *user_data) {
+    (void)user_data;
+    if (!text || !text[0]) return;   /* cancelo */
+    snprintf(g_gatt_value, sizeof(g_gatt_value), "%s", text);
+    bt_action_start("grw", "GATT write");
+}
+
+static void gatt_char_result_cb(const char *text, void *user_data) {
+    (void)user_data;
+    if (!text || !text[0]) return;   /* cancelo */
+    snprintf(g_gatt_char, sizeof(g_gatt_char), "%s", text);
+    if (strcmp(g_gatt_mode, "write") == 0) {
+        text_input_show(g_main_screen, "Valor hex (ej: 01 02 ff):", 0,
+                        gatt_value_result_cb, NULL);
+    } else {
+        bt_action_start("grw", strcmp(g_gatt_mode, "subscribe") == 0
+                               ? "GATT notify" : "GATT read");
+    }
+}
+
+static void bt_gread_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    snprintf(g_gatt_mode, sizeof(g_gatt_mode), "read");
+    text_input_show(g_main_screen, "UUID caracteristica a leer:", 0,
+                    gatt_char_result_cb, NULL);
+}
+static void bt_gwrite_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    snprintf(g_gatt_mode, sizeof(g_gatt_mode), "write");
+    text_input_show(g_main_screen, "UUID caracteristica a escribir:", 0,
+                    gatt_char_result_cb, NULL);
+}
+static void bt_gnotify_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    snprintf(g_gatt_mode, sizeof(g_gatt_mode), "subscribe");
+    text_input_show(g_main_screen, "UUID caracteristica a suscribir:", 0,
+                    gatt_char_result_cb, NULL);
+}
+
+/* Helper para botones del overlay BT (compacto, con etiqueta). y_ofs permite
+ * una 2da fila encima de la principal (-4). */
+static lv_obj_t *bt_make_action_btn_y(lv_obj_t *parent, const char *txt,
+                                      uint32_t color, int x_ofs, int y_ofs,
+                                      lv_event_cb_t cb) {
     lv_obj_t *b = lv_button_create(parent);
     lv_obj_set_size(b, 92, 30);
-    lv_obj_align(b, LV_ALIGN_BOTTOM_LEFT, x_ofs, -4);
+    lv_obj_align(b, LV_ALIGN_BOTTOM_LEFT, x_ofs, y_ofs);
     lv_obj_set_style_bg_color(b, lv_color_hex(0x0a2a0a), 0);
     lv_obj_set_style_border_color(b, lv_color_hex(color), 0);
     lv_obj_set_style_border_width(b, 2, 0);
@@ -2354,6 +2425,12 @@ static lv_obj_t *bt_make_action_btn(lv_obj_t *parent, const char *txt,
     lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
     lv_obj_center(l);
     return b;
+}
+
+static lv_obj_t *bt_make_action_btn(lv_obj_t *parent, const char *txt,
+                                    uint32_t color, int x_ofs,
+                                    lv_event_cb_t cb) {
+    return bt_make_action_btn_y(parent, txt, color, x_ofs, -4, cb);
 }
 
 static void bt_detail_show(int idx) {
@@ -2416,9 +2493,9 @@ static void bt_detail_show(int idx) {
              "Appear: %s\n"
              "Servicios: %s\n"
              "\n"
-             "Acciones (SOLO lab): SDP (BR/EDR services),\n"
-             "GATT (LE services+chars), L2ping (BR/EDR echo).\n"
-             "LE puro -> solo GATT aplica. BR/EDR -> SDP/L2ping.",
+             "Fila 1 (LE GATT por UUID): R=read  W=write  N=notify.\n"
+             "Fila 2: SDP/GATT-enum/L2ping (BR/EDR o enum LE).\n"
+             "LE -> GATT/R/W/N. BR/EDR -> SDP/L2ping. SOLO lab.",
              d->type_lbl[0] ? d->type_lbl : "?",
              kind_label, rssi_txt,
              d->mac, d->addr_type[0] ? d->addr_type : "?",
@@ -2429,7 +2506,12 @@ static void bt_detail_show(int idx) {
              d->uuids[0] ? d->uuids : "(sin servicios detectados)");
     lv_label_set_text(g_bt_detail_body, buf);
 
-    /* Fila de botones al pie: SDP (ambar), GATT (cyan), L2ping (rojo), Cerrar. */
+    /* Fila 2 (encima): GATT read / write / subscribe por UUID (LE). */
+    g_bt_detail_btn_gread   = bt_make_action_btn_y(box, "G.read",  0x33CCFF,   4, -40, bt_gread_btn_cb);
+    g_bt_detail_btn_gwrite  = bt_make_action_btn_y(box, "G.write", 0xFFCC33, 102, -40, bt_gwrite_btn_cb);
+    g_bt_detail_btn_gnotify = bt_make_action_btn_y(box, "G.notify",0xCC66FF, 200, -40, bt_gnotify_btn_cb);
+
+    /* Fila 1 (al pie): SDP (ambar), GATT-enum (cyan), L2ping (rojo), Cerrar. */
     g_bt_detail_btn_sdp   = bt_make_action_btn(box, "SDP",    0xFFCC33,   4, bt_sdp_btn_cb);
     g_bt_detail_btn_gatt  = bt_make_action_btn(box, "GATT",   0x33CCFF, 102, bt_gatt_btn_cb);
     g_bt_detail_btn_l2    = bt_make_action_btn(box, "L2ping", 0xFF4444, 200, bt_l2_btn_cb);

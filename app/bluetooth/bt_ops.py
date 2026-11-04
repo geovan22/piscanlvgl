@@ -1091,6 +1091,198 @@ def gatt_enum(mac, iface=DEFAULT_IFACE, timeout=30):
             "raw": out[-1500:]}, err
 
 
+# --- GATT read / write / subscribe (interactivo por caracteristica) ----------
+
+_RX_GATT_VALUE_HDR = re.compile(r'Value:\s*$', re.I)
+
+
+def parse_gatt_value(text):
+    """Extrae los bloques de valor que bluetoothctl imprime tras `read` o en los
+    eventos `[CHG] ... Value:` de `notify on`. Cada bloque: una linea 'Value:'
+    seguida de lineas con bytes hex (2 digitos) + repr ASCII a la derecha.
+    Devuelve lista de dicts {hex, ascii, n} en orden de aparicion. No lanza."""
+    values = []
+    lines = [_RX_ANSI.sub('', ln) for ln in (text or '').splitlines()]
+    i = 0
+    while i < len(lines):
+        if lines[i].rstrip().endswith('Value:') or _RX_GATT_VALUE_HDR.search(lines[i]):
+            hexbytes = []
+            j = i + 1
+            while j < len(lines):
+                # tomamos solo los tokens hex de 2 digitos del INICIO de la
+                # linea (la columna ASCII de la derecha se descarta sola porque
+                # no son pares hex).
+                lead = []
+                for t in lines[j].strip().split():
+                    if re.fullmatch(r'[0-9a-fA-F]{2}', t):
+                        lead.append(t.lower())
+                    else:
+                        break
+                if not lead:
+                    break
+                hexbytes.extend(lead)
+                j += 1
+            if hexbytes:
+                hx = ''.join(hexbytes)
+                try:
+                    raw = bytes.fromhex(hx)
+                    ascii_s = ''.join(chr(b) if 32 <= b < 127 else '.' for b in raw)
+                except Exception:
+                    ascii_s = ''
+                values.append({"hex": hx, "ascii": ascii_s, "n": len(hexbytes)})
+                i = j
+                continue
+        i += 1
+    return values
+
+
+def gatt_access(mac, mode, char, value_hex=None, iface=DEFAULT_IFACE,
+                timeout=30, notify_secs=8):
+    """read / write / subscribe de UNA caracteristica GATT via bluetoothctl.
+      mode='read'      -> lee el valor actual.
+      mode='write'     -> escribe value_hex ('01 02' o '0102').
+      mode='subscribe' -> notify on durante notify_secs, junta notificaciones.
+    `char` es el UUID (corto o largo) o el path de la caracteristica. Conecta
+    sin emparejar (si el device lo exige, falla con detalle). SOLO lab."""
+    mac = (mac or '').strip().upper()
+    if not re.fullmatch(r'[0-9A-F:]{17}', mac):
+        return None, "MAC invalida"
+    mode = (mode or 'read').lower()
+    if mode not in ('read', 'write', 'subscribe'):
+        return None, f"modo invalido: {mode}"
+    char = (char or '').strip()
+    if not char:
+        return None, "falta la caracteristica (UUID o path)"
+    try:
+        _iface_index(iface)
+    except ValueError as e:
+        return None, str(e)
+
+    wbytes = ''
+    if mode == 'write':
+        hx = re.sub(r'[^0-9a-fA-F]', '', value_hex or '')
+        if not hx or len(hx) % 2 != 0:
+            return None, "valor hex invalido (pares de digitos, ej '01 02' o '0102')"
+        wbytes = ' '.join('0x' + hx[k:k + 2] for k in range(0, len(hx), 2))
+
+    ok, msg = power_on(iface)
+    if not ok:
+        return None, f"No se pudo encender {iface}: {msg}"
+    bd = _bd_address(iface)
+    if not bd:
+        return None, f"No se pudo obtener BD de {iface}"
+    notify_secs = max(2, min(int(notify_secs or 8), 60))
+
+    proc = subprocess.Popen(
+        [BLUETOOTHCTL],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, bufsize=1,
+    )
+    lines = []
+    stop = threading.Event()
+
+    def _rd():
+        try:
+            for line in iter(proc.stdout.readline, ''):
+                if stop.is_set():
+                    break
+                lines.append(line)
+        except Exception:
+            pass
+    t = threading.Thread(target=_rd, daemon=True)
+    t.start()
+
+    err = None
+    try:
+        proc.stdin.write(f"select {bd}\n")
+        proc.stdin.write(f"connect {mac}\n")
+        proc.stdin.flush()
+        t0 = time.time()
+        connected = False
+        while time.time() - t0 < 15:
+            full = ''.join(lines)
+            if 'Connected: yes' in full or 'ServicesResolved: yes' in full:
+                connected = True
+                break
+            if 'Failed to connect' in full:
+                err = "connect fallo (device rechazo o requiere pairing)."
+                break
+            time.sleep(0.3)
+        if connected:
+            time.sleep(3)   # dar tiempo al GATT discovery
+            proc.stdin.write("menu gatt\n")
+            proc.stdin.write(f"select-attribute {char}\n")
+            proc.stdin.flush()
+            time.sleep(1)
+            if mode == 'read':
+                proc.stdin.write("read\n")
+                proc.stdin.flush()
+                time.sleep(2.5)
+            elif mode == 'write':
+                proc.stdin.write(f"write \"{wbytes}\"\n")
+                proc.stdin.flush()
+                time.sleep(2)
+            else:  # subscribe
+                proc.stdin.write("notify on\n")
+                proc.stdin.flush()
+                time.sleep(notify_secs)
+                proc.stdin.write("notify off\n")
+                proc.stdin.flush()
+                time.sleep(0.5)
+            proc.stdin.write("back\n")
+            proc.stdin.write(f"disconnect {mac}\n")
+            proc.stdin.flush()
+            time.sleep(1)
+        proc.stdin.write("quit\n")
+        proc.stdin.flush()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    except Exception as e:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        stop.set(); t.join(timeout=1)
+        return None, f"bluetoothctl fallo: {e}"
+
+    stop.set(); t.join(timeout=1)
+    out = ''.join(lines)
+
+    if err is None and not connected:
+        err = ("No se pudo conectar (device no conectable / requiere pairing / "
+               "fuera de alcance / ya ligado a su dueno).")
+    # Attribute no seleccionado => UUID/path erroneo.
+    low = out.lower()
+    if err is None and ('no attribute selected' in low or
+                        'invalid attribute' in low or
+                        'attribute not available' in low):
+        err = f"caracteristica no encontrada: {char}"
+
+    values = parse_gatt_value(out)
+    result_data = {"mac": mac, "mode": mode, "char": char,
+                   "values": values, "raw": out[-1500:]}
+    if mode == 'write':
+        result_data["wrote"] = wbytes
+        wrote_ok = ('attempting to write' in low or
+                    'write complete' in low) and err is None
+        result_data["ok"] = bool(wrote_ok)
+        if err is None and not wrote_ok:
+            err = "no se confirmo la escritura (ver raw)"
+    else:
+        result_data["ok"] = bool(values) and err is None
+
+    res_lbl = "ok" if result_data.get("ok") else ("fail" if err else "empty")
+    nval = len(values)
+    log_bt_attack(f"gatt_{mode}", mac, res_lbl,
+                  details=(f"char={char} " +
+                           (f"wrote={wbytes} " if mode == 'write' else f"values={nval} ") +
+                           (f"last={values[-1]['hex']} " if values else "") +
+                           (f"err={err}" if err else "")))
+    return result_data, err
+
+
 _RX_L2PING_SENT = re.compile(r'^(\d+)\s+bytes\s+from\s+([0-9A-F:]{17})\s+id\s+(\d+)\s+time\s+([\d.]+)\s*ms', re.I)
 _RX_L2PING_STAT = re.compile(r'^(\d+)\s+sent,\s+(\d+)\s+received,\s+(\d+)%\s+loss', re.I)
 
@@ -1867,7 +2059,7 @@ def _emit(obj):
 
 def main():
     if len(sys.argv) < 2:
-        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|show|sdp|gatt|l2ping|spam|beacon|capture> [args]"})
+        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|show|sdp|gatt|gattrw|l2ping|spam|beacon|capture> [args]"})
         sys.exit(1)
     cmd = sys.argv[1]
     iface = DEFAULT_IFACE
@@ -1947,6 +2139,31 @@ def main():
                    "services": data.get("services", []),
                    "characteristics": data.get("characteristics", []),
                    "raw": data.get("raw", ""), "warn": err})
+        elif cmd == 'gattrw':
+            # bt_ops.py gattrw <read|write|subscribe> <mac> <char> [valor|secs] [iface]
+            args = sys.argv[2:]
+            rw_iface = iface
+            if args and re.match(r'^hci\d+$', args[-1]):
+                rw_iface = args[-1]; args = args[:-1]
+            if len(args) < 3:
+                _emit({"ok": False, "error": "uso: bt_ops.py gattrw "
+                       "<read|write|subscribe> <mac> <char> [valor|secs] [iface]"})
+                sys.exit(1)
+            rw_mode = args[0].lower()
+            rw_mac  = args[1].upper()
+            rw_char = args[2]
+            extra   = args[3] if len(args) > 3 else None
+            kw = {}
+            if rw_mode == 'write':
+                kw['value_hex'] = extra or ''
+            elif rw_mode == 'subscribe':
+                kw['notify_secs'] = int(extra) if extra and extra.isdigit() else 8
+            data, err = gatt_access(rw_mac, rw_mode, rw_char, iface=rw_iface, **kw)
+            if err and not data:
+                _emit({"ok": False, "error": err})
+                sys.exit(1)
+            _emit({"ok": bool(data and data.get("ok")), "warn": err,
+                   **(data or {})})
         elif cmd == 'spam':
             # bt_ops.py spam [iface] [seconds] [mode]
             args = sys.argv[2:]

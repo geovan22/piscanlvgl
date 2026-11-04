@@ -419,6 +419,41 @@ class L2pingCapTests(unittest.TestCase):
         self.assertGreaterEqual(captured["timeout"], 200)  # timeout escalado
 
 
+class ParseGattValueTests(unittest.TestCase):
+    def test_single_value_hex_and_ascii(self):
+        text = (
+            "[CHG] Attribute /org/bluez/hci0/dev_X/service0a/char0b Value:\n"
+            "  48 65 6c 6c 6f                                   Hello\n"
+            "[bluetooth]#\n"
+        )
+        vals = bt_ops.parse_gatt_value(text)
+        self.assertEqual(len(vals), 1)
+        self.assertEqual(vals[0]["hex"], "48656c6c6f")
+        self.assertEqual(vals[0]["ascii"], "Hello")
+        self.assertEqual(vals[0]["n"], 5)
+
+    def test_multiple_notification_blocks(self):
+        text = (
+            "Value:\n  00 01\n[bluetooth]#\n"
+            "Value:\n  0a 0b 0c\n[bluetooth]#\n"
+        )
+        vals = bt_ops.parse_gatt_value(text)
+        self.assertEqual(len(vals), 2)
+        self.assertEqual(vals[0]["hex"], "0001")
+        self.assertEqual(vals[1]["hex"], "0a0b0c")
+
+    def test_empty_input_returns_empty_list(self):
+        self.assertEqual(bt_ops.parse_gatt_value(""), [])
+
+    def test_ascii_column_not_parsed_as_hex(self):
+        # "ab" en la columna ASCII NO debe sumarse a los bytes (va despues de un
+        # token no-hex): aqui el valor es 2 bytes y el ASCII '..'.
+        text = "Value:\n  ff fe                                    ..\n"
+        vals = bt_ops.parse_gatt_value(text)
+        self.assertEqual(len(vals), 1)
+        self.assertEqual(vals[0]["hex"], "fffe")
+
+
 class ParseL2pingTests(unittest.TestCase):
     def test_captures_stats_from_success(self):
         s = bt_ops.parse_l2ping_output(L2PING_SAMPLE)

@@ -328,6 +328,76 @@ int bt_client_gatt(const char *mac, const char *iface,
     return (ns + nc > 0) ? 1 : 0;
 }
 
+int bt_client_gatt_rw(const char *mode, const char *mac, const char *chr,
+                      const char *value, const char *iface,
+                      char *out_text, int out_size) {
+    if (!out_text || out_size < 32) return 0;
+    const char *md  = (mode  && mode[0])  ? mode  : "read";
+    const char *ifs = (iface && iface[0]) ? iface : BT_DEFAULT_IFACE;
+    const char *val = value ? value : "";
+    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "gattrw",
+                     (char *)md, (char *)mac, (char *)chr,
+                     (char *)val, (char *)ifs, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        snprintf(out_text, out_size, "GATT %s: no se pudo ejecutar bt_ops.py", md);
+        return 0;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        snprintf(out_text, out_size, "GATT %s: JSON invalido", md);
+        return 0;
+    }
+    cJSON *ok    = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    cJSON *err   = cJSON_GetObjectItemCaseSensitive(root, "error");
+    cJSON *warn  = cJSON_GetObjectItemCaseSensitive(root, "warn");
+    cJSON *vals  = cJSON_GetObjectItemCaseSensitive(root, "values");
+    cJSON *wrote = cJSON_GetObjectItemCaseSensitive(root, "wrote");
+    int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
+    int nv = cJSON_IsArray(vals) ? cJSON_GetArraySize(vals) : 0;
+    int used = 0;
+    out_text[0] = '\0';
+    if (cJSON_IsString(err)) {
+        _append(out_text, out_size, &used, "GATT %s FALLO:\n%s", md,
+                err->valuestring);
+        cJSON_Delete(root);
+        return 0;
+    }
+    _append(out_text, out_size, &used, "GATT %s  char=%s\n", md,
+            (chr && chr[0]) ? chr : "?");
+    if (strcmp(md, "write") == 0) {
+        _append(out_text, out_size, &used, "escrito: %s\n%s",
+                cJSON_IsString(wrote) ? wrote->valuestring : "?",
+                ok_b ? "OK (enviado)" : "sin confirmacion");
+    } else if (strcmp(md, "subscribe") == 0) {
+        _append(out_text, out_size, &used, "%d notificaciones", nv);
+        int shown = nv < 8 ? nv : 8;
+        for (int i = 0; i < shown; i++) {
+            cJSON *it = cJSON_GetArrayItem(vals, i);
+            cJSON *hx = it ? cJSON_GetObjectItemCaseSensitive(it, "hex") : NULL;
+            if (cJSON_IsString(hx))
+                _append(out_text, out_size, &used, "\n  %s", hx->valuestring);
+        }
+    } else { /* read */
+        if (nv > 0) {
+            cJSON *it = cJSON_GetArrayItem(vals, nv - 1);
+            cJSON *hx = it ? cJSON_GetObjectItemCaseSensitive(it, "hex") : NULL;
+            cJSON *as = it ? cJSON_GetObjectItemCaseSensitive(it, "ascii") : NULL;
+            _append(out_text, out_size, &used, "valor: %s\nascii: %s",
+                    cJSON_IsString(hx) ? hx->valuestring : "?",
+                    cJSON_IsString(as) ? as->valuestring : "");
+        } else {
+            _append(out_text, out_size, &used, "(sin valor leido)");
+        }
+    }
+    if (cJSON_IsString(warn)) {
+        _append(out_text, out_size, &used, "\nAviso: %s", warn->valuestring);
+    }
+    cJSON_Delete(root);
+    return ok_b;
+}
+
 int bt_client_l2ping(const char *mac, int count, int size,
                      const char *addr_type,
                      char *out_text, int out_size) {

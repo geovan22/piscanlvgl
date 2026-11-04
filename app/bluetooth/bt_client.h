@@ -49,11 +49,18 @@ int bt_client_sdp(const char *mac, const char *addr_type,
 int bt_client_gatt(const char *mac, const char *iface,
                    char *out_text, int out_size);
 
-/* L2CAP ping (BR/EDR classic). Prueba de alcance + latencia. Count 1..50,
- * size 1..600. `addr_type` como en SDP. */
+/* L2CAP ping (BR/EDR classic). Prueba de alcance + latencia / flood. Count
+ * 1..200, size 1..600 (size grande = BlueSmack). `addr_type` como en SDP. */
 int bt_client_l2ping(const char *mac, int count, int size,
                      const char *addr_type,
                      char *out_text, int out_size);
+
+/* GATT read/write/subscribe de UNA caracteristica (LE). mode: "read" |
+ * "write" | "subscribe". `chr` = UUID o path. `value` = hex para write
+ * ("01 02"), segundos para subscribe, "" para read. Devuelve 1 si ok. */
+int bt_client_gatt_rw(const char *mode, const char *mac, const char *chr,
+                      const char *value, const char *iface,
+                      char *out_text, int out_size);
 
 /* ───────────── Acciones globales del controller ─────────────────────── */
 
