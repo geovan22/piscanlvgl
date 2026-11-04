@@ -669,6 +669,48 @@ int bt_client_ble_beacon(const char *iface, int seconds, const char *btype,
     return ok_b;
 }
 
+int bt_client_obex_push(const char *mac, const char *filepath,
+                        char *out_text, int out_size) {
+    if (!out_text || out_size < 32) return 0;
+    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "obexpush",
+                     (char *)mac, (char *)filepath, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        snprintf(out_text, out_size, "OBEX: no se pudo ejecutar bt_ops.py");
+        return 0;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        snprintf(out_text, out_size, "OBEX: JSON invalido");
+        return 0;
+    }
+    cJSON *ok   = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    cJSON *err  = cJSON_GetObjectItemCaseSensitive(root, "error");
+    cJSON *warn = cJSON_GetObjectItemCaseSensitive(root, "warn");
+    cJSON *file = cJSON_GetObjectItemCaseSensitive(root, "file");
+    cJSON *size = cJSON_GetObjectItemCaseSensitive(root, "size");
+    int ok_b = cJSON_IsTrue(ok) ? 1 : 0;
+    int used = 0;
+    out_text[0] = '\0';
+    if (cJSON_IsString(err) && !ok_b) {
+        _append(out_text, out_size, &used, "OBEX push FALLO:\n%s",
+                err->valuestring);
+        cJSON_Delete(root);
+        return 0;
+    }
+    _append(out_text, out_size, &used,
+            "OBEX push %s\narchivo: %s (%d B)\n%s",
+            (mac && mac[0]) ? mac : "?",
+            cJSON_IsString(file) ? file->valuestring : "?",
+            cJSON_IsNumber(size) ? size->valueint : 0,
+            ok_b ? "ENVIADO (completo)" : "no completo");
+    if (cJSON_IsString(warn) && warn->valuestring[0])
+        _append(out_text, out_size, &used, "\nAviso: %s", warn->valuestring);
+    cJSON_Delete(root);
+    return ok_b;
+}
+
 int bt_client_track(const char *iface, int rounds, int window,
                     char *out_text, int out_size) {
     if (!out_text || out_size < 32) return 0;

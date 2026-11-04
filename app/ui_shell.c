@@ -2219,6 +2219,7 @@ static lv_obj_t *g_bt_detail_btn_close = NULL;
 static lv_obj_t *g_bt_detail_btn_gread = NULL;
 static lv_obj_t *g_bt_detail_btn_gwrite = NULL;
 static lv_obj_t *g_bt_detail_btn_gnotify = NULL;
+static lv_obj_t *g_bt_detail_btn_obex = NULL;
 static char g_bt_detail_mac[24] = "";
 static int  g_bt_detail_idx = -1;      /* indice en g_bt_devices del overlay actual */
 
@@ -2246,6 +2247,7 @@ static void close_bt_detail(void) {
         g_bt_detail_btn_gread = NULL;
         g_bt_detail_btn_gwrite = NULL;
         g_bt_detail_btn_gnotify = NULL;
+        g_bt_detail_btn_obex = NULL;
         g_bt_detail_mac[0] = '\0';
         g_bt_detail_idx = -1;
     }
@@ -2260,8 +2262,8 @@ static void bt_detail_set_buttons_disabled(int disabled) {
     lv_obj_t *btns[] = { g_bt_detail_btn_sdp, g_bt_detail_btn_gatt,
                          g_bt_detail_btn_l2, g_bt_detail_btn_close,
                          g_bt_detail_btn_gread, g_bt_detail_btn_gwrite,
-                         g_bt_detail_btn_gnotify };
-    for (int i = 0; i < 7; i++) {
+                         g_bt_detail_btn_gnotify, g_bt_detail_btn_obex };
+    for (int i = 0; i < 8; i++) {
         if (!btns[i]) continue;
         if (disabled) lv_obj_add_state(btns[i], LV_STATE_DISABLED);
         else          lv_obj_clear_state(btns[i], LV_STATE_DISABLED);
@@ -2314,6 +2316,11 @@ static void *bt_action_thread_fn(void *arg) {
         g_bt_action_ok = bt_client_gatt_rw(g_gatt_mode, g_bt_detail_mac,
                                            g_gatt_char, val, iface,
                                            g_bt_action_text, sizeof(g_bt_action_text));
+    } else if (strcmp(g_bt_action_kind, "obex") == 0) {
+        /* Push del archivo de prueba bundled (demo). Rutas arbitrarias por CLI. */
+        g_bt_action_ok = bt_client_obex_push(g_bt_detail_mac,
+                                             "~/piscanlvgl/data/obex_test.txt",
+                                             g_bt_action_text, sizeof(g_bt_action_text));
     }
     g_bt_action_done = 1;
     return NULL;
@@ -2331,6 +2338,7 @@ void ui_shell_poll_bt_action(void) {
     else if (strcmp(g_bt_action_kind, "gatt") == 0) kind_lbl = "GATT";
     else if (strcmp(g_bt_action_kind, "l2") == 0)   kind_lbl = "L2ping";
     else if (strcmp(g_bt_action_kind, "grw") == 0)  kind_lbl = "GATT rw";
+    else if (strcmp(g_bt_action_kind, "obex") == 0) kind_lbl = "OBEX";
     char st[64];
     snprintf(st, sizeof(st), "%s: %s", kind_lbl, g_bt_action_ok ? "ok" : "ver detalle");
     ui_shell_set_status(st, g_bt_action_ok ? UI_STATUS_OK : UI_STATUS_INFO);
@@ -2366,6 +2374,10 @@ static void bt_gatt_btn_cb(lv_event_t *e) {
 static void bt_l2_btn_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
     bt_action_start("l2", "L2ping");
+}
+static void bt_obex_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    bt_action_start("obex", "OBEX push");
 }
 
 /* --- GATT read/write/subscribe: piden el UUID (y el valor) por text_input --- */
@@ -2509,10 +2521,11 @@ static void bt_detail_show(int idx) {
              d->uuids[0] ? d->uuids : "(sin servicios detectados)");
     lv_label_set_text(g_bt_detail_body, buf);
 
-    /* Fila 2 (encima): GATT read / write / subscribe por UUID (LE). */
+    /* Fila 2 (encima): GATT read / write / subscribe por UUID (LE) + OBEX push. */
     g_bt_detail_btn_gread   = bt_make_action_btn_y(box, "G.read",  0x33CCFF,   4, -40, bt_gread_btn_cb);
     g_bt_detail_btn_gwrite  = bt_make_action_btn_y(box, "G.write", 0xFFCC33, 102, -40, bt_gwrite_btn_cb);
     g_bt_detail_btn_gnotify = bt_make_action_btn_y(box, "G.notify",0xCC66FF, 200, -40, bt_gnotify_btn_cb);
+    g_bt_detail_btn_obex    = bt_make_action_btn_y(box, "OBEX",    0x66FF99, 298, -40, bt_obex_btn_cb);
 
     /* Fila 1 (al pie): SDP (ambar), GATT-enum (cyan), L2ping (rojo), Cerrar. */
     g_bt_detail_btn_sdp   = bt_make_action_btn(box, "SDP",    0xFFCC33,   4, bt_sdp_btn_cb);

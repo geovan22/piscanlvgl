@@ -27,6 +27,7 @@ SDPTOOL      = "/usr/bin/sdptool"
 L2PING       = "/usr/bin/l2ping"
 BTMON        = "/usr/bin/btmon"
 TSHARK       = "/usr/bin/tshark"
+OBEXCTL      = "/usr/bin/obexctl"
 TIMEOUT_BIN  = "/usr/bin/timeout"
 STDBUF_BIN   = "/usr/bin/stdbuf"
 RFKILL_BIN   = "/usr/sbin/rfkill"
@@ -1978,6 +1979,111 @@ def ble_beacon(iface=DEFAULT_IFACE, seconds=30, btype="ibeacon",
 
 
 # ---------------------------------------------------------------------------
+# OBEX Object Push (OPP, BR/EDR) via obexctl (BlueZ/obexd por D-Bus de sesion)
+# ---------------------------------------------------------------------------
+
+def _session_bus_env():
+    """obexd corre en el bus de SESION; el servicio piscan (systemd system) no
+    lo hereda, asi que lo apuntamos explicito a /run/user/<uid>/bus (existe por
+    el autologin del display). Devuelve un env listo para subprocess."""
+    env = dict(os.environ)
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path=/run/user/{os.getuid()}/bus"
+    return env
+
+
+def obex_push(mac, filepath, iface=DEFAULT_IFACE, timeout=45):
+    """Envia un archivo por OBEX Object Push (OPP, BR/EDR) con obexctl. El
+    target debe aceptar OPP (emparejado o en modo recepcion). SOLO lab."""
+    mac = (mac or '').strip().upper()
+    if not re.fullmatch(r'[0-9A-F:]{17}', mac):
+        return None, "MAC invalida"
+    filepath = os.path.expanduser((filepath or '').strip())
+    if not filepath or not os.path.isfile(filepath):
+        return None, f"archivo no existe: {filepath}"
+    if not os.path.exists(OBEXCTL):
+        return None, "obexctl no instalado (apt install bluez-obexd)"
+    size = os.path.getsize(filepath)
+    fname = os.path.basename(filepath)
+
+    proc = subprocess.Popen(
+        [OBEXCTL], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, bufsize=1, env=_session_bus_env())
+    lines = []
+    stop = threading.Event()
+
+    def _rd():
+        try:
+            for line in iter(proc.stdout.readline, ''):
+                if stop.is_set():
+                    break
+                lines.append(line)
+        except Exception:
+            pass
+    t = threading.Thread(target=_rd, daemon=True)
+    t.start()
+
+    err = None
+    try:
+        proc.stdin.write(f"connect {mac}\n")
+        proc.stdin.flush()
+        t0 = time.time()
+        connected = False
+        while time.time() - t0 < 15:
+            full = ''.join(lines)
+            low = full.lower()
+            if 'connection successful' in low or 'session' in low and 'created' in low:
+                connected = True
+                break
+            if 'failed to connect' in low or 'error' in low:
+                err = "OBEX connect fallo (target no acepta OPP / fuera de alcance)."
+                break
+            time.sleep(0.3)
+        if connected:
+            proc.stdin.write(f"send {filepath}\n")
+            proc.stdin.flush()
+            t1 = time.time()
+            while time.time() - t1 < timeout - 15:
+                low = ''.join(lines).lower()
+                if 'status: complete' in low or 'transfer' in low and 'complete' in low:
+                    break
+                if 'status: error' in low or 'failed' in low:
+                    err = "OBEX send fallo (rechazado por el target)."
+                    break
+                time.sleep(0.4)
+            proc.stdin.write("disconnect\n")
+            proc.stdin.flush()
+            time.sleep(0.5)
+        proc.stdin.write("quit\n")
+        proc.stdin.flush()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    except Exception as e:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        stop.set(); t.join(timeout=1)
+        return None, f"obexctl fallo: {e}"
+
+    stop.set(); t.join(timeout=1)
+    out = ''.join(lines)
+    low = out.lower()
+    if err is None and not connected:
+        err = "OBEX connect fallo (target no acepta OPP / fuera de alcance)."
+    done = ('status: complete' in low or
+            ('transfer' in low and 'complete' in low)) and err is None
+    result = "ok" if done else ("fail" if err else "partial")
+    log_bt_attack("obex_push", mac, result,
+                  details=f"file={fname} size={size}B " +
+                          (f"err={err}" if err else "enviado"))
+    return {"mac": mac, "file": fname, "size": size, "ok": bool(done),
+            "raw": out[-1200:]}, err
+
+
+# ---------------------------------------------------------------------------
 # btmon capture (sniffer HCI; genera archivo .btsnoop compatible Wireshark)
 # ---------------------------------------------------------------------------
 
@@ -2134,7 +2240,7 @@ def _emit(obj):
 
 def main():
     if len(sys.argv) < 2:
-        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|track|show|sdp|gatt|gattrw|l2ping|spam|beacon|capture> [args]"})
+        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|track|show|sdp|gatt|gattrw|l2ping|obexpush|spam|beacon|capture> [args]"})
         sys.exit(1)
     cmd = sys.argv[1]
     iface = DEFAULT_IFACE
@@ -2312,6 +2418,20 @@ def main():
             _emit({"ok": True, "mac": mac,
                    "stats": data.get("stats"), "raw": data.get("raw", ""),
                    "warn": err})
+        elif cmd == 'obexpush':
+            # bt_ops.py obexpush <mac> <filepath> [iface]
+            args = sys.argv[2:]
+            if args and re.match(r'^hci\d+$', args[-1]):
+                iface = args[-1]; args = args[:-1]
+            if len(args) < 2:
+                _emit({"ok": False, "error": "uso: bt_ops.py obexpush <mac> <filepath> [iface]"})
+                sys.exit(1)
+            data, err = obex_push(args[0].upper(), args[1], iface=iface)
+            if err and not data:
+                _emit({"ok": False, "error": err})
+                sys.exit(1)
+            _emit({"ok": bool(data and data.get("ok")), "warn": err,
+                   **(data or {})})
         else:
             _emit({"ok": False, "error": f"comando desconocido: {cmd}"})
             sys.exit(1)

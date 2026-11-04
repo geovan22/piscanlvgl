@@ -1,0 +1,3 @@
+PiScan - OBEX Object Push test file.
+Marco: laboratorio controlado / pruebas autorizadas.
+Si recibiste este archivo, el push OPP (BR/EDR) funciono.

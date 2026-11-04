@@ -68,6 +68,11 @@ int bt_client_gatt_rw(const char *mode, const char *mac, const char *chr,
                       const char *value, const char *iface,
                       char *out_text, int out_size);
 
+/* OBEX Object Push (OPP, BR/EDR): envia `filepath` al target `mac` via
+ * obexctl. El target debe aceptar OPP. Retorna 1 si el envio completo. */
+int bt_client_obex_push(const char *mac, const char *filepath,
+                        char *out_text, int out_size);
+
 /* ───────────── Acciones globales del controller ─────────────────────── */
 
 /* BLE spam: rota el nombre advertising de `iface` durante `seconds` con
