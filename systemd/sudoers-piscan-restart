@@ -1,0 +1,11 @@
+# PiScan - reiniciar/parar/arrancar el PROPIO servicio sin contrasena.
+# Motivo: tras recompilar (build_app.sh) hay que reiniciar piscan para cargar
+# el binario nuevo; y en pruebas BT a veces se para/arranca. Se restringe EXACTO
+# al servicio piscan (no un systemctl abierto). Instalar en /etc/sudoers.d/
+# piscan-restart con permisos 0440 root:root (usar install + visudo -cf).
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart piscan
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop piscan
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/systemctl start piscan
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart piscan.service
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop piscan.service
+geo22 ALL=(ALL) NOPASSWD: /usr/bin/systemctl start piscan.service
