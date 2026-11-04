@@ -58,25 +58,24 @@
 > receptor (ver memoria del proyecto).
 
 ### Orden de prioridad
-> **PRÓXIMA DECISIÓN (pendiente de elegir por el usuario):**
-> - **A)** Seguir con los verificables sin hardware extra: **#3 L2ping flood** +
->   **#4 Sniffer pcap** (rápidos, los valido yo en la Pi).
-> - **B)** Arrancar **#1 GATT read/write/subscribe** — requiere que el usuario
->   ponga un periférico BLE propio (pulsera/sensor/bombilla/ESP32) en modo
->   conectable/pairing para validar el read/write real (hoy no hay ninguno
->   conectable libre en rango).
+> **A y B HECHOS (2026-11-04, commits c975df3 opción A, 8d5d196 opción B).**
+> Compilados en la Pi (exit 0). Pendiente: reiniciar piscan para ver la UI
+> nueva (`sudo systemctl restart piscan`), y validar el GATT read/write real
+> contra un periférico BLE conectable en modo pairing (pulsera/sensor/bombilla/
+> ESP32) — hoy no había ninguno conectable libre en rango.
 
 **Single-change (se construyen en esta/próxima iteración, autocontenidas):**
-- [~] **1. GATT read/write/subscribe** (diferenciador Linux #1). Extiende
-      `gatt_enum`: leer valor de característica, escribir hex, y suscribir
-      notificaciones logueándolas. Ops+CLI+bridge+DB+tests; UI reusa
-      `text_input` para UUID/handle y valor. Config: `gatt_timeout` (s).
-      DB: reusar `BluetoothAttackLog` (action=`gatt_read`/`gatt_write`/
-      `gatt_notify`, details=uuid+valor) → base para análisis de dispositivos.
-      **BLOQUEADO para validar:** sin periférico BLE conectable libre en rango
-      (2026-10-29, los targets vistos rechazan conexión o están ligados a su
-      dueño). Construible, pero el read/write no se puede probar a ciegas → es
-      la opción B de la decisión de arriba.
+- [x] **1. GATT read/write/subscribe** (diferenciador Linux #1) — HECHO
+      (commit 8d5d196). `parse_gatt_value` + `gatt_access(mac, mode, char,
+      value_hex, notify_secs)` modos read/write/subscribe via bluetoothctl
+      (mismo connect que `gatt_enum`). CLI `gattrw <mode> <mac> <char>
+      [valor|secs] [iface]`. Bridge `bt_client_gatt_rw`. UI: 2ª fila en el
+      overlay de detalle BT (G.read/G.write/G.notify) que pide el UUID por
+      `text_input` (+ valor hex en write). Config: `bt_gatt_notify_secs`. DB:
+      `bluetooth_attack_log` (action=`gatt_read`/`gatt_write`/`gatt_notify`,
+      con char + valor/notificaciones). Tests +4 (parse_gatt_value). Validado:
+      connect-path + contrato JSON + validación de args; **el read/write real
+      queda pendiente de un periférico BLE conectable en pairing.**
 - [x] **2. BLE beacon (iBeacon/Eddystone)** (paridad) — HECHO y verificado
       on-device (2026-10-29, commit 4e65589). `ble_beacon()` reusa el motor HCI
       adv (trama fija no-conectable ADV_NONCONN_IND). iBeacon (UUID PiScan +
@@ -90,12 +89,16 @@
       restart piscan`** (el proceso corriendo aún es el binario viejo; Python/
       CLI ya vivos). `systemctl restart` NO está en NOPASSWD → pendiente decidir
       si se agrega a sudoers.
-- [ ] **3. L2ping flood / BlueSmack** (diferenciador, lab). Hacer `count`/`size`
-      del L2ping configurables → permite flood/paquete grande. Config:
-      `l2ping_count`, `l2ping_size`. DB: ya loguea (sent/recv/loss).
-- [ ] **4. Sniffer pcap en UI + export** (diferenciador). `btmon_capture` ya
-      existe y loguea; exponer duración en Config (`bt_capture_secs`) y añadir
-      decode con tshark (GATT/SNI) al leer. DB: ya loguea path/size/packets.
+- [x] **3. L2ping flood / BlueSmack** (diferenciador, lab) — HECHO (commit
+      c975df3). `l2ping` count hasta 200, size hasta 600B (BlueSmack), timeout
+      escalado. Config: `bt_l2ping_count`, `bt_l2ping_size` (la UI los lee).
+      DB: ya loguea sent/recv/loss. Test del cap. Validado on-device (corre y
+      da el hint BR/EDR contra BLE).
+- [x] **4. Sniffer pcap en UI + decode** (diferenciador) — HECHO (commit
+      c975df3). Duración ya era configurable (`bt_capture_duration`). Añadido
+      `_tshark_summary` (nombres EIR/AD + nro/opcodes ATT) al leer el .btsnoop;
+      el bridge C muestra el decode. DB: ya loguea path/size/packets + decode
+      en details. Validado on-device (decodificó "LAP-1MJLWG3").
 
 **Multi-iteración (más grandes, su propia tanda):**
 - [ ] **5. Tracking/presencia + wardriving BT**. Modo `track`: scans repetidos
