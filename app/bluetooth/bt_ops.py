@@ -963,6 +963,108 @@ def _is_ble_only(info):
     return False
 
 
+def pair_device(mac, iface=DEFAULT_IFACE, timeout=35):
+    """Empareja (bond) con el device via bluetoothctl: agent on + scan breve +
+    pair + trust. Para un telefono, el USUARIO debe confirmar el passkey en su
+    pantalla; esto inicia el emparejamiento y espera el resultado. SOLO lab."""
+    mac = (mac or '').strip().upper()
+    if not re.fullmatch(r'[0-9A-F:]{17}', mac):
+        return None, "MAC invalida"
+    try:
+        _iface_index(iface)
+    except ValueError as e:
+        return None, str(e)
+    ok, msg = power_on(iface)
+    if not ok:
+        return None, f"No se pudo encender {iface}: {msg}"
+    bd = _bd_address(iface)
+
+    proc = subprocess.Popen(
+        [BLUETOOTHCTL], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, bufsize=1)
+    lines = []
+    stop = threading.Event()
+
+    def _rd():
+        try:
+            for line in iter(proc.stdout.readline, ''):
+                if stop.is_set():
+                    break
+                lines.append(line)
+        except Exception:
+            pass
+    t = threading.Thread(target=_rd, daemon=True)
+    t.start()
+
+    paired = False
+    err = None
+    try:
+        if bd:
+            proc.stdin.write(f"select {bd}\n")
+        proc.stdin.write("power on\n")
+        proc.stdin.write("agent on\n")
+        proc.stdin.write("default-agent\n")
+        proc.stdin.write("scan on\n")
+        proc.stdin.flush()
+        time.sleep(3)                      # breve discovery para poder emparejar
+        proc.stdin.write(f"pair {mac}\n")
+        proc.stdin.flush()
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            low = ''.join(lines).lower()
+            if 'pairing successful' in low:
+                paired = True
+                break
+            if 'already' in low and ('exist' in low or 'paired' in low):
+                paired = True
+                break
+            if 'failed to pair' in low or 'authenticationfailed' in low or \
+               'authentication failed' in low or 'org.bluez.error' in low and 'pair' in low:
+                err = "pair fallo (el device rechazo o no confirmaste en pantalla)."
+                break
+            time.sleep(0.4)
+        if paired:
+            proc.stdin.write(f"trust {mac}\n")
+            proc.stdin.flush()
+            time.sleep(0.5)
+        proc.stdin.write("scan off\n")
+        proc.stdin.write("quit\n")
+        proc.stdin.flush()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    except Exception as e:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        stop.set(); t.join(timeout=1)
+        return None, f"bluetoothctl fallo: {e}"
+
+    stop.set(); t.join(timeout=1)
+    out = ''.join(lines)
+    if err is None and not paired:
+        err = "pair no confirmado (timeout; confirma el passkey en el device)."
+    log_bt_attack("pair", mac, "ok" if paired else "fail",
+                  details=(f"iface={iface} paired={paired}" +
+                           (f" err={err}" if err else "")))
+    return {"mac": mac, "paired": paired, "raw": out[-800:]}, err
+
+
+def _ensure_paired(mac, iface):
+    """Si el device aun no esta emparejado, intenta emparejarlo (best-effort).
+    Devuelve (paired_bool, nota). No lanza; que la accion siga igual."""
+    try:
+        info = _quick_info(mac)
+        if info and info.get("paired"):
+            return True, "ya emparejado"
+        data, err = pair_device(mac, iface)
+        return (bool(data and data.get("paired")), err or "emparejado")
+    except Exception as e:
+        return False, f"pair error: {e}"
+
+
 def sdp_browse(mac, addr_type=None, timeout=15):
     """Enumera servicios BR/EDR del target via SDP (sin pairing). Util para
     identificar perfil (A2DP/HFP/HID/OBEX...) y evaluar superficie de ataque.
@@ -1074,6 +1176,9 @@ def gatt_enum(mac, iface=DEFAULT_IFACE, timeout=30):
     bd = _bd_address(iface)
     if not bd:
         return None, f"No se pudo obtener BD de {iface}"
+
+    # Emparejar primero si hace falta (devices que exigen bond para conectar).
+    _ensure_paired(mac, iface)
 
     proc = subprocess.Popen(
         [BLUETOOTHCTL],
@@ -1249,6 +1354,9 @@ def gatt_access(mac, mode, char, value_hex=None, iface=DEFAULT_IFACE,
         return None, f"No se pudo obtener BD de {iface}"
     notify_secs = max(2, min(int(notify_secs or 8), 60))
 
+    # Emparejar primero si hace falta (muchas caracteristicas exigen bond).
+    paired, pair_note = _ensure_paired(mac, iface)
+
     proc = subprocess.Popen(
         [BLUETOOTHCTL],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -1327,8 +1435,9 @@ def gatt_access(mac, mode, char, value_hex=None, iface=DEFAULT_IFACE,
     out = ''.join(lines)
 
     if err is None and not connected:
+        extra = "" if paired else f" [pairing: {pair_note}]"
         err = ("No se pudo conectar (device no conectable / requiere pairing / "
-               "fuera de alcance / ya ligado a su dueno).")
+               "fuera de alcance / ya ligado a su dueno)." + extra)
     # Attribute no seleccionado => UUID/path erroneo.
     low = out.lower()
     if err is None and ('no attribute selected' in low or
@@ -1337,7 +1446,7 @@ def gatt_access(mac, mode, char, value_hex=None, iface=DEFAULT_IFACE,
         err = f"caracteristica no encontrada: {char}"
 
     values = parse_gatt_value(out)
-    result_data = {"mac": mac, "mode": mode, "char": char,
+    result_data = {"mac": mac, "mode": mode, "char": char, "paired": paired,
                    "values": values, "raw": out[-1500:]}
     if mode == 'write':
         result_data["wrote"] = wbytes
@@ -1911,6 +2020,9 @@ def obex_push(mac, filepath, iface=DEFAULT_IFACE, timeout=45):
     size = os.path.getsize(filepath)
     fname = os.path.basename(filepath)
 
+    # OPP suele requerir que el target este emparejado: emparejar primero.
+    _ensure_paired(mac, iface)
+
     proc = subprocess.Popen(
         [OBEXCTL], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, text=True, bufsize=1, env=_session_bus_env())
@@ -2145,7 +2257,7 @@ def _emit(obj):
 
 def main():
     if len(sys.argv) < 2:
-        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|track|show|sdp|gatt|gattrw|l2ping|obexpush|spam|beacon|capture> [args]"})
+        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|track|show|pair|sdp|gatt|gattrw|l2ping|obexpush|spam|beacon|capture> [args]"})
         sys.exit(1)
     cmd = sys.argv[1]
     iface = DEFAULT_IFACE
@@ -2336,6 +2448,20 @@ def main():
                 _emit({"ok": False, "error": err})
                 sys.exit(1)
             _emit({"ok": bool(data and data.get("ok")), "warn": err,
+                   **(data or {})})
+        elif cmd == 'pair':
+            # bt_ops.py pair <mac> [iface]
+            args = sys.argv[2:]
+            if args and re.match(r'^hci\d+$', args[-1]):
+                iface = args[-1]; args = args[:-1]
+            if not args:
+                _emit({"ok": False, "error": "uso: bt_ops.py pair <mac> [iface]"})
+                sys.exit(1)
+            data, err = pair_device(args[0].upper(), iface=iface)
+            if err and not data:
+                _emit({"ok": False, "error": err})
+                sys.exit(1)
+            _emit({"ok": bool(data and data.get("paired")), "warn": err,
                    **(data or {})})
         else:
             _emit({"ok": False, "error": f"comando desconocido: {cmd}"})

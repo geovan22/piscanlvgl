@@ -2335,6 +2335,9 @@ void ui_shell_poll_bt_action(void) {
     if (!g_bt_detail_body) return;    /* overlay cerrado mientras corria */
     lv_label_set_text(g_bt_detail_body,
                       g_bt_action_text[0] ? g_bt_action_text : "(sin salida)");
+    /* Empezar arriba del contenedor scrollable para leer desde el inicio. */
+    lv_obj_t *bc = lv_obj_get_parent(g_bt_detail_body);
+    if (bc) lv_obj_scroll_to_y(bc, 0, LV_ANIM_OFF);
     const char *kind_lbl = "accion";
     if (strcmp(g_bt_action_kind, "sdp") == 0)  kind_lbl = "SDP";
     else if (strcmp(g_bt_action_kind, "gatt") == 0) kind_lbl = "GATT";
@@ -2485,11 +2488,21 @@ static void bt_detail_show(int idx) {
     lv_obj_set_style_text_color(title, lv_color_hex(0x33CCFF), 0);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 2, 0);
 
-    /* Cuerpo: campos. */
-    g_bt_detail_body = lv_label_create(box);
+    /* Cuerpo: contenedor con SCROLL vertical para que el texto largo (salida de
+     * GATT/SDP/OBEX) no quede detras de los botones. El label (wrap) vive
+     * dentro; el contenedor termina por encima de las 2 filas de botones. */
+    lv_obj_t *bodycont = lv_obj_create(box);
+    lv_obj_set_size(bodycont, 442, 182);
+    lv_obj_align(bodycont, LV_ALIGN_TOP_LEFT, 0, 18);
+    lv_obj_set_style_bg_opa(bodycont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(bodycont, 0, 0);
+    lv_obj_set_style_pad_all(bodycont, 2, 0);
+    lv_obj_set_scroll_dir(bodycont, LV_DIR_VER);
+
+    g_bt_detail_body = lv_label_create(bodycont);
     lv_label_set_long_mode(g_bt_detail_body, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(g_bt_detail_body, 440);
-    lv_obj_align(g_bt_detail_body, LV_ALIGN_TOP_LEFT, 2, 22);
+    lv_obj_set_width(g_bt_detail_body, 424);
+    lv_obj_align(g_bt_detail_body, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_set_style_text_color(g_bt_detail_body, COLOR_OK, 0);
     lv_obj_set_style_text_font(g_bt_detail_body, &lv_font_montserrat_10, 0);
 
