@@ -669,6 +669,73 @@ int bt_client_ble_beacon(const char *iface, int seconds, const char *btype,
     return ok_b;
 }
 
+int bt_client_track(const char *iface, int rounds, int window,
+                    char *out_text, int out_size) {
+    if (!out_text || out_size < 32) return 0;
+    const char *ifs = (iface && iface[0]) ? iface : BT_DEFAULT_IFACE;
+    char rv[8], wv[8];
+    snprintf(rv, sizeof(rv), "%d", rounds > 0 ? rounds : 6);
+    snprintf(wv, sizeof(wv), "%d", window > 0 ? window : 8);
+    char *argv[] = { "python3", (char *)PISCAN_BT_OPS_PATH, "track",
+                     (char *)ifs, rv, wv, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        snprintf(out_text, out_size, "Track: no se pudo ejecutar bt_ops.py");
+        return 0;
+    }
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        snprintf(out_text, out_size, "Track: JSON invalido");
+        return 0;
+    }
+    cJSON *err    = cJSON_GetObjectItemCaseSensitive(root, "error");
+    cJSON *rnd    = cJSON_GetObjectItemCaseSensitive(root, "rounds");
+    cJSON *win    = cJSON_GetObjectItemCaseSensitive(root, "window");
+    cJSON *uniq   = cJSON_GetObjectItemCaseSensitive(root, "unique");
+    cJSON *sight  = cJSON_GetObjectItemCaseSensitive(root, "sightings");
+    cJSON *devs   = cJSON_GetObjectItemCaseSensitive(root, "devices");
+    int used = 0;
+    out_text[0] = '\0';
+    if (cJSON_IsString(err)) {
+        _append(out_text, out_size, &used, "Track FALLO:\n%s", err->valuestring);
+        cJSON_Delete(root);
+        return 0;
+    }
+    int nu = cJSON_IsNumber(uniq) ? uniq->valueint : 0;
+    _append(out_text, out_size, &used,
+            "Track %s  %d rondas x %ds\nunicos: %d   avistamientos: %d",
+            (iface && iface[0]) ? iface : "hci1",
+            cJSON_IsNumber(rnd) ? rnd->valueint : 0,
+            cJSON_IsNumber(win) ? win->valueint : 0,
+            nu, cJSON_IsNumber(sight) ? sight->valueint : 0);
+    if (cJSON_IsArray(devs)) {
+        int n = cJSON_GetArraySize(devs);
+        int shown = n < 8 ? n : 8;
+        for (int i = 0; i < shown; i++) {
+            cJSON *d = cJSON_GetArrayItem(devs, i);
+            if (!cJSON_IsObject(d)) continue;
+            cJSON *mac  = cJSON_GetObjectItemCaseSensitive(d, "mac");
+            cJSON *nm   = cJSON_GetObjectItemCaseSensitive(d, "name");
+            cJSON *ven  = cJSON_GetObjectItemCaseSensitive(d, "vendor");
+            cJSON *seen = cJSON_GetObjectItemCaseSensitive(d, "seen_rounds");
+            cJSON *rb   = cJSON_GetObjectItemCaseSensitive(d, "rssi_best");
+            _append(out_text, out_size, &used, "\n%s %s%s v%d",
+                    cJSON_IsString(mac) ? mac->valuestring : "?",
+                    (cJSON_IsString(nm) && nm->valuestring[0]) ? nm->valuestring
+                        : ((cJSON_IsString(ven) && ven->valuestring[0]) ? ven->valuestring : ""),
+                    "",
+                    cJSON_IsNumber(seen) ? seen->valueint : 0);
+            if (cJSON_IsNumber(rb))
+                _append(out_text, out_size, &used, " %ddBm", rb->valueint);
+        }
+        if (n > shown)
+            _append(out_text, out_size, &used, "\n(+%d mas)", n - shown);
+    }
+    cJSON_Delete(root);
+    return nu > 0 ? 1 : 0;
+}
+
 int bt_client_power(int on, const char *iface,
                     char *out_detail, int detail_size) {
     const char *iface_s = (iface && iface[0]) ? iface : BT_DEFAULT_IFACE;

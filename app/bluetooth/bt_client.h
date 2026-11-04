@@ -31,6 +31,12 @@ int bt_client_scan(const char *iface, int seconds, const char *mode,
 int bt_client_power(int on, const char *iface,
                     char *out_detail, int detail_size);
 
+/* Tracking/presencia: `rounds` barridos de `window` s; loguea avistamientos a
+ * bluetooth_sighting y devuelve un resumen (unicos, avistamientos, top devices
+ * con RSSI). Retorna 1 si vio algun device. SOLO lab. */
+int bt_client_track(const char *iface, int rounds, int window,
+                    char *out_text, int out_size);
+
 /* ───────────── Pentesting / auditoria por device ────────────────────────
  * Las tres acciones hacen fork+exec de bt_ops.py y arman un texto
  * multilinea listo para pintar en el overlay (lv_label). Retornan 1 si la

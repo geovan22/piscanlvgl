@@ -122,6 +122,8 @@ static const cfg_item_t CFG_ITEMS[] = {
     {"bt_l2ping_count",      "L2ping count",      "wifi", CFG_INT,    1, 200, 5,  5, NULL, NULL,              0,                        "Bluetooth"},
     {"bt_l2ping_size",       "L2ping size",       "wifi", CFG_INT,    1, 600, 20, 44, "B", NULL,              0,                        "Bluetooth"},
     {"bt_gatt_notify_secs",  "GATT notify",       "wifi", CFG_INT,    2,  60, 2,  8, "s",  NULL,              0,                        "Bluetooth"},
+    {"bt_track_rounds",      "Track rondas",      "wifi", CFG_INT,    1,  60, 1,  6, NULL, NULL,              0,                        "Bluetooth"},
+    {"bt_track_window",      "Track ventana",     "wifi", CFG_INT,    2,  60, 1,  8, "s",  NULL,              0,                        "Bluetooth"},
 };
 #define CFG_N ((int)(sizeof(CFG_ITEMS)/sizeof(CFG_ITEMS[0])))
 static int       g_cfg_val[CFG_N];       /* valor actual (INT/BOOL) o indice (CHOICE) */
@@ -191,6 +193,7 @@ static lv_obj_t *g_bt_scan_btn = NULL;
 static lv_obj_t *g_bt_spam_btn = NULL;
 static lv_obj_t *g_bt_capture_btn = NULL;
 static lv_obj_t *g_bt_beacon_btn = NULL;
+static lv_obj_t *g_bt_track_btn = NULL;
 
 /* Fase 3 iter 4 - acciones globales del controller (spam / capture). Hilo+poll. */
 static volatile int g_btg_running = 0;
@@ -2622,8 +2625,8 @@ static void bt_scroll_down_cb(lv_event_t *e) {
 /* ── Acciones globales del controller: BLE spam + btmon capture ──────── */
 static void bt_global_set_buttons_disabled(int disabled) {
     lv_obj_t *btns[] = { g_bt_scan_btn, g_bt_spam_btn, g_bt_capture_btn,
-                         g_bt_beacon_btn };
-    for (int i = 0; i < 4; i++) {
+                         g_bt_beacon_btn, g_bt_track_btn };
+    for (int i = 0; i < 5; i++) {
         if (!btns[i]) continue;
         if (disabled) lv_obj_add_state(btns[i], LV_STATE_DISABLED);
         else          lv_obj_clear_state(btns[i], LV_STATE_DISABLED);
@@ -2673,6 +2676,15 @@ static void *bt_global_thread_fn(void *arg) {
             snprintf(btype, sizeof(btype), "%s", bv);
         g_btg_ok = bt_client_ble_beacon(iface, secs, btype, major, minor,
                                         g_btg_text, sizeof(g_btg_text));
+    } else if (strcmp(g_btg_kind, "track") == 0) {
+        int rounds = 6, window = 8;
+        char tv[16];
+        if (db_config_get("bt_track_rounds", tv, sizeof(tv)) && tv[0])
+            rounds = atoi(tv);
+        if (db_config_get("bt_track_window", tv, sizeof(tv)) && tv[0])
+            window = atoi(tv);
+        g_btg_ok = bt_client_track(iface, rounds, window,
+                                   g_btg_text, sizeof(g_btg_text));
     }
     g_btg_done = 1;
     return NULL;
@@ -2688,6 +2700,7 @@ void ui_shell_poll_bt_global(void) {
      * va al label de debajo del title (Toca Escanear...). */
     const char *op = (strcmp(g_btg_kind, "spam") == 0)    ? "BLE spam"
                    : (strcmp(g_btg_kind, "beacon") == 0)  ? "Beacon"
+                   : (strcmp(g_btg_kind, "track") == 0)   ? "Track"
                    : "Captura";
     char head[80];
     snprintf(head, sizeof(head), "%s: %s", op, g_btg_ok ? "OK" : "ver detalle");
@@ -2720,6 +2733,10 @@ static void bt_beacon_btn_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
     bt_global_start("beacon", "Beacon BLE en el aire (ver Config)...");
 }
+static void bt_track_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    bt_global_start("track", "Rastreando presencia (varias rondas)...");
+}
 
 static void enter_section(const char *id, const char *label) {
     cfg_flush();   /* si venimos de Config con cambios, persistirlos (no-op si no) */
@@ -2731,6 +2748,7 @@ static void enter_section(const char *id, const char *label) {
     g_bt_spam_btn = NULL;
     g_bt_capture_btn = NULL;
     g_bt_beacon_btn = NULL;
+    g_bt_track_btn = NULL;
     g_wifi_status_label = NULL;
     g_wifi_results_box = NULL;
     g_scan_btn = NULL;
@@ -2880,8 +2898,8 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 6);
 
         g_bt_scan_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_bt_scan_btn, 108, 34);
-        lv_obj_align(g_bt_scan_btn, LV_ALIGN_TOP_LEFT, 10, 28);
+        lv_obj_set_size(g_bt_scan_btn, 90, 34);
+        lv_obj_align(g_bt_scan_btn, LV_ALIGN_TOP_LEFT, 6, 28);
         lv_obj_set_style_bg_color(g_bt_scan_btn, lv_color_hex(0x0a2a0a), 0);
         lv_obj_set_style_border_color(g_bt_scan_btn, COLOR_OK, 0);
         lv_obj_set_style_border_width(g_bt_scan_btn, 2, 0);
@@ -2889,7 +2907,7 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_add_event_cb(g_bt_scan_btn, bt_scan_btn_event_cb, LV_EVENT_PRESSED, NULL);
         ui_apply_press_effect(g_bt_scan_btn);
         lv_obj_t *bsl = lv_label_create(g_bt_scan_btn);
-        lv_label_set_text(bsl, "Escanear (10s)");
+        lv_label_set_text(bsl, "Escanear");
         lv_obj_set_style_text_color(bsl, COLOR_OK, 0);
         lv_obj_set_style_text_font(bsl, &lv_font_montserrat_10, 0);
         lv_obj_center(bsl);
@@ -2897,8 +2915,8 @@ static void enter_section(const char *id, const char *label) {
         /* BLE spam (naranja): rota el nombre advertising del controller
          * durante bt_spam_duration (Config, default 20s). SOLO lab. */
         g_bt_spam_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_bt_spam_btn, 108, 34);
-        lv_obj_align(g_bt_spam_btn, LV_ALIGN_TOP_LEFT, 124, 28);
+        lv_obj_set_size(g_bt_spam_btn, 90, 34);
+        lv_obj_align(g_bt_spam_btn, LV_ALIGN_TOP_LEFT, 100, 28);
         lv_obj_set_style_bg_color(g_bt_spam_btn, lv_color_hex(0x2a1a0a), 0);
         lv_obj_set_style_border_color(g_bt_spam_btn, lv_color_hex(0xFF9933), 0);
         lv_obj_set_style_border_width(g_bt_spam_btn, 2, 0);
@@ -2906,15 +2924,15 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_add_event_cb(g_bt_spam_btn, bt_spam_btn_cb, LV_EVENT_PRESSED, NULL);
         ui_apply_press_effect(g_bt_spam_btn);
         lv_obj_t *bspl = lv_label_create(g_bt_spam_btn);
-        lv_label_set_text(bspl, "BLE spam");
+        lv_label_set_text(bspl, "Spam");
         lv_obj_set_style_text_color(bspl, lv_color_hex(0xFF9933), 0);
         lv_obj_set_style_text_font(bspl, &lv_font_montserrat_10, 0);
         lv_obj_center(bspl);
 
         /* Capturar (morado): btmon -> data/captures/btmon_hciN_<ts>.btsnoop. */
         g_bt_capture_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_bt_capture_btn, 108, 34);
-        lv_obj_align(g_bt_capture_btn, LV_ALIGN_TOP_LEFT, 238, 28);
+        lv_obj_set_size(g_bt_capture_btn, 90, 34);
+        lv_obj_align(g_bt_capture_btn, LV_ALIGN_TOP_LEFT, 194, 28);
         lv_obj_set_style_bg_color(g_bt_capture_btn, lv_color_hex(0x1a0a2a), 0);
         lv_obj_set_style_border_color(g_bt_capture_btn, lv_color_hex(0xCC66FF), 0);
         lv_obj_set_style_border_width(g_bt_capture_btn, 2, 0);
@@ -2930,8 +2948,8 @@ static void enter_section(const char *id, const char *label) {
         /* Beacon BLE (teal): iBeacon/Eddystone estatico no-conectable segun
          * Config (bt_beacon_type/major/minor/duration). SOLO lab. */
         g_bt_beacon_btn = lv_button_create(g_body);
-        lv_obj_set_size(g_bt_beacon_btn, 100, 34);
-        lv_obj_align(g_bt_beacon_btn, LV_ALIGN_TOP_LEFT, 352, 28);
+        lv_obj_set_size(g_bt_beacon_btn, 90, 34);
+        lv_obj_align(g_bt_beacon_btn, LV_ALIGN_TOP_LEFT, 288, 28);
         lv_obj_set_style_bg_color(g_bt_beacon_btn, lv_color_hex(0x0a2222), 0);
         lv_obj_set_style_border_color(g_bt_beacon_btn, lv_color_hex(0x33CCCC), 0);
         lv_obj_set_style_border_width(g_bt_beacon_btn, 2, 0);
@@ -2943,6 +2961,24 @@ static void enter_section(const char *id, const char *label) {
         lv_obj_set_style_text_color(bbl, lv_color_hex(0x33CCCC), 0);
         lv_obj_set_style_text_font(bbl, &lv_font_montserrat_10, 0);
         lv_obj_center(bbl);
+
+        /* Track (verde): tracking/presencia -> N rondas de scan logueando
+         * avistamientos (mac/rssi/ts) a bluetooth_sighting. Config:
+         * bt_track_rounds / bt_track_window. SOLO lab. */
+        g_bt_track_btn = lv_button_create(g_body);
+        lv_obj_set_size(g_bt_track_btn, 90, 34);
+        lv_obj_align(g_bt_track_btn, LV_ALIGN_TOP_LEFT, 382, 28);
+        lv_obj_set_style_bg_color(g_bt_track_btn, lv_color_hex(0x0a2a16), 0);
+        lv_obj_set_style_border_color(g_bt_track_btn, lv_color_hex(0x66FF99), 0);
+        lv_obj_set_style_border_width(g_bt_track_btn, 2, 0);
+        lv_obj_set_ext_click_area(g_bt_track_btn, 10);
+        lv_obj_add_event_cb(g_bt_track_btn, bt_track_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(g_bt_track_btn);
+        lv_obj_t *btl = lv_label_create(g_bt_track_btn);
+        lv_label_set_text(btl, "Track");
+        lv_obj_set_style_text_color(btl, lv_color_hex(0x66FF99), 0);
+        lv_obj_set_style_text_font(btl, &lv_font_montserrat_10, 0);
+        lv_obj_center(btl);
 
         g_bt_status_label = lv_label_create(g_body);
         lv_label_set_text(g_bt_status_label, "Toca Escanear para buscar dispositivos BT");

@@ -621,9 +621,10 @@ def _split_info_blocks(text):
     return blocks
 
 
-def scan(iface=DEFAULT_IFACE, seconds=10, mode='dual'):
+def scan(iface=DEFAULT_IFACE, seconds=10, mode='dual', log_db=True):
     """Barrido de dispositivos BT con bluetoothctl interactivo. Devuelve
-    (devices, err).
+    (devices, err). `log_db=False` evita escribir en BluetoothLog (lo usa el
+    modo tracking, que loguea aparte a BluetoothSighting por ronda).
 
     Importante: NO usamos `btmgmt find` porque btmgmt 5.82 se cuelga cuando
     stdin es /dev/null (confirmado el 2026-10-27 bajo systemd). bluetoothctl
@@ -748,7 +749,8 @@ def scan(iface=DEFAULT_IFACE, seconds=10, mode='dual'):
                                  d.get("name",""))
 
     # Log en DB (best-effort; nunca tumba el scan).
-    log_bluetooth_batch(iface, mode, devices)
+    if log_db:
+        log_bluetooth_batch(iface, mode, devices)
     return devices, None
 
 
@@ -805,6 +807,79 @@ def log_bluetooth_batch(iface, mode, devices):
         s.commit(); s.close()
     except Exception:
         pass
+
+
+def log_sightings(session, round_idx, iface, devices):
+    """Inserta una fila por device en bluetooth_sighting (best-effort)."""
+    if not devices:
+        return
+    try:
+        base = os.path.expanduser("~/piscanlvgl/app")
+        if base not in sys.path:
+            sys.path.insert(0, base)
+        from db.models import get_session, BluetoothSighting
+        s = get_session()
+        for d in devices:
+            s.add(BluetoothSighting(
+                session=session, round_idx=round_idx, iface=iface,
+                mac=d.get("mac"), addr_type=d.get("addr_type") or None,
+                kind=d.get("kind") or None, name=(d.get("name") or None),
+                vendor=d.get("vendor") or None, rssi=d.get("rssi")))
+        s.commit(); s.close()
+    except Exception:
+        pass
+
+
+def track(iface=DEFAULT_IFACE, rounds=6, window=8, mode='le'):
+    """Tracking / presencia: `rounds` barridos de `window` s. Cada ronda loguea
+    los devices vistos a bluetooth_sighting (mac/rssi/ts/ronda). Devuelve un
+    resumen agregado por device (en cuantas rondas se vio, rssi ultimo/mejor),
+    base para estadisticas de presencia y proximidad. SOLO lab."""
+    try:
+        _iface_index(iface)
+    except ValueError as e:
+        return None, str(e)
+    rounds = max(1, min(int(rounds or 6), 60))
+    window = max(2, min(int(window or 8), 60))
+    session = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    agg = {}
+    done_rounds = 0
+    for r in range(1, rounds + 1):
+        devs, err = scan(iface, window, mode, log_db=False)
+        if devs is None:
+            if not agg:
+                return None, f"scan fallo: {err}"
+            continue
+        done_rounds += 1
+        log_sightings(session, r, iface, devs)
+        for d in devs:
+            mac = d.get("mac")
+            if not mac:
+                continue
+            a = agg.setdefault(mac, {"mac": mac, "name": "", "vendor": "",
+                                     "kind": "", "seen_rounds": 0,
+                                     "rssi_last": None, "rssi_best": None})
+            if d.get("name") and not a["name"]:
+                a["name"] = d["name"]
+            if d.get("vendor") and not a["vendor"]:
+                a["vendor"] = d["vendor"]
+            if d.get("kind"):
+                a["kind"] = d["kind"]
+            a["seen_rounds"] += 1
+            rssi = d.get("rssi")
+            if rssi is not None:
+                a["rssi_last"] = rssi
+                if a["rssi_best"] is None or rssi > a["rssi_best"]:
+                    a["rssi_best"] = rssi
+    devices = sorted(agg.values(), key=lambda x: x["seen_rounds"], reverse=True)
+    total = sum(d["seen_rounds"] for d in devices)
+    log_bt_attack("rssi_track", "", "ok" if devices else "empty",
+                  details=f"iface={iface} rounds={done_rounds}/{rounds} "
+                          f"window={window} session={session} "
+                          f"unique={len(devices)} sightings={total}")
+    return {"iface": iface, "session": session, "rounds": done_rounds,
+            "window": window, "unique": len(devices), "sightings": total,
+            "devices": devices[:48]}, None
 
 
 # ---------------------------------------------------------------------------
@@ -2059,7 +2134,7 @@ def _emit(obj):
 
 def main():
     if len(sys.argv) < 2:
-        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|show|sdp|gatt|gattrw|l2ping|spam|beacon|capture> [args]"})
+        _emit({"ok": False, "error": "uso: bt_ops.py <up|down|info|scan|track|show|sdp|gatt|gattrw|l2ping|spam|beacon|capture> [args]"})
         sys.exit(1)
     cmd = sys.argv[1]
     iface = DEFAULT_IFACE
@@ -2093,6 +2168,19 @@ def main():
             _emit({"ok": True, "iface": iface, "mode": mode,
                    "seconds": seconds, "count": len(devs or []),
                    "devices": devs or []})
+        elif cmd == 'track':
+            # track [iface] [rounds] [window] [mode]
+            args = sys.argv[2:]
+            if args and re.match(r'^hci\d+$', args[0]):
+                args = args[1:]
+            rounds = int(args[0]) if args and args[0].isdigit() else 6
+            window = int(args[1]) if len(args) > 1 and args[1].isdigit() else 8
+            tmode  = args[2] if len(args) > 2 else 'le'
+            data, err = track(iface, rounds, window, tmode)
+            if err and not data:
+                _emit({"ok": False, "error": err, "iface": iface})
+                sys.exit(1)
+            _emit({"ok": True, **(data or {})})
         elif cmd == 'show':
             args = sys.argv[2:]
             if args and re.match(r'^hci\d+$', args[0]):

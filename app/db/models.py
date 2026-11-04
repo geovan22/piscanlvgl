@@ -138,6 +138,23 @@ class BluetoothAttackLog(Base):
     result: Mapped[str] = mapped_column(String(16), nullable=True)    # ok|fail|done|partial
     details: Mapped[str] = mapped_column(Text, nullable=True)
 
+class BluetoothSighting(Base):
+    """Avistamiento por RONDA del modo tracking/presencia: una fila por device
+    visto en cada ronda de scan, con timestamp y RSSI. Permite analizar
+    presencia en el tiempo y proximidad (RSSI). Marco: laboratorio autorizado."""
+    __tablename__ = "bluetooth_sighting"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    session: Mapped[str] = mapped_column(String(24), nullable=True)   # id de la corrida (ts inicio)
+    round_idx: Mapped[int] = mapped_column(Integer, nullable=True)    # nro de ronda (1..N)
+    iface: Mapped[str] = mapped_column(String(16), nullable=True)
+    mac: Mapped[str] = mapped_column(String(24), nullable=True)
+    addr_type: Mapped[str] = mapped_column(String(16), nullable=True)
+    kind: Mapped[str] = mapped_column(String(8), nullable=True)       # classic|le|dual
+    name: Mapped[str] = mapped_column(String(96), nullable=True)
+    vendor: Mapped[str] = mapped_column(String(32), nullable=True)
+    rssi: Mapped[int] = mapped_column(Integer, nullable=True)         # dBm
+
 class ActionLog(Base):
     """Registro generico de operaciones del sistema para depuracion:
     sección (pantalla), herramienta, entradas, salidas y error. Nutre la
