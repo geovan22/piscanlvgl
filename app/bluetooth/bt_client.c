@@ -16,6 +16,10 @@
 #define PISCAN_BT_OPS_PATH "/home/geo22/piscanlvgl/app/bluetooth/bt_ops.py"
 #endif
 
+#ifndef PISCAN_BT_AGENT_PATH
+#define PISCAN_BT_AGENT_PATH "/home/geo22/piscanlvgl/app/bluetooth/bt_pair_agent.py"
+#endif
+
 #define BT_DEFAULT_IFACE "hci1"
 
 static char *run_and_capture(char *const argv[]) {
@@ -778,6 +782,44 @@ int bt_client_track(const char *iface, int rounds, int window,
     }
     cJSON_Delete(root);
     return nu > 0 ? 1 : 0;
+}
+
+int bt_client_pair_agent(const char *iface, int seconds,
+                         char *out_text, int out_size) {
+    if (!out_text || out_size < 32) return 0;
+    const char *ifs = (iface && iface[0]) ? iface : BT_DEFAULT_IFACE;
+    char ss[8];
+    snprintf(ss, sizeof(ss), "%d", seconds > 0 ? seconds : 120);
+    /* Corre como el usuario (sin sudo): el agente habla con org.bluez por el
+     * bus del sistema. Bloquea `seconds` (ventana de emparejamiento). */
+    char *argv[] = { "python3", (char *)PISCAN_BT_AGENT_PATH, ss, (char *)ifs, NULL };
+    char *raw = run_and_capture(argv);
+    if (!raw) {
+        snprintf(out_text, out_size, "Emparejable: no se pudo ejecutar el agente");
+        return 0;
+    }
+    /* El agente imprime texto (LISTO + AUTO-CONFIRM ...), no JSON. Contamos
+     * cuantos dispositivos auto-confirmo. */
+    int confirms = 0;
+    const char *p = raw;
+    while ((p = strstr(p, "AUTO-CONFIRM")) != NULL) { confirms++; p += 12; }
+    int started = (strstr(raw, "LISTO") != NULL);
+    free(raw);
+    int used = 0;
+    out_text[0] = '\0';
+    _append(out_text, out_size, &used,
+            "Modo emparejable %s: ventana de %ss cerrada.\n", ifs, ss);
+    if (confirms > 0)
+        _append(out_text, out_size, &used,
+                "Emparejados: %d dispositivo(s). Revisa 'Paired'.", confirms);
+    else if (started)
+        _append(out_text, out_size, &used,
+                "Nadie se emparejo. En el telefono: Ajustes>Bluetooth, busca "
+                "PiScan y toca emparejar durante la ventana.");
+    else
+        _append(out_text, out_size, &used,
+                "El agente no arranco (revisa python3-dbus/python3-gi).");
+    return confirms > 0 ? 1 : 0;
 }
 
 int bt_client_power(int on, const char *iface,
