@@ -194,6 +194,8 @@ static lv_obj_t *g_bt_spam_btn = NULL;
 static lv_obj_t *g_bt_capture_btn = NULL;
 static lv_obj_t *g_bt_beacon_btn = NULL;
 static lv_obj_t *g_bt_track_btn = NULL;
+static lv_obj_t *g_bt_spam_overlay = NULL;      /* selector de modo de spam */
+static char g_bt_spam_mode_sel[16] = "";        /* modo elegido en el selector */
 
 /* Fase 3 iter 4 - acciones globales del controller (spam / capture). Hilo+poll. */
 static volatile int g_btg_running = 0;
@@ -2575,7 +2577,10 @@ static void render_bt_list(void) {
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_ext_click_area(row, 10);
         lv_obj_set_user_data(row, (void *)(intptr_t)i);
-        lv_obj_add_event_cb(row, bt_row_cb, LV_EVENT_PRESSED, NULL);
+        /* El indice va como user_data DEL EVENTO (4to arg): bt_row_cb lo lee con
+         * lv_event_get_user_data. Antes era NULL -> idx siempre 0 -> solo se
+         * abria el primer device de la lista (bug de seleccion). */
+        lv_obj_add_event_cb(row, bt_row_cb, LV_EVENT_PRESSED, (void *)(intptr_t)i);
 
         /* Columna 0: nombre o MAC. Coloreado por kind:
          *   LE = cyan, classic = verde, dual = magenta. */
@@ -2660,10 +2665,15 @@ static void *bt_global_thread_fn(void *arg) {
         if (db_config_get("bt_spam_duration", sv, sizeof(sv)) && sv[0])
             secs = atoi(sv);
         if (secs < 2) secs = 2;
+        /* Prioridad: el modo elegido en el selector (g_bt_spam_mode_sel); si
+         * esta vacio (ej. futuro trigger sin menu), cae a Config bt_spam_mode. */
         char mode[16] = "names";
         char mv[16];
-        if (db_config_get("bt_spam_mode", mv, sizeof(mv)) && mv[0])
+        if (g_bt_spam_mode_sel[0]) {
+            snprintf(mode, sizeof(mode), "%s", g_bt_spam_mode_sel);
+        } else if (db_config_get("bt_spam_mode", mv, sizeof(mv)) && mv[0]) {
             snprintf(mode, sizeof(mode), "%s", mv);
+        }
         g_btg_ok = bt_client_ble_spam(iface, secs, mode,
                                       g_btg_text, sizeof(g_btg_text));
     } else if (strcmp(g_btg_kind, "capture") == 0) {
@@ -2734,9 +2744,79 @@ static void bt_global_start(const char *kind, const char *tag_running) {
     pthread_detach(tid);
 }
 
+/* ── Selector de modo de spam (overlay): el popup depende del SO objetivo,
+ * por eso se elige por pulsacion en vez de enterrarlo en Config. ─────────── */
+static void bt_spam_menu_close(void) {
+    if (g_bt_spam_overlay) { lv_obj_del(g_bt_spam_overlay); g_bt_spam_overlay = NULL; }
+}
+static void bt_spam_mode_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    const char *mode = (const char *)lv_event_get_user_data(e);
+    bt_spam_menu_close();
+    if (!mode) return;   /* Cancelar */
+    snprintf(g_bt_spam_mode_sel, sizeof(g_bt_spam_mode_sel), "%s", mode);
+    char tag[64];
+    snprintf(tag, sizeof(tag), "BLE spam (%s)...", mode);
+    bt_global_start("spam", tag);
+}
+static void bt_spam_mode_btn(lv_obj_t *parent, const char *txt, uint32_t color,
+                             int y, const char *mode) {
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_size(b, 262, 30);
+    lv_obj_align(b, LV_ALIGN_TOP_MID, 0, y);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x0a1a0a), 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(color), 0);
+    lv_obj_set_style_border_width(b, 2, 0);
+    lv_obj_set_ext_click_area(b, 3);
+    lv_obj_add_event_cb(b, bt_spam_mode_cb, LV_EVENT_PRESSED, (void *)mode);
+    ui_apply_press_effect(b);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, txt);
+    lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
+    lv_obj_center(l);
+}
+static void bt_spam_menu_show(void) {
+    if (g_bt_spam_overlay) return;
+    g_bt_spam_overlay = lv_obj_create(g_main_screen);
+    lv_obj_set_size(g_bt_spam_overlay, 480, 320);
+    lv_obj_set_pos(g_bt_spam_overlay, 0, 0);
+    lv_obj_set_style_bg_color(g_bt_spam_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(g_bt_spam_overlay, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(g_bt_spam_overlay, 0, 0);
+    lv_obj_set_style_pad_all(g_bt_spam_overlay, 0, 0);
+    lv_obj_clear_flag(g_bt_spam_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(g_bt_spam_overlay, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *box = lv_obj_create(g_bt_spam_overlay);
+    lv_obj_set_size(box, 290, 300);
+    lv_obj_center(box);
+    lv_obj_set_style_bg_color(box, lv_color_hex(0x071007), 0);
+    lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(box, lv_color_hex(0xFF9933), 0);
+    lv_obj_set_style_border_width(box, 2, 0);
+    lv_obj_set_style_pad_all(box, 6, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(box);
+    lv_label_set_text(title, "Spam BLE: elegi el objetivo");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFF9933), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_10, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
+
+    int y = 22;
+    bt_spam_mode_btn(box, "Samsung (Galaxy Buds)",   0x33CCFF, y, "samsung");   y += 34;
+    bt_spam_mode_btn(box, "Google Fast Pair (Andr.)",0x66FF99, y, "google");    y += 34;
+    bt_spam_mode_btn(box, "Apple (iOS)",             0xFFFFFF, y, "apple");     y += 34;
+    bt_spam_mode_btn(box, "Microsoft Swift (Win)",   0x33CCFF, y, "microsoft"); y += 34;
+    bt_spam_mode_btn(box, "Nombres (names)",         0xFFCC33, y, "names");     y += 34;
+    bt_spam_mode_btn(box, "Aleatorio (random)",      0xFFCC33, y, "random");    y += 34;
+    bt_spam_mode_btn(box, "Cancelar",                0xFF4444, y, NULL);
+}
+
 static void bt_spam_btn_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
-    bt_global_start("spam", "BLE spam en curso (ver bt_spam_duration)...");
+    bt_spam_menu_show();
 }
 static void bt_capture_btn_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
@@ -2776,6 +2856,7 @@ static void enter_section(const char *id, const char *label) {
     for (int _i = 0; _i < CFG_N; _i++) g_cfg_vlabel[_i] = NULL;
     close_actions_menu();   /* por si quedo un overlay de acciones abierto */
     close_bt_detail();       /* idem para el detalle BT */
+    bt_spam_menu_close();    /* idem para el selector de modo de spam */
 
     if (strcmp(id, "wifi") == 0) {
         lv_obj_t *title = lv_label_create(g_body);
@@ -3341,6 +3422,7 @@ static void show_carousel(void) {
     cfg_flush();   /* guarda en 1 fork lo que se haya cambiado en Config */
     close_actions_menu();   /* por si quedara un overlay de acciones abierto */
     close_bt_detail();      /* idem para el detalle BT */
+    bt_spam_menu_close();   /* idem para el selector de modo de spam */
     g_cfg_group_sel[0] = '\0';   /* al salir de Config vuelve al menu grupos */
     lv_obj_clean(g_body);
     g_net_box = NULL;
