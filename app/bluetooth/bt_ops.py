@@ -1007,20 +1007,29 @@ def pair_device(mac, iface=DEFAULT_IFACE, timeout=35):
         proc.stdin.write("scan on\n")
         proc.stdin.flush()
         time.sleep(3)                      # breve discovery para poder emparejar
+        # connect primero ayuda en BLE (abre la conexion antes del bond); si el
+        # device no es conectable, pair fallara con el mensaje guia.
+        proc.stdin.write(f"connect {mac}\n")
+        proc.stdin.flush()
+        time.sleep(2)
         proc.stdin.write(f"pair {mac}\n")
         proc.stdin.flush()
         t0 = time.time()
         while time.time() - t0 < timeout:
             low = ''.join(lines).lower()
-            if 'pairing successful' in low:
+            if 'pairing successful' in low or 'paired: yes' in low:
                 paired = True
                 break
             if 'already' in low and ('exist' in low or 'paired' in low):
                 paired = True
                 break
-            if 'failed to pair' in low or 'authenticationfailed' in low or \
-               'authentication failed' in low or 'org.bluez.error' in low and 'pair' in low:
-                err = "pair fallo (el device rechazo o no confirmaste en pantalla)."
+            if ('failed to pair' in low or 'authenticationfailed' in low or
+                    'authenticationcanceled' in low or 'authentication failed' in low
+                    or 'not available' in low):
+                err = ("pair fallo. Pone el dispositivo en MODO EMPAREJAMIENTO "
+                       "(en el telefono: Ajustes > Bluetooth, pantalla abierta) "
+                       "y volve a intentar; una MAC random del scan no es "
+                       "emparejable.")
                 break
             time.sleep(0.4)
         if paired:
