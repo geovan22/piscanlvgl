@@ -59,10 +59,24 @@
 
 ### Orden de prioridad
 > **A y B HECHOS (2026-11-04, commits c975df3 opción A, 8d5d196 opción B).**
-> Compilados en la Pi (exit 0). Pendiente: reiniciar piscan para ver la UI
-> nueva (`sudo systemctl restart piscan`), y validar el GATT read/write real
-> contra un periférico BLE conectable en modo pairing (pulsera/sensor/bombilla/
-> ESP32) — hoy no había ninguno conectable libre en rango.
+> Compilados en la Pi (exit 0).
+>
+> **Sesión 2026-11-06 (BT pausado por decisión del usuario):** se completaron
+> #5 tracking, #7 OBEX, selector de spam en pantalla, fix del bug de selección
+> de la lista BT (siempre abría el 1º), scroll en el overlay de detalle BT
+> (ya no se solapa con los botones), auto-emparejamiento (`_ensure_paired`
+> en gatt/obex) y `bt_pair_agent.py` + botón **Pair** (modo emparejable).
+> **El Geo 22 quedó Paired+Bonded via el botón Pair**. Para el spam se
+> reescribió a alta tasa via socket HCI (`ble_adv_fast.py`, ~40 adv/s
+> verificados OTA) y se agotaron todas las palancas (tasa 2-40/s, hci0 y hci1,
+> con/sin bluetoothd, persistencia 25/200/500 ms) sin lograr popup en el
+> Geo 22. Conclusión: la emisión es correcta; falta el set exacto de
+> model-IDs de Bruce (fetch bloqueado; usuario no tiene el archivo). Ver
+> memoria `project-ble-spam-receiver-limit.md`.
+>
+> **Pendiente de hardware:** GATT read/write real contra un periférico BLE
+> conectable en pairing (pulsera/sensor/bombilla/ESP32), y OBEX push real
+> contra un target clásico en modo recepción OPP.
 
 **Single-change (se construyen en esta/próxima iteración, autocontenidas):**
 - [x] **1. GATT read/write/subscribe** (diferenciador Linux #1) — HECHO
@@ -110,14 +124,15 @@
       `bt_track_window`. Verificado: 3 rondas → 6 únicos / 13 avistamientos.
       (Wardriving = esto + GPS, futuro.)
 - [~] **6. Bad BLE / BadBT (HID injection)** — **PENDIENTE, iteración propia.**
-      Requiere: (a) instalar `python3-dbus` + `python3-gi` (no están), (b) un
-      servidor GATT **HOGP** (HID 0x1812 + report map + bonding + input reports)
-      corriendo como **proceso persistente** (no encaja en "un JSON por
-      invocación" — hay que repensar el patrón), (c) un **host que empareje**
-      para validar. No es single-change; no construir a ciegas con deps
-      faltantes. Config: `badble_layout`. DB: `BluetoothAttackLog`
-      action=`badble`. **Decisión del usuario:** ¿instalamos deps + lo armamos
-      como daemon con host de prueba?
+      Estado al 2026-11-06: (a) `python3-dbus` + `python3-gi` **YA instalados**
+      en la Pi (del trabajo del pairing agent); (b) `bt_pair_agent.py` ya
+      demuestra el patrón daemon+GLib+Agent1 D-Bus con la Pi descubrible
+      (verificado contra el Geo 22); (c) **el Geo 22 ya está emparejado con la
+      Pi (Paired+Bonded)** — sirve de host para validar. Falta: servidor GATT
+      **HOGP** (HID 0x1812 + report map + bonding + input reports) también
+      como daemon dbus (igual patrón que el agente), un formato de script
+      estilo Ducky y la UI (botón + carga de script). Config: `badble_layout`.
+      DB: `BluetoothAttackLog` action=`badble`.
 - [x] **7. OBEX push/pull (clásico)** (diferenciador) — HECHO (commit ebb8c24).
       `obex_push(mac, filepath)` con `obexctl` (BlueZ/obexd); clave:
       `_session_bus_env()` apunta `DBUS_SESSION_BUS_ADDRESS` a
@@ -132,6 +147,52 @@
       Radio A conecta al periférico real, radio B anuncia un clon al teléfono;
       proxea/loguea/modifica GATT. DB: **nueva tabla** para el tráfico MITM.
       Lab. Esfuerzo alto; depende de #1 (GATT r/w).
+
+### Mejoras transversales de BT (2026-10-29 → 2026-11-06)
+- [x] **Spam de alta tasa** (commit `f0fdef2`+`2d8b2d2`) — reescritura: nuevo
+      `app/bluetooth/ble_adv_fast.py` (socket HCI crudo, root via sudoers;
+      rota MAC+payload cada ~25 ms). Verificado OTA: **~40 adv/s** (vs ~1.3/s
+      del fork-de-hcitool viejo); 220 tramas Fast Pair `0xFE2C` y 173 Samsung
+      `0x0075` bien formadas visibles desde hci0. `ble_spam()` delega en el
+      helper; bridge muestra la tasa. Sudoers: + helper (root para socket HCI).
+- [x] **Selector de modo de spam** en pantalla (commit `d13157b`) — al tocar
+      "Spam" abre overlay (Samsung/Google/Apple/Microsoft/names/random). Antes
+      quedaba enterrado en Config → se probaba `microsoft` contra un Android
+      y no salía nada. Resuelto.
+- [x] **Fix selección de la lista BT** (commit `d13157b`) — `bt_row_cb` leía
+      `lv_event_get_user_data` (4° arg = `NULL`) → siempre abría el primer
+      device. Ahora el índice va como user_data del evento. Afectaba SDP/GATT/
+      GATT-rw/L2ping/OBEX por dispositivo.
+- [x] **Scroll en el overlay de detalle BT** (commit `feba977`) — la info +
+      resultados de acciones ahora viven en contenedor con scroll (442×182)
+      que termina sobre las 2 filas de botones → ya no se solapa; auto
+      scroll-to-top al llegar un resultado.
+- [x] **Auto-emparejamiento antes de acciones** (commit `feba977`) — nuevo
+      `pair_device(mac, iface)` y `_ensure_paired()` que se llama antes de
+      `gatt_enum`, `gatt_access` (R/W/N) y `obex_push`. CLI `pair <mac>`.
+      Mensaje de error guía (una MAC random del scan **no** es emparejable;
+      el device debe estar en modo pairing).
+- [x] **Pairing agent + botón Pair** (commits `0906af3`+`2ea48af`) —
+      `app/bluetooth/bt_pair_agent.py` (python3-dbus + GLib): registra un
+      `org.bluez.Agent1` KeyboardDisplay que auto-confirma (passkey y
+      authorize), hace la Pi Powered+Pairable+Discoverable (alias "PiScan")
+      por N segundos. Bridge `bt_client_pair_agent`, **botón "Pair" (azul)
+      6° en la fila BT**. Config: `bt_pair_window`. **Validado end-to-end
+      2026-11-06: el Geo 22 (`1C:F8:D0:34:A0:9A`) quedó `Paired: yes,
+      Bonded: yes`** (encontrado por hci0 — onboard tiene mejor antena que
+      hci1 para este caso).
+- [x] **Sudoers: `systemctl restart/stop/start piscan` NOPASSWD** (commit
+      `c9f0ba0`) — archivo separado `systemd/sudoers-piscan-restart`,
+      validado con `visudo -c`. Ya me permite reiniciar piscan tras cada
+      `build_app.sh` sin pedir contraseña.
+- [~] **BLE spam popup en Geo 22** — **BLOQUEADO (ver memoria
+      `project-ble-spam-receiver-limit.md`).** Sesión 2026-11-06 agotó todas
+      las palancas (tasa 2-40/s, hci0/hci1, con/sin bluetoothd, persistencia
+      25/200/500 ms); emisión verificada correcta OTA, pero el Geo 22 no
+      dispara popup. Lo único que queda es el set exacto de **model-IDs** que
+      Bruce usa (Google/Samsung dejaron de gatillar con muchos IDs); el fetch
+      automático lo bloqueó el filtro 2 veces, y el usuario no tiene el
+      archivo. **No volver a iterar sin el archivo de payloads de Bruce.**
 
 > Al implementar cada una: binario nuevo en sudoers si usa root (ruta absoluta),
 > Config si tiene parámetros, y `log_*` a DB siempre. Tests de parsers puros.
