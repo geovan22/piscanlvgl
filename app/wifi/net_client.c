@@ -10,41 +10,16 @@
 #include <sys/wait.h>
 #include <cjson/cJSON.h>
 #include "net_client.h"
+#include "proc_bridge.h"
 
 #ifndef PISCAN_NET_OPS_PATH
 #define PISCAN_NET_OPS_PATH "/home/geo22/piscanlvgl/app/wifi/net_ops.py"
 #endif
 
+/* Delega en el helper compartido (app/common/proc_bridge.c); nombre local
+ * conservado para no tocar los call sites de abajo. */
 static char *net_run_and_capture(char *const argv[]) {
-    int pipefd[2];
-    if (pipe(pipefd) != 0) return NULL;
-    pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return NULL; }
-    if (pid == 0) {
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        close(pipefd[1]);
-        execvp(argv[0], argv);
-        _exit(127);
-    }
-    close(pipefd[1]);
-    size_t cap = 8192, len = 0;
-    char *buf = malloc(cap);
-    if (!buf) { close(pipefd[0]); waitpid(pid, NULL, 0); return NULL; }
-    ssize_t n;
-    while ((n = read(pipefd[0], buf + len, cap - len - 1)) > 0) {
-        len += (size_t)n;
-        if (len + 1 >= cap) {
-            cap *= 2;
-            char *nb = realloc(buf, cap);
-            if (!nb) { free(buf); close(pipefd[0]); waitpid(pid, NULL, 0); return NULL; }
-            buf = nb;
-        }
-    }
-    buf[len] = '\0';
-    close(pipefd[0]);
-    waitpid(pid, NULL, 0);
-    return buf;
+    return piscan_run_capture(argv);
 }
 
 int net_client_scan(net_network_t *out, int max_count, char *out_error, int error_size) {

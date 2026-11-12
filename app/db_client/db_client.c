@@ -12,59 +12,20 @@
 #include <sys/wait.h>
 #include <cjson/cJSON.h>
 #include "db_client.h"
+#include "proc_bridge.h"
 
 #ifndef PISCAN_DB_TOOL_PATH
 #define PISCAN_DB_TOOL_PATH "/home/geo22/piscanlvgl/app/db_tool.py"
 #endif
 
-/* Ejecuta argv[] y captura su stdout completo. NULL si fallo el fork/exec. */
+/* Delegan en el helper compartido (app/common/proc_bridge.c). Se mantienen los
+ * nombres locales para no tocar los ~8 call sites de abajo. */
 static char *run_and_capture(char *const argv[]) {
-    int pipefd[2];
-    if (pipe(pipefd) != 0) return NULL;
-
-    pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return NULL; }
-
-    if (pid == 0) {
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        close(pipefd[1]);
-        execvp(argv[0], argv);
-        _exit(127); /* solo si execvp fallo */
-    }
-
-    close(pipefd[1]);
-    size_t cap = 4096, len = 0;
-    char *buf = malloc(cap);
-    if (!buf) { close(pipefd[0]); waitpid(pid, NULL, 0); return NULL; }
-
-    ssize_t n;
-    while ((n = read(pipefd[0], buf + len, cap - len - 1)) > 0) {
-        len += (size_t)n;
-        if (len + 1 >= cap) {
-            cap *= 2;
-            char *nb = realloc(buf, cap);
-            if (!nb) { free(buf); close(pipefd[0]); waitpid(pid, NULL, 0); return NULL; }
-            buf = nb;
-        }
-    }
-    buf[len] = '\0';
-    close(pipefd[0]);
-    waitpid(pid, NULL, 0);
-    return buf;
+    return piscan_run_capture(argv);
 }
 
-/* Parsea la salida JSON. *out_root queda con el objeto parseado (liberar con cJSON_Delete).
- * Retorna 1 si el JSON es valido Y "ok" es true, 0 en cualquier otro caso. */
 static int parse_ok_json(const char *raw, cJSON **out_root) {
-    *out_root = NULL;
-    if (!raw) return 0;
-    cJSON *root = cJSON_Parse(raw);
-    if (!root) return 0;
-    cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
-    if (!cJSON_IsTrue(ok)) { cJSON_Delete(root); return 0; }
-    *out_root = root;
-    return 1;
+    return piscan_parse_ok_json(raw, out_root);
 }
 
 int db_config_get(const char *key, char *value_out, int value_out_size) {

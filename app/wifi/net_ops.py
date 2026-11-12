@@ -16,11 +16,20 @@ import sys, os, json, subprocess
 
 IFACE = "wlan0"
 
+# Helper de subprocesos compartido (app/common/proc.py). Fallback local por si
+# el modulo no estuviera desplegado: el script no debe morir.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+try:
+    from common.proc import run as _proc_run
+except Exception:
+    def _proc_run(cmd, timeout):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except Exception:
+            return None
+
 def _run(cmd, timeout=30):
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except Exception:
-        return None
+    return _proc_run(cmd, timeout)
 
 def _nmcli(args, timeout=30):
     return _run(['sudo', '/usr/bin/nmcli'] + args, timeout=timeout)

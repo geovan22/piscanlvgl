@@ -11,11 +11,22 @@ regulatorio (ver CLAUDE.md §2 y §6).
 """
 import sys, os, json, subprocess, time
 
+# Helper de subprocesos compartido (app/common/proc.py). Fallback local por si
+# el modulo no estuviera desplegado: el script no debe morir.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+try:
+    from common.proc import run as _run
+except Exception:
+    def _run(cmd, timeout):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except Exception:
+            return None
+
 def ensure_interface_up(iface):
     """wlan1 esta 'unmanaged' en NetworkManager a proposito (para
     modo monitor/ataque), asi que nada la levanta sola tras un reinicio."""
-    subprocess.run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'up'],
-                    capture_output=True, timeout=5)
+    _run(['sudo', '/usr/bin/ip', 'link', 'set', iface, 'up'], timeout=5)
 
 def _freq_to_channel(freq):
     """Deriva el canal del freq en MHz. Fuente mas confiable que
@@ -127,18 +138,14 @@ def scan_networks(iface='wlan1', passes=2):
     for i in range(max(1, passes)):
         if i > 0:
             time.sleep(3)
-        try:
-            proc = subprocess.run(
-                ['sudo', '/usr/sbin/iw', 'dev', iface, 'scan'],
-                capture_output=True, text=True, timeout=20
-            )
-            if proc.returncode != 0:
-                last_err = f"iw scan fallo: {proc.stderr.strip() or proc.stdout.strip()}"
-                continue
-            _parse_scan_output(proc.stdout, networks)
-        except Exception as e:
-            last_err = str(e)
+        proc = _run(['sudo', '/usr/sbin/iw', 'dev', iface, 'scan'], timeout=20)
+        if proc is None:
+            last_err = "iw scan no respondio (timeout o no se pudo lanzar)"
             continue
+        if proc.returncode != 0:
+            last_err = f"iw scan fallo: {proc.stderr.strip() or proc.stdout.strip()}"
+            continue
+        _parse_scan_output(proc.stdout, networks)
 
     if not networks and last_err:
         return None, last_err

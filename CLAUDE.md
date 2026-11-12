@@ -318,6 +318,8 @@ rendimiento del internet compartido: pospuesto y de baja prioridad (§3).
 │   app/pin_lock.c   ← PIN                          │
 │   app/confirm_dialog.c  app/text_input.c          │
 │   app/ui_style.h   ← estilos / press-effect       │
+│   app/common/proc_bridge.c ← fork+exec+pipe+cJSON  │
+│        (compartido por TODOS los *_client.c)        │
 │   app/wifi/*_client.c  ← puentes C ↔ Python       │
 │   app/bluetooth/bt_client.c ← puente BT           │
 │   app/reports/report_client.c ← puente reportes   │
@@ -326,8 +328,10 @@ rendimiento del internet compartido: pospuesto y de baja prioridad (§3).
                 ▼
 ┌─────────────────────────────────────────────────┐
 │  Scripts Python (trabajo de red / sistema)       │
+│   app/common/proc.py      ← run() subproc compartido│
 │   app/wifi/wifi_scan.py   ← scan wlan1            │
 │   app/wifi/wifi_ops.py    ← monitor/deauth/hs/audit│
+│        (dispatcher table-driven + monitor_mode CM) │
 │   app/wifi/net_ops.py     ← wlan0 / NetworkManager │
 │   app/bluetooth/bt_ops.py ← BT scan/acciones       │
 │   app/reports/report_ops.py ← generador de reportes│
