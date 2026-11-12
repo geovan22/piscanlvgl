@@ -14,6 +14,7 @@
 #include "wifi_client.h"
 #include "net_client.h"
 #include "bt_client.h"
+#include "report_client.h"
 #include "text_input.h"
 #include "db_client.h"
 #include "ui_style.h"
@@ -42,6 +43,7 @@ static const menu_item_t MENU_ITEMS[] = {
     { "WiFi",          "wifi" },
     { "Bluetooth",     "bluetooth" },
     { "LAN",           "lan" },
+    { "Reportes",      "reportes" },
     { "Herramientas",  "tools" },
     { "Config",        "config" },
     { "Conectar Red",  "net_connect" },
@@ -97,6 +99,8 @@ static const char *const BT_SPAM_MODES[] = {
 
 static const char *const BT_BEACON_TYPES[] = { "ibeacon", "eddystone" };
 
+static const char *const REPORT_WINDOWS_CH[] = { "24h", "7d", "all" };
+
 static const cfg_item_t CFG_ITEMS[] = {
     /* -- WiFi -- */
     {"deauth_duration",      "Deauth sostenido",  "wifi", CFG_INT,    0, 600, 5,  0, "s",  NULL,              0,                        "WiFi"},
@@ -125,6 +129,10 @@ static const cfg_item_t CFG_ITEMS[] = {
     {"bt_track_rounds",      "Track rondas",      "wifi", CFG_INT,    1,  60, 1,  6, NULL, NULL,              0,                        "Bluetooth"},
     {"bt_track_window",      "Track ventana",     "wifi", CFG_INT,    2,  60, 1,  8, "s",  NULL,              0,                        "Bluetooth"},
     {"bt_pair_window",       "Emparejable (s)",   "wifi", CFG_INT,   20, 300, 10, 120, "s", NULL,             0,                        "Bluetooth"},
+    /* -- Reportes (Fase 8) -- */
+    {"report_default_window",        "Ventana default",    "report", CFG_CHOICE, 0,   0, 0,  0, NULL, REPORT_WINDOWS_CH, 3, "Reportes"},
+    {"report_include_portal_creds",  "Portal creds",       "report", CFG_BOOL,   0,   1, 1,  0, NULL, NULL,               0, "Reportes"},
+    {"report_max_rows_per_section",  "Max filas/seccion",  "report", CFG_INT,   10, 500, 10, 50, NULL, NULL,              0, "Reportes"},
 };
 #define CFG_N ((int)(sizeof(CFG_ITEMS)/sizeof(CFG_ITEMS[0])))
 static int       g_cfg_val[CFG_N];       /* valor actual (INT/BOOL) o indice (CHOICE) */
@@ -2183,6 +2191,329 @@ static void logs_err_btn_cb(lv_event_t *e) {
 }
 
 /* ═══════════════════════════════════════════════════════
+   Reportes (Fase 8). Patron hilo+poll; LVGL solo desde poll.
+   Un solo set de flags maneja los 4 modos (list/gen/show/delete).
+   ═══════════════════════════════════════════════════════ */
+static lv_obj_t *g_rep_status_label = NULL;
+static lv_obj_t *g_rep_box          = NULL;
+static lv_obj_t *g_rep_wlabel       = NULL;
+static lv_obj_t *g_rep_overlay      = NULL;
+static lv_obj_t *g_rep_detail_lbl   = NULL;
+
+static report_meta_t g_rep_items[REPORT_LIST_MAX];
+static int g_rep_count = 0;
+
+static const char *REP_WINDOWS[] = { "24h", "7d", "all" };
+#define REP_WINDOWS_N (int)(sizeof(REP_WINDOWS)/sizeof(REP_WINDOWS[0]))
+static int g_rep_window_idx = 0;
+static int g_rep_selected_id = 0;
+
+enum { REP_IDLE = 0, REP_LIST, REP_GEN, REP_SHOW, REP_DELETE };
+static volatile int g_rep_running = 0;
+static volatile int g_rep_done    = 0;
+static int g_rep_mode    = REP_IDLE;
+static int g_rep_ok      = 0;
+static int g_rep_target_id = 0;
+static report_meta_t g_rep_last;
+static char g_rep_show_text[6000];
+static char g_rep_err[160];
+
+static void close_report_overlay(void) {
+    if (g_rep_overlay) {
+        lv_obj_del(g_rep_overlay);
+        g_rep_overlay = NULL;
+        g_rep_detail_lbl = NULL;
+    }
+}
+
+static void render_report_list(void);
+
+static void *rep_list_thread_fn(void *arg) {
+    (void)arg;
+    g_rep_count = report_client_list(g_rep_items, REPORT_LIST_MAX);
+    g_rep_ok = 1;
+    g_rep_done = 1;
+    return NULL;
+}
+
+static void *rep_gen_thread_fn(void *arg) {
+    (void)arg;
+    g_rep_err[0] = '\0';
+    const char *w = REP_WINDOWS[g_rep_window_idx];
+    g_rep_ok = report_client_generate(w, 0, &g_rep_last,
+                                      g_rep_err, sizeof(g_rep_err));
+    g_rep_done = 1;
+    return NULL;
+}
+
+static void *rep_show_thread_fn(void *arg) {
+    (void)arg;
+    g_rep_show_text[0] = '\0';
+    g_rep_ok = report_client_show(g_rep_target_id,
+                                  g_rep_show_text, sizeof(g_rep_show_text),
+                                  NULL, 0);
+    g_rep_done = 1;
+    return NULL;
+}
+
+static void *rep_delete_thread_fn(void *arg) {
+    (void)arg;
+    g_rep_ok = report_client_delete(g_rep_target_id);
+    g_rep_done = 1;
+    return NULL;
+}
+
+static void start_report_list(void) {
+    if (g_rep_running) return;
+    g_rep_running = 1;
+    g_rep_done = 0;
+    g_rep_mode = REP_LIST;
+    if (g_rep_status_label) lv_label_set_text(g_rep_status_label,
+                                              "Listando reportes...");
+    ui_shell_set_status("Reportes: listando...", UI_STATUS_WORKING);
+    pthread_t tid;
+    pthread_create(&tid, NULL, rep_list_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+void ui_shell_poll_report(void) {
+    if (!g_rep_done) return;
+    g_rep_done = 0;
+    int mode = g_rep_mode;
+    g_rep_mode = REP_IDLE;
+    g_rep_running = 0;
+
+    if (mode == REP_LIST) {
+        if (!g_rep_box) return;   /* salimos de la seccion mientras corria */
+        render_report_list();
+        char msg[48];
+        snprintf(msg, sizeof(msg), "Reportes: %d encontrados", g_rep_count);
+        ui_shell_set_status(msg,
+            g_rep_count > 0 ? UI_STATUS_OK : UI_STATUS_INFO);
+        if (g_rep_status_label)
+            lv_label_set_text(g_rep_status_label,
+                g_rep_count > 0 ? "" : "Sin reportes. Toca Crear.");
+    } else if (mode == REP_GEN) {
+        if (!g_rep_ok) {
+            if (g_rep_status_label)
+                lv_label_set_text(g_rep_status_label,
+                    g_rep_err[0] ? g_rep_err : "No se pudo generar");
+            ui_shell_set_status("Reporte: no se pudo generar",
+                                UI_STATUS_ERROR);
+            return;
+        }
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Reporte #%d creado (%s)",
+                 g_rep_last.id, g_rep_last.window);
+        ui_shell_set_status(msg, UI_STATUS_OK);
+        start_report_list();
+    } else if (mode == REP_SHOW) {
+        if (!g_rep_overlay || !g_rep_detail_lbl) return;
+        if (!g_rep_ok) {
+            lv_label_set_text(g_rep_detail_lbl,
+                              "No se pudo leer el reporte");
+            ui_shell_set_status("Reporte: no se pudo abrir",
+                                UI_STATUS_ERROR);
+            return;
+        }
+        lv_label_set_text(g_rep_detail_lbl, g_rep_show_text);
+        ui_shell_set_status("Reporte abierto", UI_STATUS_OK);
+    } else if (mode == REP_DELETE) {
+        if (g_rep_ok) {
+            close_report_overlay();
+            ui_shell_set_status("Reporte eliminado", UI_STATUS_OK);
+            start_report_list();
+        } else {
+            ui_shell_set_status("No se pudo eliminar", UI_STATUS_ERROR);
+        }
+    }
+}
+
+static void rep_window_prev_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    g_rep_window_idx = (g_rep_window_idx - 1 + REP_WINDOWS_N) % REP_WINDOWS_N;
+    if (g_rep_wlabel)
+        lv_label_set_text(g_rep_wlabel, REP_WINDOWS[g_rep_window_idx]);
+}
+
+static void rep_window_next_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    g_rep_window_idx = (g_rep_window_idx + 1) % REP_WINDOWS_N;
+    if (g_rep_wlabel)
+        lv_label_set_text(g_rep_wlabel, REP_WINDOWS[g_rep_window_idx]);
+}
+
+static void rep_create_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_rep_running) return;
+    g_rep_running = 1;
+    g_rep_done = 0;
+    g_rep_mode = REP_GEN;
+    if (g_rep_status_label)
+        lv_label_set_text(g_rep_status_label, "Generando reporte...");
+    ui_shell_set_status("Reporte: generando...", UI_STATUS_WORKING);
+    pthread_t tid;
+    pthread_create(&tid, NULL, rep_gen_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static void rep_refresh_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    start_report_list();
+}
+
+static void rep_scroll_up_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (!g_rep_box) return;
+    lv_obj_scroll_by(g_rep_box, 0, 40, LV_ANIM_ON);
+}
+
+static void rep_scroll_down_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (!g_rep_box) return;
+    lv_obj_scroll_by(g_rep_box, 0, -40, LV_ANIM_ON);
+}
+
+static void show_report_detail(int id);
+
+static void rep_row_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    int id = (int)(intptr_t)lv_event_get_user_data(e);
+    if (id <= 0) return;
+    show_report_detail(id);
+}
+
+static void rep_detail_close_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    close_report_overlay();
+    ui_shell_set_status("Reportes", UI_STATUS_INFO);
+}
+
+static void rep_detail_delete_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    if (g_rep_running) return;
+    if (g_rep_selected_id <= 0) return;
+    g_rep_running = 1;
+    g_rep_done = 0;
+    g_rep_mode = REP_DELETE;
+    g_rep_target_id = g_rep_selected_id;
+    ui_shell_set_status("Reporte: eliminando...", UI_STATUS_WORKING);
+    pthread_t tid;
+    pthread_create(&tid, NULL, rep_delete_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+static void render_report_list(void) {
+    if (!g_rep_box) return;
+    lv_obj_clean(g_rep_box);
+    lv_obj_scroll_to_y(g_rep_box, 0, LV_ANIM_OFF);
+    for (int i = 0; i < g_rep_count; i++) {
+        report_meta_t *m = &g_rep_items[i];
+        lv_obj_t *row = lv_button_create(g_rep_box);
+        lv_obj_set_width(row, LV_PCT(100));
+        lv_obj_set_height(row, 34);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0x071007), 0);
+        lv_obj_set_style_border_color(row, COLOR_OK, 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_pad_all(row, 3, 0);
+        lv_obj_add_event_cb(row, rep_row_cb, LV_EVENT_PRESSED,
+                            (void *)(intptr_t)m->id);
+        lv_obj_t *lbl = lv_label_create(row);
+        lv_label_set_text(lbl, m->label);
+        lv_obj_set_style_text_color(lbl, COLOR_OK, 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 2, 0);
+    }
+}
+
+static void show_report_detail(int id) {
+    if (g_rep_overlay) return;
+    if (g_rep_running) return;
+    g_rep_selected_id = id;
+    g_rep_overlay = lv_obj_create(g_main_screen);
+    lv_obj_set_size(g_rep_overlay, 480, 320);
+    lv_obj_set_pos(g_rep_overlay, 0, 0);
+    lv_obj_set_style_bg_color(g_rep_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(g_rep_overlay, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(g_rep_overlay, 0, 0);
+    lv_obj_set_style_pad_all(g_rep_overlay, 0, 0);
+    lv_obj_clear_flag(g_rep_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *box = lv_obj_create(g_rep_overlay);
+    lv_obj_set_size(box, 460, 300);
+    lv_obj_center(box);
+    lv_obj_set_style_bg_color(box, lv_color_hex(0x071007), 0);
+    lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(box, COLOR_OK, 0);
+    lv_obj_set_style_border_width(box, 2, 0);
+    lv_obj_set_style_pad_all(box, 8, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+    const char *lab = "Reporte";
+    for (int i = 0; i < g_rep_count; i++) {
+        if (g_rep_items[i].id == id) { lab = g_rep_items[i].label; break; }
+    }
+    lv_obj_t *title = lv_label_create(box);
+    lv_label_set_text(title, lab);
+    lv_obj_set_style_text_color(title, COLOR_OK, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_10, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 2, 0);
+
+    lv_obj_t *bodycont = lv_obj_create(box);
+    lv_obj_set_size(bodycont, 442, 220);
+    lv_obj_align(bodycont, LV_ALIGN_TOP_LEFT, 0, 18);
+    lv_obj_set_style_bg_opa(bodycont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(bodycont, 0, 0);
+    lv_obj_set_style_pad_all(bodycont, 2, 0);
+    lv_obj_set_scroll_dir(bodycont, LV_DIR_VER);
+
+    g_rep_detail_lbl = lv_label_create(bodycont);
+    lv_label_set_long_mode(g_rep_detail_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(g_rep_detail_lbl, 424);
+    lv_obj_set_style_text_color(g_rep_detail_lbl, COLOR_DIM, 0);
+    lv_obj_set_style_text_font(g_rep_detail_lbl, &lv_font_montserrat_10, 0);
+    lv_label_set_text(g_rep_detail_lbl, "Cargando contenido...");
+
+    lv_obj_t *delb = lv_button_create(box);
+    lv_obj_set_size(delb, 120, 32);
+    lv_obj_align(delb, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(delb, lv_color_hex(0x2a0a14), 0);
+    lv_obj_set_style_border_color(delb, lv_color_hex(0xFF3366), 0);
+    lv_obj_set_style_border_width(delb, 2, 0);
+    lv_obj_set_ext_click_area(delb, 8);
+    lv_obj_add_event_cb(delb, rep_detail_delete_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(delb);
+    lv_obj_t *dl = lv_label_create(delb);
+    lv_label_set_text(dl, "Eliminar");
+    lv_obj_set_style_text_color(dl, lv_color_hex(0xFF3366), 0);
+    lv_obj_set_style_text_font(dl, &lv_font_montserrat_10, 0);
+    lv_obj_center(dl);
+
+    lv_obj_t *cls = lv_button_create(box);
+    lv_obj_set_size(cls, 120, 32);
+    lv_obj_align(cls, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(cls, lv_color_hex(0x0a2a0a), 0);
+    lv_obj_set_style_border_color(cls, COLOR_OK, 0);
+    lv_obj_set_style_border_width(cls, 2, 0);
+    lv_obj_set_ext_click_area(cls, 8);
+    lv_obj_add_event_cb(cls, rep_detail_close_cb, LV_EVENT_PRESSED, NULL);
+    ui_apply_press_effect(cls);
+    lv_obj_t *cll = lv_label_create(cls);
+    lv_label_set_text(cll, "Cerrar");
+    lv_obj_set_style_text_color(cll, COLOR_OK, 0);
+    lv_obj_center(cll);
+
+    g_rep_running = 1;
+    g_rep_done = 0;
+    g_rep_mode = REP_SHOW;
+    g_rep_target_id = id;
+    ui_shell_set_status("Reporte: leyendo...", UI_STATUS_WORKING);
+    pthread_t tid;
+    pthread_create(&tid, NULL, rep_show_thread_fn, NULL);
+    pthread_detach(tid);
+}
+
+/* ═══════════════════════════════════════════════════════
    Bluetooth — scan BR/EDR + LE (Fase 3). Patron hilo+poll,
    igual que el resto; LVGL se toca SOLO desde poll (main loop).
    ═══════════════════════════════════════════════════════ */
@@ -2883,6 +3214,10 @@ static void enter_section(const char *id, const char *label) {
     g_selected_row = NULL;
     g_cfg_box = NULL;
     for (int _i = 0; _i < CFG_N; _i++) g_cfg_vlabel[_i] = NULL;
+    g_rep_box = NULL;
+    g_rep_wlabel = NULL;
+    g_rep_status_label = NULL;
+    close_report_overlay();  /* por si quedo un overlay de detalle abierto */
     close_actions_menu();   /* por si quedo un overlay de acciones abierto */
     close_bt_detail();       /* idem para el detalle BT */
     bt_spam_menu_close();    /* idem para el selector de modo de spam */
@@ -3351,6 +3686,131 @@ static void enter_section(const char *id, const char *label) {
             lv_obj_center(gbl);
         }
 
+    } else if (strcmp(id, "reportes") == 0) {
+        /* Carga la ventana default desde Config (24h/7d/all). */
+        char rw[16] = "";
+        if (db_config_get("report_default_window", rw, sizeof(rw))) {
+            for (int i = 0; i < REP_WINDOWS_N; i++) {
+                if (strcmp(rw, REP_WINDOWS[i]) == 0) { g_rep_window_idx = i; break; }
+            }
+        }
+
+        lv_obj_t *title = lv_label_create(g_body);
+        lv_label_set_text(title, "Reportes de auditoria");
+        lv_obj_set_style_text_color(title, COLOR_OK, 0);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_10, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+
+        /* Fila 1: [<] <ventana> [>] [Crear] [Refrescar] */
+        lv_obj_t *prev = lv_button_create(g_body);
+        lv_obj_set_size(prev, 36, 28);
+        lv_obj_align(prev, LV_ALIGN_TOP_LEFT, 10, 24);
+        lv_obj_set_style_bg_color(prev, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(prev, COLOR_OK, 0);
+        lv_obj_set_style_border_width(prev, 2, 0);
+        lv_obj_set_ext_click_area(prev, 10);
+        lv_obj_add_event_cb(prev, rep_window_prev_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(prev);
+        lv_obj_t *pl = lv_label_create(prev);
+        lv_label_set_text(pl, LV_SYMBOL_LEFT);
+        lv_obj_set_style_text_color(pl, COLOR_OK, 0);
+        lv_obj_center(pl);
+
+        g_rep_wlabel = lv_label_create(g_body);
+        lv_label_set_text(g_rep_wlabel, REP_WINDOWS[g_rep_window_idx]);
+        lv_obj_set_style_text_color(g_rep_wlabel, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_text_font(g_rep_wlabel, &lv_font_montserrat_14, 0);
+        lv_obj_align(g_rep_wlabel, LV_ALIGN_TOP_LEFT, 58, 26);
+
+        lv_obj_t *next = lv_button_create(g_body);
+        lv_obj_set_size(next, 36, 28);
+        lv_obj_align(next, LV_ALIGN_TOP_LEFT, 104, 24);
+        lv_obj_set_style_bg_color(next, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(next, COLOR_OK, 0);
+        lv_obj_set_style_border_width(next, 2, 0);
+        lv_obj_set_ext_click_area(next, 10);
+        lv_obj_add_event_cb(next, rep_window_next_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(next);
+        lv_obj_t *nl = lv_label_create(next);
+        lv_label_set_text(nl, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(nl, COLOR_OK, 0);
+        lv_obj_center(nl);
+
+        lv_obj_t *crea = lv_button_create(g_body);
+        lv_obj_set_size(crea, 100, 28);
+        lv_obj_align(crea, LV_ALIGN_TOP_LEFT, 150, 24);
+        lv_obj_set_style_bg_color(crea, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(crea, COLOR_OK, 0);
+        lv_obj_set_style_border_width(crea, 2, 0);
+        lv_obj_set_ext_click_area(crea, 8);
+        lv_obj_add_event_cb(crea, rep_create_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(crea);
+        lv_obj_t *cl = lv_label_create(crea);
+        lv_label_set_text(cl, "Crear");
+        lv_obj_set_style_text_color(cl, COLOR_OK, 0);
+        lv_obj_center(cl);
+
+        lv_obj_t *ref = lv_button_create(g_body);
+        lv_obj_set_size(ref, 100, 28);
+        lv_obj_align(ref, LV_ALIGN_TOP_LEFT, 258, 24);
+        lv_obj_set_style_bg_color(ref, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(ref, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_border_width(ref, 2, 0);
+        lv_obj_set_ext_click_area(ref, 8);
+        lv_obj_add_event_cb(ref, rep_refresh_btn_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(ref);
+        lv_obj_t *rl = lv_label_create(ref);
+        lv_label_set_text(rl, "Refrescar");
+        lv_obj_set_style_text_color(rl, lv_color_hex(0x33CCFF), 0);
+        lv_obj_set_style_text_font(rl, &lv_font_montserrat_10, 0);
+        lv_obj_center(rl);
+
+        g_rep_status_label = lv_label_create(g_body);
+        lv_obj_set_style_text_color(g_rep_status_label, COLOR_DIM, 0);
+        lv_obj_set_style_text_font(g_rep_status_label, &lv_font_montserrat_10, 0);
+        lv_obj_align(g_rep_status_label, LV_ALIGN_TOP_LEFT, 10, 56);
+        lv_label_set_text(g_rep_status_label, "");
+
+        g_rep_box = lv_obj_create(g_body);
+        lv_obj_set_size(g_rep_box, 410, 150);
+        lv_obj_align(g_rep_box, LV_ALIGN_TOP_LEFT, 10, 76);
+        lv_obj_set_style_bg_opa(g_rep_box, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(g_rep_box, 0, 0);
+        lv_obj_set_style_pad_all(g_rep_box, 0, 0);
+        lv_obj_set_style_pad_top(g_rep_box, 2, 0);
+        lv_obj_set_flex_flow(g_rep_box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(g_rep_box, 2, 0);
+
+        lv_obj_t *up = lv_button_create(g_body);
+        lv_obj_set_size(up, 46, 68);
+        lv_obj_align(up, LV_ALIGN_TOP_RIGHT, -10, 76);
+        lv_obj_set_style_bg_color(up, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(up, COLOR_OK, 0);
+        lv_obj_set_style_border_width(up, 2, 0);
+        lv_obj_set_ext_click_area(up, 10);
+        lv_obj_add_event_cb(up, rep_scroll_up_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(up);
+        lv_obj_t *ul = lv_label_create(up);
+        lv_label_set_text(ul, LV_SYMBOL_UP);
+        lv_obj_set_style_text_color(ul, COLOR_OK, 0);
+        lv_obj_center(ul);
+
+        lv_obj_t *dn = lv_button_create(g_body);
+        lv_obj_set_size(dn, 46, 68);
+        lv_obj_align(dn, LV_ALIGN_TOP_RIGHT, -10, 148);
+        lv_obj_set_style_bg_color(dn, lv_color_hex(0x0a2a0a), 0);
+        lv_obj_set_style_border_color(dn, COLOR_OK, 0);
+        lv_obj_set_style_border_width(dn, 2, 0);
+        lv_obj_set_ext_click_area(dn, 10);
+        lv_obj_add_event_cb(dn, rep_scroll_down_cb, LV_EVENT_PRESSED, NULL);
+        ui_apply_press_effect(dn);
+        lv_obj_t *dnl = lv_label_create(dn);
+        lv_label_set_text(dnl, LV_SYMBOL_DOWN);
+        lv_obj_set_style_text_color(dnl, COLOR_OK, 0);
+        lv_obj_center(dnl);
+
+        start_report_list();
+
     } else if (strcmp(id, "tools") == 0) {
         lv_obj_t *title = lv_label_create(g_body);
         lv_label_set_text(title, "Herramientas");
@@ -3469,6 +3929,7 @@ static void show_carousel(void) {
     close_actions_menu();   /* por si quedara un overlay de acciones abierto */
     close_bt_detail();      /* idem para el detalle BT */
     bt_spam_menu_close();   /* idem para el selector de modo de spam */
+    close_report_overlay(); /* idem para el detalle de reportes */
     g_cfg_group_sel[0] = '\0';   /* al salir de Config vuelve al menu grupos */
     lv_obj_clean(g_body);
     g_net_box = NULL;
@@ -3487,6 +3948,9 @@ static void show_carousel(void) {
     g_net_status_label = NULL;
     g_net_selected_row = NULL;
     g_selected_row = NULL;
+    g_rep_box = NULL;
+    g_rep_wlabel = NULL;
+    g_rep_status_label = NULL;
 
     lv_obj_t *left = lv_button_create(g_body);
     lv_obj_set_size(left, 50, 60);

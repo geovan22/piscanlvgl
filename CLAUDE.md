@@ -153,6 +153,18 @@ Funciona y está en producción. No rehacer salvo mejora pedida.
   (`diag_client_run` → UI con resumen por área) y CLI; `exit 0` = todo OK.
   Validado en la Pi (2026-10-21). Lógica pura con pruebas unitarias.
 
+### Fase 8 — Reportes (FUNCIONAL, 2026-11-12; falta validar en pantalla)
+Sección nueva **Reportes** en el menú principal: genera un **Markdown** por
+ventana de tiempo (`24h` / `7d` / `all`) unificando las 7 tablas de log
+(WifiScanLog, WifiAttackLog, HoneypotLog, BluetoothLog, BluetoothAttackLog,
+BluetoothSighting, ActionLog) + timeline. Archivos en `data/reports/*.md`,
+registrados en la tabla `AuditReport`. CLI `db_tool.py report
+{generate,list,show,delete}` con contrato JSON; bridge C
+`app/reports/report_client.c/h`. Redacción de `portal_user/_pass` del
+honeypot activa por default; opt-in con `report_include_portal_creds`. 14
+tests unitarios nuevos (suite 117/117 OK). Pendiente: build en Pi + prueba
+en pantalla + export por SCP. Detalle en §8 Fase 8.
+
 ### Fase 1 — WiFi avanzado (COMPLETA, 2026-10-13)
 - **Menú "Acciones" (overlay)** por AP en la sección WiFi: fila superior
   Escanear · Acciones · Capturas. Acciones abre un modal (patrón
@@ -307,6 +319,8 @@ rendimiento del internet compartido: pospuesto y de baja prioridad (§3).
 │   app/confirm_dialog.c  app/text_input.c          │
 │   app/ui_style.h   ← estilos / press-effect       │
 │   app/wifi/*_client.c  ← puentes C ↔ Python       │
+│   app/bluetooth/bt_client.c ← puente BT           │
+│   app/reports/report_client.c ← puente reportes   │
 └───────────────┬─────────────────────────────────┘
                 │ fork + exec + pipe, stdout = 1 JSON
                 ▼
@@ -315,6 +329,8 @@ rendimiento del internet compartido: pospuesto y de baja prioridad (§3).
 │   app/wifi/wifi_scan.py   ← scan wlan1            │
 │   app/wifi/wifi_ops.py    ← monitor/deauth/hs/audit│
 │   app/wifi/net_ops.py     ← wlan0 / NetworkManager │
+│   app/bluetooth/bt_ops.py ← BT scan/acciones       │
+│   app/reports/report_ops.py ← generador de reportes│
 │   app/db_tool.py          ← acceso DB (CLI JSON)   │
 │   app/db/models.py        ← modelos SQLAlchemy     │
 │   app/diag.py             ← self-check / doctor    │
@@ -464,13 +480,28 @@ y modo **BadUSB gadget** (la Pi como teclado HID por el puerto USB OTG).
   `domains`+`os_guess`+`user_agent` = fingerprint del dispositivo;
   `client_mac`/`vendor`/`hostname` = identidad; `requests` = cuánto interactuó.
 
+- **AuditReport** — reportes de auditoría (Fase 8). Una fila por reporte
+  generado con `report_ops.generate_report()`. Campos: `timestamp`,
+  `report_type` (`window` por ahora), `window` (`24h`|`7d`|`all`),
+  `period_start`/`period_end` (UTC), `path` (`data/reports/*.md`),
+  `size_bytes`, `summary` (json corto con conteos: `wifi_scans`,
+  `wifi_attacks`, `hp_sessions`, `hp_clients`, `bt_devices`, `bt_attacks`,
+  `bt_sightings`, `actions`, `action_errors`).
+  Cómo leerla (CLI):
+  - `python3 app/db_tool.py report list [limit]` — reportes recientes.
+  - `python3 app/db_tool.py report show <id> [--max-text=N]` — meta + contenido.
+  - `python3 app/db_tool.py report generate [24h|7d|all] [--creds|--no-creds]`
+    — nuevo reporte (`--creds` incluye `portal_user`/`portal_pass` del
+    honeypot; default: **redactados**).
+  - `python3 app/db_tool.py report delete <id>` — borra `.md` + fila.
+  Configs asociadas (cat `report`): `report_default_window`,
+  `report_include_portal_creds`, `report_max_rows_per_section`.
+
 ### Tablas propuestas (para el roadmap — crear al implementar cada fase)
 - **LanScanLog** — resultados nmap/arp-scan (host, MAC, puertos, servicios, OS).
-- **BluetoothLog** — dispositivos BT/BLE descubiertos, servicios, acciones.
 - **RfCaptureLog** — capturas CC1101/NRF24 (freq, modulación, raw, replay).
 - **NfcLog** — tags NFC/RFID leídos/escritos (UID, tipo, dump).
 - **IrLog** — señales IR capturadas/enviadas (protocolo, código).
-- **AuditReport** — reportes generados (tipo, fecha, ruta del archivo, resumen).
 
 **Convención:** cada módulo nuevo registra en su tabla vía un helper
 `log_*()` con try/except silencioso (no debe bloquear el flujo si la DB falla —
@@ -537,10 +568,34 @@ validados (ver `TODO.md`).
 - Reenviar / replay.
 - Base de datos de códigos comunes (TV-B-Gone style).
 
-### Fase 8 — Reportes (sección `reportes`)
-- Generar reporte por sesión/auditoría desde las tablas de log.
-- Export a archivo (txt/markdown/pdf) en `data/reports/` (→ AuditReport).
-- Resumen: redes vistas, ataques, hallazgos, timeline.
+### Fase 8 — Reportes (sección `reportes`) — FUNCIONAL (2026-11-12)
+- Backend `app/reports/report_ops.py` genera un **Markdown** unificado por
+  **ventana de tiempo** (`24h` / `7d` / `all`) leyendo las 7 tablas de log:
+  WifiScanLog, WifiAttackLog, HoneypotLog, BluetoothLog, BluetoothAttackLog,
+  BluetoothSighting, ActionLog. Cada sección es una tabla md; además un
+  **timeline unificado** con los eventos más recientes de ataques WiFi/BT y
+  operaciones del sistema.
+- Archivos en `data/reports/piscan_report_<window>_<YYYYMMDDHHMMSS>.md`;
+  tabla `AuditReport` (ver §7) registra cada reporte (path, size, summary json).
+- CLI: `python3 app/db_tool.py report {generate,list,show,delete}` (contrato
+  JSON por stdout). `generate` acepta `24h|7d|all` y flags `--creds` / `--no-creds`.
+- Bridge C `app/reports/report_client.c/h` + sección UI **Reportes** (cuarta
+  entrada del menú principal): fila superior `[◀] <ventana> [▶] [Crear]
+  [Refrescar]`, lista scrollable (▲▼) de reportes con su resumen; tocar un
+  reporte abre overlay con el contenido y botón Eliminar. Patrón hilo+poll
+  (`ui_shell_poll_report`), LVGL solo desde poll.
+- **Privacidad por default**: `portal_user`/`portal_pass` del honeypot se
+  **redactan** en el reporte (muestra `***(len=N)`). Toggle `report_include_
+  portal_creds` en Config los incluye solo si el usuario opta por sesión.
+- Config nueva (grupo "Reportes" en Config): `report_default_window` (CHOICE
+  24h/7d/all), `report_include_portal_creds` (BOOL, default OFF),
+  `report_max_rows_per_section` (INT, default 50, evita MDs gigantes).
+- 14 tests unitarios nuevos (`tests/test_report_ops.py`) con DB SQLite en
+  archivo temporal. Suite completa: 117/117 OK.
+- **Export por SCP**: los `.md` viven en `data/reports/`, bajan igual que
+  `data/captures/` (ya hay SSH en .195).
+- **Pendiente de pantalla**: compilar en la Pi (`build_app.sh`), tocar
+  Crear/Refrescar/<reporte>/Eliminar, confirmar export por SCP.
 
 ### Fase 9 — Terminal (diferida por decisión del usuario)
 - Terminal embebida para comandos, actualizar la Pi, ver archivos de auditoría.

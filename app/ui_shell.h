@@ -41,6 +41,7 @@ void ui_shell_poll_bluetooth(void);
 void ui_shell_poll_bt_action(void);
 void ui_shell_poll_bt_global(void);
 void ui_shell_poll_logs(void);
+void ui_shell_poll_report(void);
 
 
 /* Barra de estado global en el footer. El color permite un vistazo

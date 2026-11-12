@@ -232,6 +232,53 @@ def cmd_action_clear(args):
     s.commit()
     ok({"deleted": n})
 
+def cmd_report_generate(args):
+    """report generate [24h|7d|all] [--creds] — genera un reporte Markdown
+    de la ventana pedida y lo registra en audit_report. Devuelve la fila."""
+    from reports.report_ops import generate_report, WINDOWS
+    window = "24h"
+    include_creds = None
+    for a in args:
+        if a in WINDOWS:
+            window = a
+        elif a in ("--creds", "--include-creds"):
+            include_creds = True
+        elif a == "--no-creds":
+            include_creds = False
+    row = generate_report(window=window, include_portal_creds=include_creds)
+    ok({"report": row})
+
+def cmd_report_list(args):
+    """report list [limit] — reportes generados, mas recientes primero."""
+    from reports.report_ops import list_reports
+    limit = int(args[0]) if args and args[0].isdigit() else 50
+    items = list_reports(limit=limit)
+    ok({"count": len(items), "items": items}, pretty=True)
+
+def cmd_report_show(args):
+    """report show <id> [--max-text=N] — meta + contenido del .md.
+    Por default el texto NO se trunca; con --max-text=N se trunca a N chars."""
+    from reports.report_ops import show_report
+    if not args or not args[0].isdigit():
+        err("uso: report show <id> [--max-text=N]")
+    max_text = None
+    for a in args[1:]:
+        if a.startswith("--max-text="):
+            try:
+                max_text = int(a.split("=", 1)[1])
+            except Exception:
+                pass
+    row = show_report(int(args[0]), max_text=max_text)
+    ok({"report": row}, pretty=True)
+
+def cmd_report_delete(args):
+    """report delete <id> — borra el archivo .md y la fila de audit_report."""
+    from reports.report_ops import delete_report
+    if not args or not args[0].isdigit():
+        err("uso: report delete <id>")
+    res = delete_report(int(args[0]))
+    ok({"deleted": res})
+
 def cmd_portals_list(args):
     """portals list — plantillas disponibles en data/portals/ y cual esta activa
     (Config honeypot_portal). Para que la UI/Config pueda listarlas y elegir."""
@@ -261,6 +308,10 @@ COMMANDS = {
     ("action", "list"): cmd_action_list,
     ("action", "show"): cmd_action_show,
     ("action", "clear"): cmd_action_clear,
+    ("report", "generate"): cmd_report_generate,
+    ("report", "list"): cmd_report_list,
+    ("report", "show"): cmd_report_show,
+    ("report", "delete"): cmd_report_delete,
 }
 
 def main():

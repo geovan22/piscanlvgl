@@ -44,6 +44,67 @@
 - [ ] Follow-up: instrumentar `db_tool.py` para los comandos NO frecuentes
       (config set / setmany, credential set, honeypot) con el mismo envoltorio.
 
+## Fase 8 — Reportes — [~] EN CURSO (prioridad alta)
+> Marco: laboratorio autorizado. Primero papel: empaquetar lo ya trabajado
+> (redes vistas, ataques, honeypot, Bluetooth, timeline) en un reporte legible
+> que salga por SCP. **Formato inicial = Markdown** (legible, exportable, se
+> puede pasar a PDF con pandoc después). **Alcance inicial = ventana de tiempo**
+> (24h / 7d / todo) con un reporte unificado del periodo. Fuentes: las 7 tablas
+> de log ya pobladas (`WifiScanLog`, `WifiAttackLog`, `HoneypotLog`,
+> `BluetoothLog`, `BluetoothAttackLog`, `BluetoothSighting`, `ActionLog`).
+>
+> **Decisión de privacidad** (ver `CLAUDE.md` §3 nota en Honeypot): `portal_user`
+> y `portal_pass` quedan en la DB pero el **reporte los redacta por default**
+> (muestra solo si ingresó/no; longitud). Para auditar valor exacto: CLI
+> `db_tool.py honeypot show <id>`. Config `report_include_portal_creds` (BOOL,
+> default OFF) permite incluirlos si el usuario lo decide por sesión.
+
+- [ ] **Tabla `AuditReport`** en `app/db/models.py`:
+      `id, timestamp, report_type (window|session), period_start, period_end,
+      path (data/reports/...md), size_bytes, summary` (json corto con conteos:
+      wifi_scans, wifi_attacks, hp_sessions, hp_clients, bt_devices,
+      bt_attacks, bt_sightings, actions). create_all + ALTER ADD COLUMN cubre
+      la migración.
+- [ ] **Backend `app/reports/report_ops.py`**:
+      - `generate_report(window)` donde `window ∈ {24h, 7d, all}`. Un helper
+        por tabla devuelve una sección markdown (`_section_wifi_scans`,
+        `_section_wifi_attacks`, `_section_honeypot`, `_section_bluetooth`,
+        `_section_bt_attacks`, `_section_bt_sightings`, `_section_actions`).
+      - `_timeline(period)` unifica eventos de `WifiAttackLog`,
+        `BluetoothAttackLog` y `ActionLog` por timestamp.
+      - `list_reports(limit)`, `show_report(id)`, `delete_report(id)`.
+      - Rutas en `data/reports/piscan_report_<window>_<YYYYMMDDHHMMSS>.md`.
+- [ ] **CLI `db_tool.py report {generate,list,show,delete}`** → un JSON por
+      stdout (contrato con C). `generate` acepta `window` (default 24h).
+- [ ] **Bridge C `app/reports/report_client.c/h`**:
+      `report_client_generate(window, out_path, out_id, out_summary)`,
+      `report_client_list(out[], max)`, `report_client_show(id, out_text)`,
+      `report_client_delete(id)`.
+- [ ] **Sección UI `reportes`** nueva en `MENU_ITEMS` (ui_shell.c):
+      - Fila superior: **Generar** (CHOICE ◀/▶ 24h/7d/Todo + botón Crear) ·
+        **Lista** · **Exportar** (SCP, reusa patrón Capturas).
+      - Lista de reportes existentes (timestamp + resumen) con scroll ▲▼.
+      - Tocar un reporte → preview (primeros ~4 KB en `lv_label`) con
+        hilo+poll (`ui_shell_poll_report`).
+      - Botón eliminar en el detalle (confirm).
+- [ ] **Config** (tabla `CFG_ITEMS`):
+      - `report_default_window` (CHOICE 24h/7d/all, default 24h).
+      - `report_include_portal_creds` (BOOL, default OFF).
+      - `report_max_rows_per_section` (INT, default 50, evita MD gigantes).
+- [ ] **Export**: `export_reports.sh` o reuso del patrón de capturas (scp a un
+      destino configurable). `data/reports/` baja por scp como `data/captures/`.
+- [ ] **Tests unitarios** (`tests/test_report_ops.py`):
+      renders de cada sección con fixtures en memoria (SQLite `:memory:`),
+      ventana 24h vs 7d vs all (filtro por timestamp), redacción de credenciales
+      honeypot (default vs toggle ON), timeline ordenado.
+- [ ] **Sudoers**: nada nuevo (el generador es solo lectura de SQLite +
+      escritura en `data/reports/` como usuario).
+- [ ] **`data/reports/`**: crear vacío (gitignore `*.md` del directorio salvo
+      un `.gitkeep`).
+- [ ] **Compilar en la Pi** (`build_app.sh`) y validar end-to-end:
+      - Crear reporte 24h → aparece en lista → preview → export por SCP.
+      - Verificar que el markdown abre bien en el PC (VS Code / pandoc).
+
 ## Fase 3 — Bluetooth (iteración 6): Expansión de herramientas — [~] EN CURSO
 > Objetivo del proyecto: **superar a Bruce/Flipper** aprovechando que debajo hay
 > Linux/BlueZ completo + **2 radios** (hci0 onboard BCM43438, hci1 USB RTL8821CU,

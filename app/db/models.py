@@ -174,6 +174,21 @@ class ActionLog(Base):
     result: Mapped[str] = mapped_column(String(16), nullable=True)    # ok|error|warn
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=True)
 
+class AuditReport(Base):
+    """Reporte de auditoria generado (Fase 8). Empaqueta una ventana de tiempo
+    del trabajo (redes vistas, ataques, honeypot, bluetooth, timeline) en un
+    archivo markdown bajo data/reports/. Una fila por reporte generado."""
+    __tablename__ = "audit_report"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    report_type: Mapped[str] = mapped_column(String(16), nullable=True)   # window|session
+    window: Mapped[str] = mapped_column(String(16), nullable=True)        # 24h|7d|all
+    period_start: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    period_end: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    path: Mapped[str] = mapped_column(String(256), nullable=True)         # data/reports/*.md
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=True)             # json corto con conteos
+
 _engine = None
 _SessionLocal = None
 
