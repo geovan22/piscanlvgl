@@ -14,10 +14,16 @@ con ese default y delega el trabajo real a esta funcion.
 import subprocess
 
 
-def run(cmd, timeout):
+def run(cmd, timeout, stdin=None):
     """Ejecuta `cmd` (lista de args, NUNCA shell) y captura stdout/stderr.
-    `timeout` en segundos. None si fallo el lanzamiento o expiro el tiempo."""
+    `timeout` en segundos. None si fallo el lanzamiento o expiro el tiempo.
+
+    `stdin`: por defecto None = hereda el stdin del proceso (comportamiento
+    historico de wifi/net). bt_ops pasa subprocess.DEVNULL a proposito: bajo
+    systemd el servicio corre sin TTY y btmgmt 5.82 se cuelga si no detecta un
+    stdin cerrado/pipe (bug documentado en bt_ops._run)."""
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout, stdin=stdin)
     except Exception:
         return None

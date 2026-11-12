@@ -631,9 +631,12 @@ class BlePayloadTests(unittest.TestCase):
     def test_samsung_buds_payload_matches_bruce_format(self):
         payload = bt_ops._build_samsung_buds_payload()
         self.assertEqual(len(payload), 31)
-        self.assertEqual(payload[:7],
-                         b"\x1b\xff\x75\x00\x42\x09\x81")
-        self.assertEqual(payload[28:], b"\x10\xff\x75")
+        # Framing correcto de Bruce: Flags 02 01 18, luego el elemento
+        # manufacturer (len 0x1B, 0xFF, Samsung 75 00) + cabecera Buds.
+        self.assertEqual(payload[:10],
+                         b"\x02\x01\x18\x1b\xff\x75\x00\x42\x09\x81")
+        # Cola correcta (sin los 3 bytes basura 10 FF 75 del builder viejo).
+        self.assertEqual(payload[-2:], b"\xc7\x00")
 
     def test_random_static_address_has_random_static_bits(self):
         address = bt_ops._random_static_address()
@@ -705,9 +708,10 @@ class OsPayloadBuilderTests(unittest.TestCase):
 
     def test_samsung_payload_still_builds_to_31_bytes(self):
         p = bt_ops._build_samsung_buds_payload()
-        self.assertLessEqual(len(p), 31)
-        self.assertEqual(p[1], 0xFF)
-        self.assertEqual(p[2:4], bytes([0x75, 0x00]))   # Samsung CID LE
+        self.assertEqual(len(p), 31)
+        self.assertEqual(p[0:3], bytes([0x02, 0x01, 0x18]))  # AD Flags
+        self.assertEqual(p[4], 0xFF)                          # manuf-specific
+        self.assertEqual(p[5:7], bytes([0x75, 0x00]))         # Samsung CID LE
 
     def test_ibeacon_payload_structure_and_fields(self):
         p = bt_ops._build_ibeacon_payload(0x1234, 0xABCD)
