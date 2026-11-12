@@ -3117,12 +3117,16 @@ static void bt_spam_mode_cb(lv_event_t *e) {
 static void bt_spam_mode_btn(lv_obj_t *parent, const char *txt, uint32_t color,
                              int y, const char *mode) {
     lv_obj_t *b = lv_button_create(parent);
-    lv_obj_set_size(b, 262, 30);
+    /* Misma geometria que el overlay de Acciones (make_action_btn), que ya
+     * funciona bien en el KeDei: 284x34, stride 38. Antes era 30 alto / stride
+     * 34 / ext 3 -> en el tactil el toque de una fila caia en la de abajo
+     * (tocabas Samsung y disparaba Google). */
+    lv_obj_set_size(b, 284, 34);
     lv_obj_align(b, LV_ALIGN_TOP_MID, 0, y);
     lv_obj_set_style_bg_color(b, lv_color_hex(0x0a1a0a), 0);
     lv_obj_set_style_border_color(b, lv_color_hex(color), 0);
     lv_obj_set_style_border_width(b, 2, 0);
-    lv_obj_set_ext_click_area(b, 3);
+    lv_obj_set_ext_click_area(b, 4);
     lv_obj_add_event_cb(b, bt_spam_mode_cb, LV_EVENT_PRESSED, (void *)mode);
     ui_apply_press_effect(b);
     lv_obj_t *l = lv_label_create(b);
@@ -3144,7 +3148,7 @@ static void bt_spam_menu_show(void) {
     lv_obj_add_flag(g_bt_spam_overlay, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *box = lv_obj_create(g_bt_spam_overlay);
-    lv_obj_set_size(box, 290, 300);
+    lv_obj_set_size(box, 300, 300);
     lv_obj_center(box);
     lv_obj_set_style_bg_color(box, lv_color_hex(0x071007), 0);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
@@ -3159,13 +3163,13 @@ static void bt_spam_menu_show(void) {
     lv_obj_set_style_text_font(title, &lv_font_montserrat_10, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
 
-    int y = 22;
-    bt_spam_mode_btn(box, "Samsung (Galaxy Buds)",   0x33CCFF, y, "samsung");   y += 34;
-    bt_spam_mode_btn(box, "Google Fast Pair (Andr.)",0x66FF99, y, "google");    y += 34;
-    bt_spam_mode_btn(box, "Apple (iOS)",             0xFFFFFF, y, "apple");     y += 34;
-    bt_spam_mode_btn(box, "Microsoft Swift (Win)",   0x33CCFF, y, "microsoft"); y += 34;
-    bt_spam_mode_btn(box, "Nombres (names)",         0xFFCC33, y, "names");     y += 34;
-    bt_spam_mode_btn(box, "Aleatorio (random)",      0xFFCC33, y, "random");    y += 34;
+    int y = 24;
+    bt_spam_mode_btn(box, "Samsung (Galaxy Buds)",   0x33CCFF, y, "samsung");   y += 38;
+    bt_spam_mode_btn(box, "Google Fast Pair (Andr.)",0x66FF99, y, "google");    y += 38;
+    bt_spam_mode_btn(box, "Apple (iOS)",             0xFFFFFF, y, "apple");     y += 38;
+    bt_spam_mode_btn(box, "Microsoft Swift (Win)",   0x33CCFF, y, "microsoft"); y += 38;
+    bt_spam_mode_btn(box, "Nombres (names)",         0xFFCC33, y, "names");     y += 38;
+    bt_spam_mode_btn(box, "Aleatorio (random)",      0xFFCC33, y, "random");    y += 38;
     bt_spam_mode_btn(box, "Cancelar",                0xFF4444, y, NULL);
 }
 
